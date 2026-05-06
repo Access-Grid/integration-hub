@@ -21,6 +21,8 @@
   "alert.ag_unreachable": "AccessGrid no está disponible",
   "login.title": "Iniciar sesión",
   "login.invalid": "Usuario o contraseña incorrectos",
+  "login.rate_limited.one": "Demasiados intentos fallidos. Inténtalo de nuevo en aproximadamente 1 minuto.",
+  "login.rate_limited.many": "Demasiados intentos fallidos. Inténtalo de nuevo en aproximadamente {minutes} minutos.",
   "wizard.title": "Configuración inicial",
   "wizard.step1.title": "Crear cuenta de administrador",
   "wizard.step1.subtitle": "Esta cuenta es la única forma de administrar la herramienta. No hay recuperación de contraseña — elige una que puedas recordar o guárdala en un gestor de contraseñas.",

@@ -2,7 +2,7 @@
 {% block content %}
 <div class="card narrow">
   <h1>{{ t('login.title') }}</h1>
-  {% if error %}<div class="err">{{ t(error) }}</div>{% endif %}
+  {% if error_text %}<div class="err">{{ error_text }}</div>{% elif error %}<div class="err">{{ t(error) }}</div>{% endif %}
   <form action="/login" method="post">
     <label>{{ t('common.username') }}<input name="username" required autofocus></label>
     <label>{{ t('common.password') }}<input name="password" type="password" required></label>

@@ -13,16 +13,27 @@ data it needs and the next step is rendered. Refreshing a step is safe.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 
-from ..auth import SESSION_COOKIE, sign_session
+from ..auth import SESSION_COOKIE, current_user, sign_session
 from ..auth.store import admin_exists, create_admin
 from ..lib.pacs import available_pacs, get_descriptor
 from ..settings_store import AccessGridConfig, PacsConfig, is_configured
 from ..sync import get_engine
 
 router = APIRouter(prefix="/wizard")
+
+
+def _require_admin_if_bootstrapped(request: Request) -> None:
+    if not admin_exists():
+        return
+    if current_user(request) is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"Location": "/login"},
+        )
 
 
 def _step(request: Request) -> int:
@@ -48,6 +59,11 @@ def wizard_index(request: Request):
 
 @router.post("/admin")
 def wizard_admin(request: Request, username: str = Form(...), password: str = Form(...), confirm: str = Form(...)):
+    if admin_exists():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin is already configured",
+        )
     if password != confirm or not username.strip() or len(password) < 8:
         return request.app.state.template_response(
             request, "wizard/step1.html",
@@ -69,12 +85,14 @@ def wizard_ag(
     api_secret: str = Form(...),
     template_id: str = Form(...),
 ):
+    _require_admin_if_bootstrapped(request)
     AccessGridConfig.save(account_id.strip(), api_secret.strip(), template_id.strip())
     return RedirectResponse(url="/wizard", status_code=303)
 
 
 @router.post("/pacs-vendor")
 def wizard_pacs_vendor(request: Request, vendor: str = Form(...)):
+    _require_admin_if_bootstrapped(request)
     descriptor = get_descriptor(vendor)
     if descriptor is None:
         return RedirectResponse(url="/wizard", status_code=303)
@@ -86,6 +104,7 @@ def wizard_pacs_vendor(request: Request, vendor: str = Form(...)):
 
 @router.post("/pacs")
 async def wizard_pacs(request: Request):
+    _require_admin_if_bootstrapped(request)
     form = await request.form()
     vendor = form.get("vendor")
     if not vendor:

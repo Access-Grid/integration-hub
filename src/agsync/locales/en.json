@@ -21,6 +21,8 @@
   "alert.ag_unreachable": "AccessGrid is unreachable",
   "login.title": "Sign in",
   "login.invalid": "Incorrect username or password",
+  "login.rate_limited.one": "Too many failed attempts. Try again in about 1 minute.",
+  "login.rate_limited.many": "Too many failed attempts. Try again in about {minutes} minutes.",
   "wizard.title": "Setup",
   "wizard.step1.title": "Create administrator account",
   "wizard.step1.subtitle": "This account is the only way to manage the sync tool. There is no password recovery — pick something you can remember or store it in a password manager.",

@@ -68,6 +68,24 @@ MIGRATIONS: list[tuple[str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_logs_phase ON logs(phase);
         """,
     ),
+    (
+        "002_login_rate_limit",
+        """
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            key           TEXT PRIMARY KEY,
+            fail_count    INTEGER NOT NULL DEFAULT 0,
+            first_fail_at REAL,
+            locked_until  REAL
+        );
+        """,
+    ),
+    (
+        "003_login_rate_limit_lock_level",
+        """
+        ALTER TABLE login_attempts
+        ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
 ]
 
 
