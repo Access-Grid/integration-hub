@@ -81,9 +81,10 @@ if sys.platform == "win32":  # pragma: no cover
             win32event.WaitForSingleObject(self._stop_event, win32event.INFINITE)
 
         def _serve(self) -> None:
+            import uvicorn
+
             from .config import get_settings
             from .observability import init_sentry
-            import uvicorn
 
             init_sentry()
             settings = get_settings()

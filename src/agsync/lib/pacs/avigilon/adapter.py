@@ -8,14 +8,13 @@ insensitive) — that's encoded here, not in the engine.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Iterable
 
 from ..base import (
     ConnectionResult,
     Credential,
     CredentialStatus,
-    PacsAdapter,
     PacsDescriptor,
     Person,
 )

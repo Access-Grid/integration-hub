@@ -17,14 +17,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from ..ag import build_client as build_ag_client
 from ..lib.pacs import build_adapter as build_pacs_adapter
 from ..settings_store import AccessGridConfig, PacsConfig
-from . import tracking
 from .phases import (
     phase1_provision,
     phase2_local_to_ag,
@@ -170,7 +169,7 @@ class SyncEngine:
                     )
                 self._status.cached_interval_s = sleep_s
                 self._status.next_run_iso = (
-                    datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    datetime.now(UTC).isoformat(timespec="seconds")
                 )
 
             self._trigger.wait(timeout=sleep_s)
@@ -180,7 +179,7 @@ class SyncEngine:
         if not self._cycle_lock.acquire(blocking=False):
             logger.warning("Cycle already running — skipping")
             return CycleResult(
-                started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                started_at=datetime.now(UTC).isoformat(timespec="seconds"),
                 duration_ms=0,
                 error="cycle_in_flight",
             )
@@ -190,7 +189,7 @@ class SyncEngine:
             self._cycle_lock.release()
 
     def _run_one_cycle_locked(self) -> CycleResult:
-        started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        started_at = datetime.now(UTC).isoformat(timespec="seconds")
         start_ms = time.time()
         result = CycleResult(started_at=started_at, duration_ms=0)
 

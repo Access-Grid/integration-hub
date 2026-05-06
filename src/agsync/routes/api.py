@@ -3,7 +3,7 @@ wizard via HTMX."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Form, Request
 
 from ..ag import test_connection as ag_test
 from ..auth import current_user

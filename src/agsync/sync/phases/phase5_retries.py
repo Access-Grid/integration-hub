@@ -10,7 +10,7 @@ message visible to the operator on the status page.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ...ag import AccessGrid, AccessGridError
 from .. import tracking
@@ -47,7 +47,7 @@ def run(snapshot: Snapshot, ag: AccessGrid, template_id: str) -> int:
             )
             continue
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         params: dict = {
             "card_template_id": template_id,
             "employee_id": tracked.pacs_person_id,

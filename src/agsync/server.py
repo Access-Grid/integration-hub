@@ -16,20 +16,24 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from importlib.resources import files
 
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from importlib.resources import files
 
 from .auth import admin_exists
 from .db import init_db
 from .i18n import default_locale, get_translator
 from .logs import install_handler as install_log_handler
-from .routes import api, auth as auth_routes, logs as logs_route, settings as settings_route, status as status_route, wizard
-from .sync import get_engine
+from .routes import api, wizard
+from .routes import auth as auth_routes
+from .routes import logs as logs_route
+from .routes import settings as settings_route
+from .routes import status as status_route
 from .settings_store import is_configured
+from .sync import get_engine
 
 logger = logging.getLogger(__name__)
 

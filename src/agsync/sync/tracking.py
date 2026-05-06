@@ -17,7 +17,7 @@ truly gone.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..db.connection import execute, execute_one, get_db
@@ -93,7 +93,7 @@ def upsert(
     last_synced_title: str = "",
     last_known_ag_state: str = "",
 ) -> None:
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
         """
         INSERT INTO ag_credentials (
@@ -123,7 +123,7 @@ def upsert(
 
 
 def update_status(pacs_person_id: str, pacs_credential_id: str, status: str, last_known_ag_state: str = "") -> None:
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
         """
         UPDATE ag_credentials
@@ -139,7 +139,7 @@ def update_status(pacs_person_id: str, pacs_credential_id: str, status: str, las
 
 
 def record_error(pacs_person_id: str, pacs_credential_id: str, error: str) -> None:
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
         """
         UPDATE ag_credentials
@@ -182,7 +182,7 @@ def update_field_tracking(
     phone: str,
     title: str,
 ) -> None:
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
         """
         UPDATE ag_credentials
@@ -200,7 +200,7 @@ def update_field_tracking(
 def update_last_known_ag_state(
     pacs_person_id: str, pacs_credential_id: str, ag_state: str
 ) -> None:
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
         """
         UPDATE ag_credentials

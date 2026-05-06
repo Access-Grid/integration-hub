@@ -7,10 +7,10 @@ To add a new PACS:
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .base import PacsAdapter, PacsDescriptor
-
 
 _DESCRIPTORS: dict[str, PacsDescriptor] = {}
 _FACTORIES: dict[str, Callable[[dict[str, Any]], PacsAdapter]] = {}

@@ -65,7 +65,7 @@ class AvigilonClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "AvigilonClient":
+    def __enter__(self) -> AvigilonClient:
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -348,8 +348,8 @@ class AvigilonClient:
             cn_elem = token_elem.find(".//cn")
             cn = cn_elem.text if cn_elem is not None else ""
 
-            def _text(suffix: str) -> str:
-                return self._prefixed_text(token_elem, suffix)
+            def _text(suffix: str, _elem: ET.Element = token_elem) -> str:
+                return self._prefixed_text(_elem, suffix)
 
             results.append({
                 "id": cn,

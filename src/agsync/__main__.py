@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import socket
 import sys
-from pathlib import Path
 
 import click
 import uvicorn

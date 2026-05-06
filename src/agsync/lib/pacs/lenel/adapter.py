@@ -7,13 +7,13 @@ ports the lenel-onguard-service codebase into this adapter.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from ..base import (
     ConnectionResult,
     Credential,
     CredentialStatus,
-    PacsAdapter,
     PacsDescriptor,
     Person,
 )

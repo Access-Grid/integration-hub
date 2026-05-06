@@ -13,8 +13,7 @@ import json
 from typing import Any
 
 from .crypto import decrypt, encrypt
-from .db.connection import get_db, execute_one
-
+from .db.connection import execute_one, get_db
 
 # ---- generic key/value -----------------------------------------------------
 

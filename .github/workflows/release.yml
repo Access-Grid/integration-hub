@@ -1,0 +1,84 @@
+name: Release
+
+# Triggered by pushing a tag like v0.1.0. Builds a Windows .exe with
+# PyInstaller and attaches it to a GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+        shell: pwsh
+
+      - name: Smoke test (CLI imports)
+        env:
+          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'ZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXk=' }}
+        run: |
+          agsync --version
+          python -c "from agsync.server import create_app; create_app()"
+        shell: pwsh
+
+      - name: Build .exe with PyInstaller
+        env:
+          AG_SYNC_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --onefile `
+            --name agsync `
+            --collect-all agsync `
+            --collect-all accessgrid `
+            --hidden-import agsync.lib.pacs.avigilon `
+            --hidden-import agsync.lib.pacs.lenel `
+            --hidden-import win32timezone `
+            --add-data "src/agsync/templates;agsync/templates" `
+            --add-data "src/agsync/static;agsync/static" `
+            --add-data "src/agsync/locales;agsync/locales" `
+            src/agsync/__main__.py
+        shell: pwsh
+
+      - name: Verify built binary
+        run: |
+          dist\agsync.exe --version
+        shell: pwsh
+
+      - name: Compute release name
+        id: rel
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if (-not $tag.StartsWith("v")) { $tag = "v0.0.0-${{ github.run_number }}" }
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agsync-windows-${{ steps.rel.outputs.tag }}
+          path: dist/agsync.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.rel.outputs.tag }}
+          files: dist/agsync.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

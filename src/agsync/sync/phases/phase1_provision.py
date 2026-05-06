@@ -14,7 +14,7 @@ Skip rules (with reasons logged):
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ...ag import AccessGrid, AccessGridError
 from .. import tracking
@@ -57,7 +57,7 @@ def run(snapshot: Snapshot, ag: AccessGrid, template_id: str) -> int:
                 skipped += 1
                 continue
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             start_date = (cred.activate_date or now).isoformat()
             expiration_date = (cred.deactivate_date or (now + timedelta(days=365))).isoformat()
 

@@ -18,10 +18,11 @@ text shown in the wizard.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Iterable, Protocol
+from typing import Any, Protocol
 
 
 class CredentialStatus(str, Enum):
@@ -71,7 +72,7 @@ class PacsDescriptor:
     # i18n keys for help text shown in the wizard
     trigger_help_key: str
     # Connection-form schema: list of (field_id, label_key, type, required)
-    connection_fields: list["ConnectionField"]
+    connection_fields: list[ConnectionField]
 
 
 @dataclass(frozen=True)
