@@ -21,7 +21,28 @@ def _load(locale: str) -> dict[str, str]:
         text = (files("agsync.locales") / f"{locale}.json").read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
-    return json.loads(text)
+    base = json.loads(text)
+    # Merge in PACS-adapter help text. Each adapter ships HELP_TEXT keyed
+    # by locale; their keys live under pacs.<vendor>.* and don't collide
+    # with the core locale dict.
+    for adapter_strings in _adapter_strings(locale):
+        base.update(adapter_strings)
+    return base
+
+
+def _adapter_strings(locale: str) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    try:
+        from agsync.lib.pacs.avigilon.adapter import HELP_TEXT as AVIG_HELP
+        out.append(AVIG_HELP.get(locale, AVIG_HELP.get(DEFAULT, {})))
+    except ImportError:
+        pass
+    try:
+        from agsync.lib.pacs.lenel.adapter import HELP_TEXT as LENEL_HELP
+        out.append(LENEL_HELP.get(locale, LENEL_HELP.get(DEFAULT, {})))
+    except ImportError:
+        pass
+    return out
 
 
 def available_locales() -> list[str]:

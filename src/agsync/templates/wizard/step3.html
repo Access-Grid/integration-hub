@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card narrow">
+  <h1>{{ t('wizard.title') }} — 3/4</h1>
+  <h2>{{ t('wizard.step3.title') }}</h2>
+  <p class="muted">{{ t('wizard.step3.subtitle') }}</p>
+  <form action="/wizard/pacs-vendor" method="post">
+    <fieldset class="vendor-list">
+      {% for opt in pacs_options %}
+        <label class="vendor-card">
+          <input type="radio" name="vendor" value="{{ opt.vendor }}" {% if loop.first %}required{% endif %}>
+          <span class="title">{{ opt.display_name }}</span>
+        </label>
+      {% endfor %}
+    </fieldset>
+    <button type="submit">{{ t('common.next') }}</button>
+  </form>
+</div>
+{% endblock %}

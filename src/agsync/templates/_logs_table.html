@@ -1,0 +1,21 @@
+{% if not rows %}
+  <p class="muted">{{ t('logs.empty') }}</p>
+{% else %}
+<table class="logs">
+  <thead>
+    <tr>
+      <th>ts</th><th>level</th><th>phase</th><th>message</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+      <tr class="lvl-{{ row.level|lower }}">
+        <td class="ts">{{ row.ts }}</td>
+        <td>{{ row.level }}</td>
+        <td>{{ row.phase or '' }}</td>
+        <td>{{ row.message }}</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}

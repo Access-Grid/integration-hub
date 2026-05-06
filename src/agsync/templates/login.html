@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card narrow">
+  <h1>{{ t('login.title') }}</h1>
+  {% if error %}<div class="err">{{ t(error) }}</div>{% endif %}
+  <form action="/login" method="post">
+    <label>{{ t('common.username') }}<input name="username" required autofocus></label>
+    <label>{{ t('common.password') }}<input name="password" type="password" required></label>
+    <button type="submit">{{ t('login.title') }}</button>
+  </form>
+</div>
+{% endblock %}

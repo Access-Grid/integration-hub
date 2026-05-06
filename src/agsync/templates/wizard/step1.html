@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card narrow">
+  <h1>{{ t('wizard.title') }} — 1/4</h1>
+  <h2>{{ t('wizard.step1.title') }}</h2>
+  <p class="muted">{{ t('wizard.step1.subtitle') }}</p>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <form action="/wizard/admin" method="post">
+    <label>{{ t('common.username') }}<input name="username" required autofocus></label>
+    <label>{{ t('common.password') }}<input name="password" type="password" required minlength="8"></label>
+    <label>{{ t('common.password') }}<input name="confirm" type="password" required minlength="8"></label>
+    <button type="submit">{{ t('common.next') }}</button>
+  </form>
+</div>
+{% endblock %}

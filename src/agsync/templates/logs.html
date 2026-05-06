@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card wide">
+  <h1>{{ t('logs.title') }}</h1>
+  <form class="filter-row"
+        hx-get="/logs/partial"
+        hx-target="#log-table"
+        hx-trigger="change, keyup delay:300ms from:input[name=q]">
+    <label>
+      {{ t('logs.filter.level') }}
+      <select name="level">
+        {% for lvl in ['ALL','DEBUG','INFO','WARNING','ERROR'] %}
+          <option value="{{ lvl }}" {% if lvl == level %}selected{% endif %}>
+            {{ t('logs.level.' ~ lvl.lower()) if lvl != 'ALL' else t('logs.level.all') }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      {{ t('logs.filter.phase') }}
+      <input name="phase" value="{{ phase }}" placeholder="phase1, phase2, ...">
+    </label>
+    <label>
+      {{ t('logs.filter.search') }}
+      <input name="q" value="{{ q }}">
+    </label>
+  </form>
+  <div id="log-table">
+    {% include "_logs_table.html" %}
+  </div>
+</div>
+{% endblock %}

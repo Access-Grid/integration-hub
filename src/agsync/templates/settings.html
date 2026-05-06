@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h1>{{ t('settings.title') }}</h1>
+
+  <h2>{{ t('settings.connections') }}</h2>
+  <dl class="kv">
+    <dt>AccessGrid account</dt><dd>{{ ag_account or '—' }}</dd>
+    <dt>AccessGrid template</dt><dd>{{ ag_template or '—' }}</dd>
+    <dt>PACS</dt><dd>{{ pacs_vendor or '—' }}</dd>
+  </dl>
+
+  <h2>{{ t('settings.about') }}</h2>
+  <dl class="kv">
+    <dt>{{ t('settings.about.version') }}</dt><dd>{{ version }}</dd>
+    <dt>{{ t('settings.about.web_ui_urls') }}</dt>
+    <dd>
+      {% for ip in ips %}
+        <code>http://{{ ip }}:5355</code>{% if not loop.last %}<br>{% endif %}
+      {% else %}
+        <code>http://localhost:5355</code>
+      {% endfor %}
+    </dd>
+    <dt>{{ t('settings.about.db_path') }}</dt><dd><code>{{ db_path }}</code></dd>
+  </dl>
+</div>
+{% endblock %}

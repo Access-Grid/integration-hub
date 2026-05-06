@@ -1,0 +1,38 @@
+<dl class="kv">
+  <dt>{{ t('status.title') }}</dt>
+  <dd>
+    {% if engine_status.running and not engine_status.paused %}
+      <span class="badge ok">{{ t('status.running') }}</span>
+    {% elif engine_status.paused %}
+      <span class="badge err">{{ t('status.stopped') }}</span>
+      <small>{{ engine_status.pause_reason }}</small>
+    {% else %}
+      <span class="badge">{{ t('status.stopped') }}</span>
+    {% endif %}
+  </dd>
+
+  <dt>{{ t('status.last_sync') }}</dt>
+  <dd>
+    {% if engine_status.last_cycle %}
+      {{ engine_status.last_cycle.started_at }}
+      <small>({{ engine_status.last_cycle.duration_ms }}ms)</small>
+    {% else %}
+      {{ t('status.never') }}
+    {% endif %}
+  </dd>
+
+  {% if engine_status.last_cycle %}
+  <dt>{{ t('status.results.new') }}</dt><dd>{{ engine_status.last_cycle.provisioned }}</dd>
+  <dt>{{ t('status.results.status_changes') }}</dt><dd>{{ engine_status.last_cycle.status_changes }}</dd>
+  <dt>{{ t('status.results.deleted') }}</dt><dd>{{ engine_status.last_cycle.deleted }}</dd>
+  <dt>{{ t('status.results.ag_to_pacs') }}</dt><dd>{{ engine_status.last_cycle.ag_to_pacs }}</dd>
+  <dt>{{ t('status.results.field_changes') }}</dt><dd>{{ engine_status.last_cycle.field_updates }}</dd>
+  {% endif %}
+
+  <dt>{{ t('status.next_sync') }}</dt>
+  <dd>{{ engine_status.next_run_iso or '—' }}</dd>
+</dl>
+
+{% if engine_status.last_error %}
+  <div class="err">{{ engine_status.last_error }}</div>
+{% endif %}

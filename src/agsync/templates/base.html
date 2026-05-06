@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="{{ locale }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ t('app.name') }}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+{% if engine_status is defined %}
+  {% if not engine_status.pacs_reachable %}
+    <div class="banner err">{{ t('alert.pacs_unreachable') }}</div>
+  {% endif %}
+  {% if not engine_status.ag_reachable %}
+    <div class="banner err">{{ t('alert.ag_unreachable') }}</div>
+  {% endif %}
+{% endif %}
+<header class="topbar">
+  <div class="brand">{{ t('app.name') }}</div>
+  {% if configured and admin_exists %}
+  <nav>
+    <a href="/status">{{ t('nav.status') }}</a>
+    <a href="/logs">{{ t('nav.logs') }}</a>
+    <a href="/settings">{{ t('nav.settings') }}</a>
+    <form action="/logout" method="post" class="inline">
+      <button type="submit" class="link-btn">{{ t('nav.logout') }}</button>
+    </form>
+  </nav>
+  {% endif %}
+  <div class="lang">
+    {% for code in available_locales %}
+      {% if code == locale %}
+        <span class="active">{{ code|upper }}</span>
+      {% else %}
+        <a href="/lang/{{ code }}">{{ code|upper }}</a>
+      {% endif %}
+    {% endfor %}
+  </div>
+</header>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

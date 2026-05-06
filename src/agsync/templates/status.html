@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h1>{{ t('status.title') }}</h1>
+  <div id="status-card"
+       hx-get="/status/partial"
+       hx-trigger="every 5s"
+       hx-swap="innerHTML">
+    {% include "_status_card.html" %}
+  </div>
+  <form action="/sync/run" method="post">
+    <button type="submit">{{ t('status.run_now') }}</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card narrow">
+  <h1>{{ t('wizard.title') }} — 4/4</h1>
+  <h2>{{ t('wizard.step4.title') }}: {{ descriptor.display_name }}</h2>
+  <p class="muted">{{ t('wizard.step4.subtitle') }}</p>
+
+  <div class="callout">{{ t(descriptor.trigger_help_key) }}</div>
+
+  <form action="/wizard/pacs" method="post" id="pacs-form">
+    <input type="hidden" name="vendor" value="{{ vendor }}">
+    {% for f in descriptor.connection_fields %}
+      <label>{{ t(f.label_key) }}
+        <input name="{{ f.id }}" type="{{ f.kind if f.kind != 'url' else 'text' }}"
+               {% if f.placeholder %}placeholder="{{ f.placeholder }}"{% endif %}
+               {% if f.required %}required{% endif %}>
+      </label>
+    {% endfor %}
+    <div class="row">
+      <button type="button"
+              hx-post="/api/test-pacs"
+              hx-include="#pacs-form"
+              hx-target="#pacs-test-result"
+              hx-swap="innerHTML">{{ t('common.test') }}</button>
+      <button type="submit">{{ t('common.finish') }}</button>
+    </div>
+    <div id="pacs-test-result"></div>
+  </form>
+</div>
+{% endblock %}
