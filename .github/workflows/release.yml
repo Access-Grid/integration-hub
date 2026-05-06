@@ -52,7 +52,7 @@ jobs:
             --add-data "src/agsync/templates;agsync/templates" `
             --add-data "src/agsync/static;agsync/static" `
             --add-data "src/agsync/locales;agsync/locales" `
-            src/agsync/__main__.py
+            scripts/pyinstaller_entry.py
         shell: pwsh
 
       - name: Verify built binary
