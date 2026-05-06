@@ -110,9 +110,18 @@ def wizard_ag(
     account_id: str = Form(...),
     api_secret: str = Form(...),
     template_id: str = Form(...),
+    site_code: str = Form(...),
 ):
     _require_admin_if_bootstrapped(request)
-    AccessGridConfig.save(account_id.strip(), api_secret.strip(), template_id.strip())
+    site_code = site_code.strip()
+    if not site_code.isdigit():
+        return request.app.state.template_response(
+            request, "wizard/step2.html",
+            {"step": 2, "error": "Site code must be a non-negative integer."},
+        )
+    AccessGridConfig.save(
+        account_id.strip(), api_secret.strip(), template_id.strip(), site_code,
+    )
     return RedirectResponse(url="/wizard", status_code=303)
 
 

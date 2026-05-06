@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 
-def run(snapshot: Snapshot, ag: AccessGrid, template_id: str) -> int:
+def run(snapshot: Snapshot, ag: AccessGrid, template_id: str, site_code: str = "") -> int:
     failed = tracking.failed_records(MAX_RETRIES)
     if not failed:
         logger.debug("Phase 5: No failed records to retry")
@@ -56,6 +56,8 @@ def run(snapshot: Snapshot, ag: AccessGrid, template_id: str) -> int:
             "expiration_date": (cred.deactivate_date or (now + timedelta(days=365))).isoformat(),
             "metadata": {"pacs_credential_id": cred.id},
         }
+        if site_code and site_code.isdigit():
+            params["site_code"] = int(site_code)
         if person.email:
             params["email"] = person.email
         if person.phone:

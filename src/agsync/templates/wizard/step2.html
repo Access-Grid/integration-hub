@@ -4,10 +4,12 @@
   <h1>{{ t('wizard.title') }} — 2/4</h1>
   <h2>{{ t('wizard.step2.title') }}</h2>
   <p class="muted">{{ t('wizard.step2.subtitle') }}</p>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
   <form action="/wizard/accessgrid" method="post" id="ag-form">
     <label>{{ t('wizard.step2.account_id') }}<input name="account_id" required></label>
     <label>{{ t('wizard.step2.api_secret') }}<input name="api_secret" type="password" required></label>
     <label>{{ t('wizard.step2.template_id') }}<input name="template_id" required></label>
+    <label>{{ t('wizard.step2.site_code') }}<input name="site_code" type="number" min="0" inputmode="numeric" required></label>
     <div class="row">
       <button type="button"
               hx-post="/api/test-ag"

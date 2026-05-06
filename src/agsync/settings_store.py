@@ -53,19 +53,35 @@ class AccessGridConfig:
     KEY = "accessgrid"
 
     @staticmethod
-    def save(account_id: str, api_secret: str, template_id: str) -> None:
+    def save(
+        account_id: str,
+        api_secret: str,
+        template_id: str,
+        site_code: str = "",
+    ) -> None:
         _set_encrypted_json(
             AccessGridConfig.KEY,
             {
                 "account_id": account_id,
                 "api_secret": api_secret,
                 "template_id": template_id,
+                "site_code": site_code,
             },
         )
 
     @staticmethod
     def load() -> dict[str, str] | None:
         return _get_encrypted_json(AccessGridConfig.KEY)
+
+    @staticmethod
+    def update_site_code(site_code: str) -> bool:
+        """Update only the site_code on an existing config. Returns True on success."""
+        existing = _get_encrypted_json(AccessGridConfig.KEY)
+        if not existing:
+            return False
+        existing["site_code"] = site_code
+        _set_encrypted_json(AccessGridConfig.KEY, existing)
+        return True
 
 
 class PacsConfig:

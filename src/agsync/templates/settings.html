@@ -3,10 +3,28 @@
 <div class="card">
   <h1>{{ t('settings.title') }}</h1>
 
+  {% if ok == 'site_code' %}
+    <div class="test-result ok">{{ t('settings.site_code.saved') }}</div>
+  {% endif %}
+  {% if err == 'site_code' %}
+    <div class="err">{{ t('settings.site_code.invalid') }}</div>
+  {% endif %}
+  {% if err == 'not_configured' %}
+    <div class="err">{{ t('settings.site_code.not_configured') }}</div>
+  {% endif %}
+
   <h2>{{ t('settings.connections') }}</h2>
   <dl class="kv">
     <dt>AccessGrid account</dt><dd>{{ ag_account or '—' }}</dd>
     <dt>AccessGrid template</dt><dd>{{ ag_template or '—' }}</dd>
+    <dt>{{ t('settings.site_code') }}</dt>
+    <dd>
+      <form action="/settings/site-code" method="post" class="inline-form">
+        <input name="site_code" type="number" min="0" inputmode="numeric"
+               value="{{ ag_site_code }}" required>
+        <button type="submit">{{ t('common.save') }}</button>
+      </form>
+    </dd>
     <dt>PACS</dt><dd>{{ pacs_vendor or '—' }}</dd>
   </dl>
 

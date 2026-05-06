@@ -23,7 +23,7 @@ from ..snapshot import Snapshot
 logger = logging.getLogger(__name__)
 
 
-def run(snapshot: Snapshot, ag: AccessGrid, template_id: str) -> int:
+def run(snapshot: Snapshot, ag: AccessGrid, template_id: str, site_code: str = "") -> int:
     provisioned = 0
     skipped = 0
     logger.info("Phase 1: Checking for new credentials to provision")
@@ -69,6 +69,8 @@ def run(snapshot: Snapshot, ag: AccessGrid, template_id: str) -> int:
                 "expiration_date": expiration_date,
                 "metadata": {"pacs_credential_id": cred.id},
             }
+            if site_code and site_code.isdigit():
+                params["site_code"] = int(site_code)
             if person.email:
                 params["email"] = person.email
             if person.phone:
