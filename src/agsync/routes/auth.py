@@ -22,9 +22,9 @@ _LOCKOUT_MAX_S = 24 * 60 * 60
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    # Use the real TCP peer. There is no trusted reverse proxy in front
+    # of uvicorn, so X-Forwarded-For is attacker-controlled and would let
+    # a brute-forcer bypass lockout by rotating the header.
     host = request.client.host if request.client else ""
     return host or "unknown"
 
@@ -136,6 +136,7 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
         value=sign_session(username),
         max_age=3600,
         httponly=True,
+        secure=True,
         samesite="lax",
     )
     return response

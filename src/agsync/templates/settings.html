@@ -16,9 +16,9 @@
     <dt>{{ t('settings.about.web_ui_urls') }}</dt>
     <dd>
       {% for ip in ips %}
-        <code>http://{{ ip }}:5355</code>{% if not loop.last %}<br>{% endif %}
+        <code>https://{{ ip }}:5355</code>{% if not loop.last %}<br>{% endif %}
       {% else %}
-        <code>http://localhost:5355</code>
+        <code>https://localhost:5355</code>
       {% endfor %}
     </dd>
     <dt>{{ t('settings.about.db_path') }}</dt><dd><code>{{ db_path }}</code></dd>

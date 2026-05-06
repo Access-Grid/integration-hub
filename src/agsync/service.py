@@ -85,15 +85,19 @@ if sys.platform == "win32":  # pragma: no cover
 
             from .config import get_settings
             from .observability import init_sentry
+            from .tls import ensure_cert
 
             init_sentry()
             settings = get_settings()
+            cert_path, key_path = ensure_cert()
             uvicorn.run(
                 "agsync.server:create_app",
                 factory=True,
                 host=settings.host,
                 port=settings.port,
                 log_level=settings.log_level.lower(),
+                ssl_certfile=str(cert_path),
+                ssl_keyfile=str(key_path),
             )
 
 else:  # non-Windows: provide a stub class so `import` doesn't blow up.

@@ -21,7 +21,11 @@ $env:AG_SYNC_ENCRYPTION_KEY = python -c "from cryptography.fernet import Fernet;
 agsync run
 ```
 
-Open `http://<your-ip>:5355` and run the setup wizard.
+Open `https://<your-ip>:5355` and run the setup wizard. The wizard
+requires the bootstrap license key (hardcoded in `routes/wizard.py`)
+to create the first admin account. The first launch generates a
+self-signed TLS cert under `<db dir>/tls/`; browsers will warn once
+and you click through.
 
 ## CLI commands
 

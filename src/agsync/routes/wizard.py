@@ -13,6 +13,8 @@ data it needs and the next step is rendered. Refreshing a step is safe.
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, Form, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 
@@ -23,6 +25,19 @@ from ..settings_store import AccessGridConfig, PacsConfig, is_configured
 from ..sync import get_engine
 
 router = APIRouter(prefix="/wizard")
+
+# Bootstrap license key. Required to create the first admin so that a
+# LAN attacker who reaches the freshly-installed NUC cannot race the
+# legitimate operator to claim the admin account. Replace this value
+# per deployment before building the binary.
+BOOTSTRAP_LICENSE_KEY = "AGSYNC-REPLACE-WITH-PER-DEPLOYMENT-LICENSE-KEY"
+
+
+def _license_key_valid(supplied: str) -> bool:
+    return hmac.compare_digest(
+        supplied.strip().encode("utf-8"),
+        BOOTSTRAP_LICENSE_KEY.encode("utf-8"),
+    )
 
 
 def _require_admin_if_bootstrapped(request: Request) -> None:
@@ -58,11 +73,22 @@ def wizard_index(request: Request):
 
 
 @router.post("/admin")
-def wizard_admin(request: Request, username: str = Form(...), password: str = Form(...), confirm: str = Form(...)):
+def wizard_admin(
+    request: Request,
+    license_key: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(...),
+    confirm: str = Form(...),
+):
     if admin_exists():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin is already configured",
+        )
+    if not _license_key_valid(license_key):
+        return request.app.state.template_response(
+            request, "wizard/step1.html",
+            {"step": 1, "error": "Invalid license key."},
         )
     if password != confirm or not username.strip() or len(password) < 8:
         return request.app.state.template_response(
@@ -73,7 +99,7 @@ def wizard_admin(request: Request, username: str = Form(...), password: str = Fo
     response = RedirectResponse(url="/wizard", status_code=303)
     response.set_cookie(
         key=SESSION_COOKIE, value=sign_session(username.strip()),
-        max_age=3600, httponly=True, samesite="lax",
+        max_age=3600, httponly=True, secure=True, samesite="lax",
     )
     return response
 

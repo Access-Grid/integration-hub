@@ -49,18 +49,21 @@ def run(host: str | None, port: int | None) -> None:
     """Run the server in the foreground."""
     from .config import get_settings
     from .observability import init_sentry
+    from .tls import ensure_cert
 
     init_sentry()
     settings = get_settings()
     bind_host = host or settings.host
     bind_port = port or settings.port
+    cert_path, key_path = ensure_cert()
 
     print(f"AccessGrid Sync v{__version__}")
     print(f"DB: {settings.db_path}")
+    print(f"TLS cert: {cert_path}")
     print("Web UI URLs:")
-    print(f"  http://localhost:{bind_port}")
+    print(f"  https://localhost:{bind_port}")
     for ip in _local_ips():
-        print(f"  http://{ip}:{bind_port}")
+        print(f"  https://{ip}:{bind_port}")
     print()
 
     uvicorn.run(
@@ -69,6 +72,8 @@ def run(host: str | None, port: int | None) -> None:
         host=bind_host,
         port=bind_port,
         log_level=settings.log_level.lower(),
+        ssl_certfile=str(cert_path),
+        ssl_keyfile=str(key_path),
     )
 
 

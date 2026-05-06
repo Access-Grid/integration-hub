@@ -26,6 +26,7 @@
   "wizard.title": "Setup",
   "wizard.step1.title": "Create administrator account",
   "wizard.step1.subtitle": "This account is the only way to manage the sync tool. There is no password recovery — pick something you can remember or store it in a password manager.",
+  "wizard.step1.license_key": "License key",
   "wizard.step2.title": "AccessGrid credentials",
   "wizard.step2.subtitle": "Enter your AccessGrid account ID and API secret. We'll test the connection before saving.",
   "wizard.step2.account_id": "Account ID",

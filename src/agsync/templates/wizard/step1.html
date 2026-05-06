@@ -6,9 +6,10 @@
   <p class="muted">{{ t('wizard.step1.subtitle') }}</p>
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
   <form action="/wizard/admin" method="post">
-    <label>{{ t('common.username') }}<input name="username" required autofocus></label>
-    <label>{{ t('common.password') }}<input name="password" type="password" required minlength="8"></label>
-    <label>{{ t('common.password') }}<input name="confirm" type="password" required minlength="8"></label>
+    <label>{{ t('wizard.step1.license_key') }}<input name="license_key" required autofocus autocomplete="off"></label>
+    <label>{{ t('common.username') }}<input name="username" required autocomplete="username"></label>
+    <label>{{ t('common.password') }}<input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+    <label>{{ t('common.password') }}<input name="confirm" type="password" required minlength="8" autocomplete="new-password"></label>
     <button type="submit">{{ t('common.next') }}</button>
   </form>
 </div>
