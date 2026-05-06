@@ -135,3 +135,15 @@ table.logs tr.lvl-debug td { color: var(--muted); }
 
 form.inline { display: inline; }
 .link-btn { color: inherit; }
+
+table.creds { width: 100%; border-collapse: collapse; }
+table.creds th { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; font-weight: 500; }
+table.creds td { padding: 0.75rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.install-cell { display: flex; align-items: center; gap: 0.75rem; }
+.install-cell .qr { flex: 0 0 auto; }
+.install-cell .qr svg { display: block; width: 88px; height: 88px; }
+.install-cell .install-link { display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+.install-cell .install-link a { color: var(--accent); text-decoration: none; word-break: break-all; font-size: 0.85rem; }
+.install-cell .install-link a:hover { text-decoration: underline; }
+.copy-btn { align-self: flex-start; padding: 0.25rem 0.6rem; background: #e5e7eb; color: var(--fg); font-size: 0.8rem; }
+.inline-err { display: inline-block; margin: 0; }

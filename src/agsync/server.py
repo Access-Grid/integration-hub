@@ -5,6 +5,7 @@ Routes:
   /login, /logout
   /wizard/*       -> 5-step setup
   /status         -> sync status + manual trigger
+  /credentials    -> issued cards with install URL + QR code
   /logs           -> log viewer with filters
   /settings       -> connection edit + about
   /api/test-ag    -> wizard ajax connection test
@@ -29,6 +30,7 @@ from .i18n import default_locale, get_translator
 from .logs import install_handler as install_log_handler
 from .routes import api, wizard
 from .routes import auth as auth_routes
+from .routes import credentials as credentials_route
 from .routes import logs as logs_route
 from .routes import settings as settings_route
 from .routes import status as status_route
@@ -93,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_routes.router)
     app.include_router(wizard.router)
     app.include_router(status_route.router)
+    app.include_router(credentials_route.router)
     app.include_router(logs_route.router)
     app.include_router(settings_route.router)
     app.include_router(api.router)
