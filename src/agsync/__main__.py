@@ -36,10 +36,16 @@ def _local_ips() -> list[str]:
     return sorted(out)
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="agsync")
-def cli() -> None:
-    """AccessGrid Sync — bridges PACS to AccessGrid."""
+@click.pass_context
+def cli(ctx: click.Context) -> None:
+    """AccessGrid Sync — bridges PACS to AccessGrid.
+
+    With no subcommand, starts the server (so the .exe is double-clickable).
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(run, host=None, port=None)
 
 
 @cli.command()

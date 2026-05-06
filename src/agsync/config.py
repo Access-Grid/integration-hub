@@ -10,12 +10,40 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _default_db_path() -> Path:
+def _data_dir() -> Path:
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     else:
         base = Path.home() / ".local" / "share"
-    return base / "AGSyncTool" / "app.db"
+    return base / "AGSyncTool"
+
+
+def _default_db_path() -> Path:
+    return _data_dir() / "app.db"
+
+
+def _load_or_create_encryption_key() -> str:
+    """Generate and persist a Fernet key on first run if no env var is set.
+
+    Lets a freshly-installed exe start with zero configuration. The key
+    is written to %LOCALAPPDATA%\\AGSyncTool\\encryption.key (or the
+    XDG-equivalent on POSIX) so secrets at rest survive restarts.
+    """
+    from cryptography.fernet import Fernet
+
+    key_file = _data_dir() / "encryption.key"
+    if key_file.exists():
+        existing = key_file.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    new_key = Fernet.generate_key().decode()
+    key_file.write_text(new_key, encoding="utf-8")
+    try:
+        os.chmod(key_file, 0o600)
+    except OSError:
+        pass
+    return new_key
 
 
 class Settings(BaseSettings):
@@ -27,8 +55,8 @@ class Settings(BaseSettings):
     )
 
     encryption_key: str = Field(
-        ...,
-        description="Fernet key used to encrypt secrets at rest. Required.",
+        default_factory=_load_or_create_encryption_key,
+        description="Fernet key used to encrypt secrets at rest. Auto-generated on first run.",
     )
     host: str = "0.0.0.0"
     port: int = 5355
