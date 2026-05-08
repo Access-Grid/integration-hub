@@ -6,11 +6,29 @@
   {% if ok == 'site_code' %}
     <div class="test-result ok">{{ t('settings.site_code.saved') }}</div>
   {% endif %}
+  {% if ok == 'dedupe' %}
+    <div class="test-result ok">{{ t('settings.dedupe.saved') }}</div>
+  {% endif %}
+  {% if ok == 'extra_metadata' %}
+    <div class="test-result ok">{{ t('settings.extra_metadata.saved') }}</div>
+  {% endif %}
   {% if err == 'site_code' %}
     <div class="err">{{ t('settings.site_code.invalid') }}</div>
   {% endif %}
   {% if err == 'not_configured' %}
     <div class="err">{{ t('settings.site_code.not_configured') }}</div>
+  {% endif %}
+  {% if err == 'meta_empty_key' %}
+    <div class="err">{{ t('settings.extra_metadata.err.empty_key') }}</div>
+  {% endif %}
+  {% if err == 'meta_reserved' %}
+    <div class="err">{{ t('settings.extra_metadata.err.reserved', key=err_key) }}</div>
+  {% endif %}
+  {% if err == 'meta_bad_chars' %}
+    <div class="err">{{ t('settings.extra_metadata.err.bad_chars', key=err_key) }}</div>
+  {% endif %}
+  {% if err == 'meta_too_long' %}
+    <div class="err">{{ t('settings.extra_metadata.err.too_long', key=err_key) }}</div>
   {% endif %}
 
   <h2>{{ t('settings.connections') }}</h2>
@@ -26,7 +44,77 @@
       </form>
     </dd>
     <dt>PACS</dt><dd>{{ pacs_vendor or '—' }}</dd>
+    <dt>{{ t('settings.dedupe') }}</dt>
+    <dd>
+      <form action="/settings/dedupe" method="post" class="inline-form">
+        <label>
+          <input type="checkbox" name="enabled" value="1"
+                 {% if ag_dedupe %}checked{% endif %}
+                 onchange="this.form.submit()">
+          {{ t('settings.dedupe.label') }}
+        </label>
+        <noscript><button type="submit">{{ t('common.save') }}</button></noscript>
+      </form>
+      <small class="muted">{{ t('settings.dedupe.help') }}</small>
+    </dd>
   </dl>
+
+  <h2>{{ t('settings.extra_metadata') }}</h2>
+  <p class="muted">{{ t('settings.extra_metadata.help') }}</p>
+  <p class="muted"><small>
+    {{ t('settings.extra_metadata.reserved_note') }}
+    <code>{{ ag_reserved_keys | join('</code>, <code>') | safe }}</code>
+  </small></p>
+  <form action="/settings/extra-metadata" method="post" id="extra-meta-form">
+    <table class="kv-edit" id="extra-meta-rows">
+      <thead>
+        <tr>
+          <th>{{ t('settings.extra_metadata.col_key') }}</th>
+          <th>{{ t('settings.extra_metadata.col_value') }}</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for key, value in ag_extra_metadata %}
+        <tr class="meta-row">
+          <td><input name="meta_key" value="{{ key }}" maxlength="64"></td>
+          <td><input name="meta_value" value="{{ value }}" maxlength="255"></td>
+          <td><button type="button" class="meta-remove" aria-label="remove">×</button></td>
+        </tr>
+        {% endfor %}
+        <tr class="meta-row">
+          <td><input name="meta_key" value="" maxlength="64"></td>
+          <td><input name="meta_value" value="" maxlength="255"></td>
+          <td><button type="button" class="meta-remove" aria-label="remove">×</button></td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" id="meta-add-row">+ {{ t('settings.extra_metadata.add_row') }}</button>
+    <button type="submit">{{ t('common.save') }}</button>
+  </form>
+  <script>
+    (function () {
+      const tbody = document.querySelector('#extra-meta-rows tbody');
+      const addBtn = document.getElementById('meta-add-row');
+      function makeRow() {
+        const tr = document.createElement('tr');
+        tr.className = 'meta-row';
+        tr.innerHTML =
+          '<td><input name="meta_key" value="" maxlength="64"></td>' +
+          '<td><input name="meta_value" value="" maxlength="255"></td>' +
+          '<td><button type="button" class="meta-remove" aria-label="remove">×</button></td>';
+        return tr;
+      }
+      addBtn.addEventListener('click', () => tbody.appendChild(makeRow()));
+      tbody.addEventListener('click', (e) => {
+        if (e.target && e.target.classList.contains('meta-remove')) {
+          const row = e.target.closest('tr.meta-row');
+          if (row) row.remove();
+          if (!tbody.querySelector('tr.meta-row')) tbody.appendChild(makeRow());
+        }
+      });
+    })();
+  </script>
 
   <h2>{{ t('settings.about') }}</h2>
   <dl class="kv">

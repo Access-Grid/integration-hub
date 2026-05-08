@@ -34,7 +34,7 @@ def run(snapshot: Snapshot, pacs: PacsAdapter) -> int:
     logger.info("Phase 4: Checking AG → PACS status changes")
 
     for tracked in tracking.all_tracked():
-        if tracked.status == "deleted" or not tracked.ag_card_id:
+        if tracked.status in ("deleted", "deduped") or not tracked.ag_card_id:
             continue
 
         ag_card = snapshot.ag_card_by_id.get(tracked.ag_card_id)

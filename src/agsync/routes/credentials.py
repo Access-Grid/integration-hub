@@ -20,7 +20,10 @@ router = APIRouter()
 
 @router.get("/credentials")
 def credentials_page(request: Request, _user=Depends(require_admin)):
-    rows = [c for c in tracking.all_tracked() if c.ag_card_id]
+    rows = [
+        c for c in tracking.all_tracked()
+        if c.ag_card_id and c.status != "deduped"
+    ]
     return request.app.state.template_response(
         request, "credentials.html", {"credentials": rows},
     )

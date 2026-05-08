@@ -24,6 +24,11 @@ class Snapshot:
     ag_cards_by_employee: dict[str, list[Any]] = field(default_factory=dict)
     ag_cards_by_token: dict[tuple[str, str], Any] = field(default_factory=dict)
     ag_card_by_id: dict[str, Any] = field(default_factory=dict)
+    # Indexed by (site_code, card_number) — both stored as strings so callers
+    # don't have to worry about int-vs-str coercion at lookup time. Populated
+    # from card metadata so dedupe sees only cards we (or sister instances)
+    # have tagged with this convention.
+    ag_cards_by_site_card: dict[tuple[str, str], Any] = field(default_factory=dict)
 
     @property
     def total_credentials(self) -> int:
@@ -75,17 +80,23 @@ def build_snapshot(
 
     for card in cards:
         snap.ag_card_by_id[card.id] = card
+        metadata = getattr(card, "metadata", None) or {}
         emp = getattr(card, "employee_id", None)
         if emp:
             snap.ag_cards_by_employee.setdefault(emp, []).append(card)
-            metadata = getattr(card, "metadata", None) or {}
             token_id = metadata.get("pacs_credential_id") or metadata.get("avigilon_token_id")
             if token_id:
                 snap.ag_cards_by_token[(emp, token_id)] = card
 
+        site = metadata.get("site_code")
+        card_no = metadata.get("card_number")
+        if site is not None and card_no is not None:
+            snap.ag_cards_by_site_card[(str(site), str(card_no))] = card
+
     logger.info(
-        "Snapshot complete: %d people, %d credentials, %d AG cards (%d token-matched)",
+        "Snapshot complete: %d people, %d credentials, %d AG cards "
+        "(%d token-matched, %d site+card-matched)",
         len(snap.people), snap.total_credentials, len(snap.ag_card_by_id),
-        len(snap.ag_cards_by_token),
+        len(snap.ag_cards_by_token), len(snap.ag_cards_by_site_card),
     )
     return snap

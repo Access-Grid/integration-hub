@@ -26,7 +26,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
     logger.info("Phase 2: Checking PACS → AG status changes")
 
     for tracked in tracking.all_tracked():
-        if tracked.status in ("deleted", "pending"):
+        if tracked.status in ("deleted", "pending", "deduped"):
             continue
         if not tracked.ag_card_id:
             continue

@@ -52,12 +52,22 @@ def _get_encrypted_json(key: str) -> dict[str, Any] | None:
 class AccessGridConfig:
     KEY = "accessgrid"
 
+    # Metadata keys the sync engine owns and writes itself; users may not
+    # set them as extra metadata. Phase 1/5 layer these on top of the
+    # user-supplied extras anyway, but we reject them at save time so the
+    # operator gets immediate feedback instead of a silent override.
+    RESERVED_METADATA_KEYS = frozenset(
+        {"pacs_credential_id", "site_code", "card_number"}
+    )
+
     @staticmethod
     def save(
         account_id: str,
         api_secret: str,
         template_id: str,
         site_code: str = "",
+        dedupe_by_site_card: bool = False,
+        extra_metadata: dict[str, str] | None = None,
     ) -> None:
         _set_encrypted_json(
             AccessGridConfig.KEY,
@@ -66,11 +76,13 @@ class AccessGridConfig:
                 "api_secret": api_secret,
                 "template_id": template_id,
                 "site_code": site_code,
+                "dedupe_by_site_card": bool(dedupe_by_site_card),
+                "extra_metadata": dict(extra_metadata or {}),
             },
         )
 
     @staticmethod
-    def load() -> dict[str, str] | None:
+    def load() -> dict[str, Any] | None:
         return _get_encrypted_json(AccessGridConfig.KEY)
 
     @staticmethod
@@ -80,6 +92,26 @@ class AccessGridConfig:
         if not existing:
             return False
         existing["site_code"] = site_code
+        _set_encrypted_json(AccessGridConfig.KEY, existing)
+        return True
+
+    @staticmethod
+    def update_dedupe(enabled: bool) -> bool:
+        """Update only the dedupe_by_site_card flag. Returns True on success."""
+        existing = _get_encrypted_json(AccessGridConfig.KEY)
+        if not existing:
+            return False
+        existing["dedupe_by_site_card"] = bool(enabled)
+        _set_encrypted_json(AccessGridConfig.KEY, existing)
+        return True
+
+    @staticmethod
+    def update_extra_metadata(pairs: dict[str, str]) -> bool:
+        """Replace the extra_metadata dict. Returns True on success."""
+        existing = _get_encrypted_json(AccessGridConfig.KEY)
+        if not existing:
+            return False
+        existing["extra_metadata"] = dict(pairs)
         _set_encrypted_json(AccessGridConfig.KEY, existing)
         return True
 

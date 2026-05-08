@@ -210,3 +210,35 @@ def update_last_known_ag_state(
         """,
         (ag_state, now, pacs_person_id, pacs_credential_id),
     )
+
+
+def mark_deduped(
+    *,
+    pacs_person_id: str,
+    pacs_credential_id: str,
+    existing_ag_card_id: str | None,
+    full_name: str,
+) -> None:
+    """Record a row for a credential we declined to provision because another
+    AG card with the same (site_code, card_number) already exists. We point
+    ag_card_id at the foreign card so the UI can link to it, but mark status
+    as 'deduped' so phase 3 / 6 know not to mutate it."""
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    get_db().execute(
+        """
+        INSERT INTO ag_credentials (
+            pacs_person_id, pacs_credential_id, ag_card_id, full_name, employee_id,
+            status, last_synced_email, last_synced_phone, last_synced_full_name,
+            last_synced_title, last_known_ag_state, retry_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'deduped', '', '', ?, '', '', 0, ?, ?)
+        ON CONFLICT(pacs_person_id, pacs_credential_id) DO UPDATE SET
+            ag_card_id  = excluded.ag_card_id,
+            status      = 'deduped',
+            sync_error  = NULL,
+            updated_at  = excluded.updated_at
+        """,
+        (
+            pacs_person_id, pacs_credential_id, existing_ag_card_id,
+            full_name, pacs_person_id, full_name, now, now,
+        ),
+    )

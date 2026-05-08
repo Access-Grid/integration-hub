@@ -21,7 +21,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
     logger.info("Phase 6: Checking for field changes")
 
     for tracked in tracking.all_tracked():
-        if tracked.status == "deleted" or not tracked.ag_card_id:
+        if tracked.status in ("deleted", "deduped") or not tracked.ag_card_id:
             continue
         person = snapshot.people.get(tracked.pacs_person_id)
         if person is None:

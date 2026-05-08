@@ -23,10 +23,21 @@ from ..snapshot import Snapshot
 logger = logging.getLogger(__name__)
 
 
-def run(snapshot: Snapshot, ag: AccessGrid, template_id: str, site_code: str = "") -> int:
+def run(
+    snapshot: Snapshot,
+    ag: AccessGrid,
+    template_id: str,
+    site_code: str = "",
+    dedupe_by_site_card: bool = False,
+    extra_metadata: dict | None = None,
+) -> int:
     provisioned = 0
     skipped = 0
-    logger.info("Phase 1: Checking for new credentials to provision")
+    deduped = 0
+    logger.info(
+        "Phase 1: Checking for new credentials to provision (dedupe=%s)",
+        "on" if dedupe_by_site_card else "off",
+    )
 
     for pid, creds in snapshot.credentials_by_person.items():
         person = snapshot.people.get(pid)
@@ -39,7 +50,9 @@ def run(snapshot: Snapshot, ag: AccessGrid, template_id: str, site_code: str = "
 
             existing = tracking.get(pid, cred.id)
             if existing and existing.ag_card_id:
-                # Already provisioned — keep tracking row fresh.
+                # Already provisioned (or already deduped) — keep tracking row fresh.
+                if existing.status == "deduped":
+                    continue
                 ag_card = snapshot.ag_cards_by_token.get((pid, cred.id))
                 if ag_card is None:
                     ag_card = snapshot.ag_card_by_id.get(existing.ag_card_id)
@@ -57,9 +70,43 @@ def run(snapshot: Snapshot, ag: AccessGrid, template_id: str, site_code: str = "
                 skipped += 1
                 continue
 
+            # Multi-instance dedupe: if another sync tool (or a prior cycle on
+            # this one) has already provisioned an AG card for this physical
+            # credential, don't double-provision.
+            if (
+                dedupe_by_site_card
+                and site_code
+                and cred.card_number
+            ):
+                key = (str(site_code), str(cred.card_number))
+                hit = snapshot.ag_cards_by_site_card.get(key)
+                if hit is not None:
+                    existing_id = getattr(hit, "id", None)
+                    logger.info(
+                        "  Dedupe: AG card %s already exists for site=%s card=%s — skipping %s (%s)",
+                        existing_id, site_code, cred.card_number, person.full_name, pid,
+                    )
+                    tracking.mark_deduped(
+                        pacs_person_id=pid,
+                        pacs_credential_id=cred.id,
+                        existing_ag_card_id=existing_id,
+                        full_name=person.full_name,
+                    )
+                    deduped += 1
+                    continue
+
             now = datetime.now(UTC)
             start_date = (cred.activate_date or now).isoformat()
             expiration_date = (cred.deactivate_date or (now + timedelta(days=365))).isoformat()
+
+            # Start from the user-configured extras, then layer the
+            # sync-managed keys on top so they always win the merge.
+            metadata: dict = dict(extra_metadata or {})
+            metadata["pacs_credential_id"] = cred.id
+            if site_code:
+                metadata["site_code"] = site_code
+            if cred.card_number:
+                metadata["card_number"] = str(cred.card_number)
 
             params: dict = {
                 "card_template_id": template_id,
@@ -67,7 +114,7 @@ def run(snapshot: Snapshot, ag: AccessGrid, template_id: str, site_code: str = "
                 "full_name": person.full_name,
                 "start_date": start_date,
                 "expiration_date": expiration_date,
-                "metadata": {"pacs_credential_id": cred.id},
+                "metadata": metadata,
             }
             if site_code and site_code.isdigit():
                 params["site_code"] = int(site_code)
@@ -122,5 +169,8 @@ def run(snapshot: Snapshot, ag: AccessGrid, template_id: str, site_code: str = "
                 logger.error("  Unexpected error provisioning %s: %s", person.full_name, e)
                 tracking.record_error(pid, cred.id, f"{type(e).__name__}: {e}")
 
-    logger.info("Phase 1 done: %d provisioned, %d skipped", provisioned, skipped)
+    logger.info(
+        "Phase 1 done: %d provisioned, %d skipped, %d deduped",
+        provisioned, skipped, deduped,
+    )
     return provisioned

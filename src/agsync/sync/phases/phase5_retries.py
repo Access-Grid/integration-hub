@@ -21,7 +21,14 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 
-def run(snapshot: Snapshot, ag: AccessGrid, template_id: str, site_code: str = "") -> int:
+def run(
+    snapshot: Snapshot,
+    ag: AccessGrid,
+    template_id: str,
+    site_code: str = "",
+    dedupe_by_site_card: bool = False,
+    extra_metadata: dict | None = None,
+) -> int:
     failed = tracking.failed_records(MAX_RETRIES)
     if not failed:
         logger.debug("Phase 5: No failed records to retry")
@@ -47,14 +54,43 @@ def run(snapshot: Snapshot, ag: AccessGrid, template_id: str, site_code: str = "
             )
             continue
 
+        if (
+            dedupe_by_site_card
+            and site_code
+            and cred.card_number
+        ):
+            hit = snapshot.ag_cards_by_site_card.get(
+                (str(site_code), str(cred.card_number))
+            )
+            if hit is not None:
+                existing_id = getattr(hit, "id", None)
+                logger.info(
+                    "  Dedupe: AG card %s already exists for site=%s card=%s — marking %s deduped",
+                    existing_id, site_code, cred.card_number, person.full_name,
+                )
+                tracking.mark_deduped(
+                    pacs_person_id=tracked.pacs_person_id,
+                    pacs_credential_id=tracked.pacs_credential_id,
+                    existing_ag_card_id=existing_id,
+                    full_name=person.full_name,
+                )
+                continue
+
         now = datetime.now(UTC)
+        metadata: dict = dict(extra_metadata or {})
+        metadata["pacs_credential_id"] = cred.id
+        if site_code:
+            metadata["site_code"] = site_code
+        if cred.card_number:
+            metadata["card_number"] = str(cred.card_number)
+
         params: dict = {
             "card_template_id": template_id,
             "employee_id": tracked.pacs_person_id,
             "full_name": person.full_name,
             "start_date": (cred.activate_date or now).isoformat(),
             "expiration_date": (cred.deactivate_date or (now + timedelta(days=365))).isoformat(),
-            "metadata": {"pacs_credential_id": cred.id},
+            "metadata": metadata,
         }
         if site_code and site_code.isdigit():
             params["site_code"] = int(site_code)
