@@ -8,6 +8,7 @@ Routes:
   /credentials    -> issued cards with install URL + QR code
   /logs           -> log viewer with filters
   /settings       -> connection edit + about
+  /reset          -> confirm page (GET) + factory reset (POST), then /wizard
   /api/test-ag    -> wizard ajax connection test
   /api/test-pacs  -> wizard ajax connection test
   /api/health     -> public, used by an external HC if anyone wires one
@@ -19,12 +20,14 @@ import logging
 from contextlib import asynccontextmanager
 from importlib.resources import files
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .auth import admin_exists
+from .auth import admin_exists, current_user
 from .db import init_db
 from .i18n import default_locale, get_translator
 from .logs import install_handler as install_log_handler
@@ -32,6 +35,7 @@ from .routes import api, wizard
 from .routes import auth as auth_routes
 from .routes import credentials as credentials_route
 from .routes import logs as logs_route
+from .routes import reset as reset_route
 from .routes import settings as settings_route
 from .routes import status as status_route
 from .settings_store import is_configured
@@ -86,10 +90,26 @@ def create_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=_static_dir()), name="static")
 
+    @app.exception_handler(StarletteHTTPException)
+    async def auth_redirect(request: Request, exc: StarletteHTTPException):
+        # require_admin raises 401 with a Location header when there's no
+        # valid session. A 401 isn't a redirect, so turn it into one so an
+        # unauthenticated visit to any protected page lands on /login.
+        location = (exc.headers or {}).get("Location")
+        if exc.status_code == 401 and location:
+            if request.headers.get("HX-Request") == "true":
+                # Let HTMX redirect the whole page instead of swapping the
+                # login form into a polled fragment.
+                return Response(status_code=200, headers={"HX-Redirect": location})
+            return RedirectResponse(url=location, status_code=303)
+        return await http_exception_handler(request, exc)
+
     @app.get("/")
     def index(request: Request):
         if not admin_exists() or not is_configured():
             return RedirectResponse(url="/wizard", status_code=303)
+        if current_user(request) is None:
+            return RedirectResponse(url="/login", status_code=303)
         return RedirectResponse(url="/status", status_code=303)
 
     app.include_router(auth_routes.router)
@@ -98,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(credentials_route.router)
     app.include_router(logs_route.router)
     app.include_router(settings_route.router)
+    app.include_router(reset_route.router)
     app.include_router(api.router)
 
     return app

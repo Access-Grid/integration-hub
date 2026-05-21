@@ -99,5 +99,12 @@
   "settings.about.web_ui_urls": "URLs de interfaz web",
   "settings.about.db_path": "Ruta de base de datos",
   "test.ok": "Conexión exitosa.",
-  "test.failed": "Falló la conexión: {error}"
+  "test.failed": "Falló la conexión: {error}",
+  "reset.title": "Restablecer el sistema",
+  "reset.warning": "Esto borra todo de forma permanente y devuelve la herramienta a una configuración nueva. No se puede deshacer.",
+  "reset.item.admin": "La cuenta de administrador",
+  "reset.item.config": "Configuración de conexión de AccessGrid y PACS",
+  "reset.item.tracking": "Historial de sincronización y seguimiento de credenciales emitidas",
+  "reset.item.logs": "Todas las entradas de registro",
+  "reset.confirm": "Restablecer todo"
 }

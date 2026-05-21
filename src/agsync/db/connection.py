@@ -54,6 +54,24 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+def wipe_all_data() -> None:
+    """Delete every row from all data tables, returning the install to a
+    fresh, pre-wizard state. The schema and the applied-migrations record
+    are preserved so the next request doesn't re-run migrations. Used by
+    the /reset endpoint.
+    """
+    conn = get_db()
+    tables = [
+        r["name"]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != '_migrations'"
+        )
+    ]
+    for name in tables:
+        conn.execute(f'DELETE FROM "{name}"')
+
+
 def execute(sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
     return list(get_db().execute(sql, params))
 
