@@ -92,7 +92,6 @@ button, .button {
   text-decoration: none;
 }
 button[type="button"] { background: #e5e7eb; color: var(--fg); }
-button.danger, .button.danger { background: var(--err-fg); color: white; }
 button:hover, .button:hover { opacity: 0.9; }
 
 .row { display: flex; gap: 0.75rem; }

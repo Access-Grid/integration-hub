@@ -99,12 +99,5 @@
   "settings.about.web_ui_urls": "Web UI URLs",
   "settings.about.db_path": "Database path",
   "test.ok": "Connection successful.",
-  "test.failed": "Connection failed: {error}",
-  "reset.title": "Reset the system",
-  "reset.warning": "This permanently erases everything and returns the tool to a fresh setup. It cannot be undone.",
-  "reset.item.admin": "The administrator account",
-  "reset.item.config": "AccessGrid and PACS connection settings",
-  "reset.item.tracking": "Sync history and issued-credential tracking",
-  "reset.item.logs": "All log entries",
-  "reset.confirm": "Reset everything"
+  "test.failed": "Connection failed: {error}"
 }

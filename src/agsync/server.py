@@ -8,7 +8,6 @@ Routes:
   /credentials    -> issued cards with install URL + QR code
   /logs           -> log viewer with filters
   /settings       -> connection edit + about
-  /reset          -> confirm page (GET) + factory reset (POST), then /wizard
   /api/test-ag    -> wizard ajax connection test
   /api/test-pacs  -> wizard ajax connection test
   /api/health     -> public, used by an external HC if anyone wires one
@@ -35,7 +34,6 @@ from .routes import api, wizard
 from .routes import auth as auth_routes
 from .routes import credentials as credentials_route
 from .routes import logs as logs_route
-from .routes import reset as reset_route
 from .routes import settings as settings_route
 from .routes import status as status_route
 from .settings_store import is_configured
@@ -118,7 +116,6 @@ def create_app() -> FastAPI:
     app.include_router(credentials_route.router)
     app.include_router(logs_route.router)
     app.include_router(settings_route.router)
-    app.include_router(reset_route.router)
     app.include_router(api.router)
 
     return app
