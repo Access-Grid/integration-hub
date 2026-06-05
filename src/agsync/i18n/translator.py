@@ -38,6 +38,11 @@ def _adapter_strings(locale: str) -> list[dict[str, str]]:
     except ImportError:
         pass
     try:
+        from agsync.lib.pacs.avigilon_alta.adapter import HELP_TEXT as ALTA_HELP
+        out.append(ALTA_HELP.get(locale, ALTA_HELP.get(DEFAULT, {})))
+    except ImportError:
+        pass
+    try:
         from agsync.lib.pacs.lenel.adapter import HELP_TEXT as LENEL_HELP
         out.append(LENEL_HELP.get(locale, LENEL_HELP.get(DEFAULT, {})))
     except ImportError:

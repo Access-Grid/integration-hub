@@ -50,6 +50,10 @@ class Credential:
     id: str
     person_id: str
     card_number: str = ""
+    # Per-credential site/facility code. When set, phase 1 prefers this over
+    # the global site_code in settings (used by Avigilon Alta, whose facility
+    # code is entered per-credential rather than configured once).
+    site_code: str = ""
     status: CredentialStatus = CredentialStatus.UNKNOWN
     activate_date: datetime | None = None
     deactivate_date: datetime | None = None
