@@ -1,7 +1,7 @@
 name: Release
 
-# Triggered by pushing a tag like v0.1.0. Builds a Windows .exe with
-# PyInstaller and attaches it to a GitHub Release.
+# Triggered by pushing a tag like v0.1.0. Builds a Windows .exe and a
+# macOS binary with PyInstaller and attaches them to a GitHub Release.
 on:
   push:
     tags:
@@ -80,5 +80,80 @@ jobs:
         with:
           name: ${{ steps.rel.outputs.tag }}
           files: dist/agsync.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Smoke test (CLI imports)
+        env:
+          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'ZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXk=' }}
+        run: |
+          agsync --version
+          python -c "from agsync.server import create_app; create_app()"
+
+      - name: Build binary with PyInstaller
+        env:
+          AG_SYNC_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          pyinstaller \
+            --noconfirm \
+            --onefile \
+            --name agsync \
+            --collect-all agsync \
+            --collect-all accessgrid \
+            --hidden-import agsync.lib.pacs.avigilon \
+            --hidden-import agsync.lib.pacs.lenel \
+            --add-data "src/agsync/templates:agsync/templates" \
+            --add-data "src/agsync/static:agsync/static" \
+            --add-data "src/agsync/locales:agsync/locales" \
+            scripts/pyinstaller_entry.py
+
+      - name: Verify built binary
+        run: |
+          ./dist/agsync --version
+
+      - name: Compute release name
+        id: rel
+        run: |
+          tag="${{ github.ref_name }}"
+          case "$tag" in
+            v*) ;;
+            *) tag="v0.0.0-${{ github.run_number }}" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Package binary
+        run: |
+          arch=$(uname -m)
+          cd dist
+          zip -9 "agsync-macos-$arch.zip" agsync
+          echo "ARCH=$arch" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agsync-macos-${{ env.ARCH }}-${{ steps.rel.outputs.tag }}
+          path: dist/agsync-macos-${{ env.ARCH }}.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.rel.outputs.tag }}
+          files: dist/agsync-macos-${{ env.ARCH }}.zip
           generate_release_notes: true
           fail_on_unmatched_files: true
