@@ -28,4 +28,9 @@ jobs:
         run: |
           agsync --version
           python -c "from agsync.server import create_app; create_app()"
-          python -c "from agsync.lib.pacs import available_pacs; assert {d.vendor for d in available_pacs()} == {'avigilon','lenel'}"
+          python -c "from agsync.lib.pacs import available_pacs; assert {d.vendor for d in available_pacs()} == {'avigilon','avigilon_alta','lenel'}"
+
+      - name: Tests
+        env:
+          AG_SYNC_ENCRYPTION_KEY: ZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXk=
+        run: pytest -q
