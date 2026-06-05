@@ -48,6 +48,9 @@ def run(
                 skipped += 1
                 continue
 
+            # Per-credential site code (Alta) wins over the global setting.
+            eff_site_code = cred.site_code or site_code
+
             existing = tracking.get(pid, cred.id)
             if existing and existing.ag_card_id:
                 # Already provisioned (or already deduped) — keep tracking row fresh.
@@ -75,16 +78,16 @@ def run(
             # credential, don't double-provision.
             if (
                 dedupe_by_site_card
-                and site_code
+                and eff_site_code
                 and cred.card_number
             ):
-                key = (str(site_code), str(cred.card_number))
+                key = (str(eff_site_code), str(cred.card_number))
                 hit = snapshot.ag_cards_by_site_card.get(key)
                 if hit is not None:
                     existing_id = getattr(hit, "id", None)
                     logger.info(
                         "  Dedupe: AG card %s already exists for site=%s card=%s — skipping %s (%s)",
-                        existing_id, site_code, cred.card_number, person.full_name, pid,
+                        existing_id, eff_site_code, cred.card_number, person.full_name, pid,
                     )
                     tracking.mark_deduped(
                         pacs_person_id=pid,
@@ -103,8 +106,8 @@ def run(
             # sync-managed keys on top so they always win the merge.
             metadata: dict = dict(extra_metadata or {})
             metadata["pacs_credential_id"] = cred.id
-            if site_code:
-                metadata["site_code"] = site_code
+            if eff_site_code:
+                metadata["site_code"] = eff_site_code
             if cred.card_number:
                 metadata["card_number"] = str(cred.card_number)
 
@@ -116,8 +119,8 @@ def run(
                 "expiration_date": expiration_date,
                 "metadata": metadata,
             }
-            if site_code and site_code.isdigit():
-                params["site_code"] = int(site_code)
+            if eff_site_code and eff_site_code.isdigit():
+                params["site_code"] = int(eff_site_code)
             if person.email:
                 params["email"] = person.email
             if person.phone:

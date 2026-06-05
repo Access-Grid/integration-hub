@@ -54,19 +54,22 @@ def run(
             )
             continue
 
+        # Per-credential site code (Alta) wins over the global setting.
+        eff_site_code = cred.site_code or site_code
+
         if (
             dedupe_by_site_card
-            and site_code
+            and eff_site_code
             and cred.card_number
         ):
             hit = snapshot.ag_cards_by_site_card.get(
-                (str(site_code), str(cred.card_number))
+                (str(eff_site_code), str(cred.card_number))
             )
             if hit is not None:
                 existing_id = getattr(hit, "id", None)
                 logger.info(
                     "  Dedupe: AG card %s already exists for site=%s card=%s — marking %s deduped",
-                    existing_id, site_code, cred.card_number, person.full_name,
+                    existing_id, eff_site_code, cred.card_number, person.full_name,
                 )
                 tracking.mark_deduped(
                     pacs_person_id=tracked.pacs_person_id,
@@ -79,8 +82,8 @@ def run(
         now = datetime.now(UTC)
         metadata: dict = dict(extra_metadata or {})
         metadata["pacs_credential_id"] = cred.id
-        if site_code:
-            metadata["site_code"] = site_code
+        if eff_site_code:
+            metadata["site_code"] = eff_site_code
         if cred.card_number:
             metadata["card_number"] = str(cred.card_number)
 
@@ -92,8 +95,8 @@ def run(
             "expiration_date": (cred.deactivate_date or (now + timedelta(days=365))).isoformat(),
             "metadata": metadata,
         }
-        if site_code and site_code.isdigit():
-            params["site_code"] = int(site_code)
+        if eff_site_code and eff_site_code.isdigit():
+            params["site_code"] = int(eff_site_code)
         if person.email:
             params["email"] = person.email
         if person.phone:
