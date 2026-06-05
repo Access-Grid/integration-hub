@@ -42,4 +42,5 @@ def build_adapter(vendor: str, params: dict[str, Any]) -> PacsAdapter:
 # ---------------------------------------------------------------------------
 
 from . import avigilon as _avigilon  # noqa: E402, F401
+from . import avigilon_alta as _avigilon_alta  # noqa: E402, F401
 from . import lenel as _lenel  # noqa: E402, F401
