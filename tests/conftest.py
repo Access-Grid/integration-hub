@@ -93,28 +93,29 @@ def make_adapter():
 # These mirror the dict shape node_to_hash produces from Atrium's users.xml
 # and cards.xml (all attribute values are strings). The `number` on a card
 # is CDVI's encoded hex: high byte = site code, low two bytes = card number.
-# 0x45 = 69 (site code), 0xA455 = 42069 (card number).
+# 0x45 = 69 (site code), 0xA455 = 42069 (card number). The enrollment
+# trigger is the `[accessgrid...]` marker in the card's `name` (Display Name).
 
 
 @pytest.fixture
 def cdvi_user() -> dict:
-    """An enrolled Atrium user — custom field 'Uses AccessGrid' set."""
+    """An Atrium user as returned by users.xml."""
     return {
         "id": "5",
         "fn": "Amy",
         "ln": "Hyatt",
         "email": "amy@example.com",
         "en": "1",
-        "custom_large1": "yes",
     }
 
 
 @pytest.fixture
 def cdvi_card() -> dict:
-    """A card assigned to user 5, enabled, not lost/stolen."""
+    """A card assigned to user 5, enrolled via its Display Name marker."""
     return {
         "id": "77",
         "user_id": "5",
+        "name": "Amy iPhone [accessgrid-apple]",
         "number": "000000000045A455",
         "en": "1",
         "lost": "0",

@@ -13,11 +13,13 @@ into AccessGrid. Runs as a Windows Service on a NUC, exposes a web UI on port 53
 ### CDVI Atrium
 
 CDVI is a **read-only** integration: the sync tool never creates or
-modifies CDVI users or cards. A user is enrolled by opening them in the
-Atrium UI, expanding **Custom Fields**, and setting the **"Uses
-AccessGrid"** custom field to any value (e.g. `yes`). Every card assigned
-to that user is then synced — the card's encoded number is decoded into
-the AccessGrid site code (high byte) and card number (low two bytes).
+modifies CDVI users or cards. A **card** is enrolled by putting the
+marker `[accessgrid]` in its **Display Name** in the Atrium UI —
+optionally with a wallet hint, `[accessgrid-apple]` or
+`[accessgrid-android]`. Any surrounding label text is fine, e.g.
+`Amy iPhone [accessgrid-apple]`. The card's encoded number is decoded
+into the AccessGrid site code (high byte) and card number (low two
+bytes), and a pass is provisioned for the card's assigned user.
 Connection settings: controller URL, Atrium username, Atrium password.
 
 ## Quick start (development)

@@ -7,7 +7,11 @@ decrypt path, and Nokogiri-style XML→hash conversion.
 
 from __future__ import annotations
 
-from agsync.lib.pacs.cdvi.adapter import _decode_card_number
+from agsync.lib.pacs.cdvi.adapter import (
+    TRIGGER_PATTERN,
+    _decode_card_number,
+    _trigger_platform,
+)
 from agsync.lib.pacs.cdvi.client import (
     CdviClient,
     md5_password,
@@ -89,14 +93,14 @@ def test_decrypt_payload_passes_plain_xml_through():
 def test_parse_users_xml_produces_user_list():
     xml = (
         "<USERS>"
-        "<USER id='5' fn='Amy' ln='Hyatt' en='1' custom_large1='yes'/>"
+        "<USER id='5' fn='Amy' ln='Hyatt' en='1' email='amy@example.com'/>"
         "<USER id='6' fn='Bob' ln='Lee' en='1'/>"
         "</USERS>"
     )
     parsed = parse_xml_to_hash(xml)
     users = parsed["USERS"]["USER"]
     assert isinstance(users, list)
-    assert users[0] == {"id": "5", "fn": "Amy", "ln": "Hyatt", "en": "1", "custom_large1": "yes"}
+    assert users[0] == {"id": "5", "fn": "Amy", "ln": "Hyatt", "en": "1", "email": "amy@example.com"}
     assert users[1]["fn"] == "Bob"
 
 
@@ -132,3 +136,23 @@ def test_decode_card_number_short_hex():
 def test_decode_card_number_invalid():
     assert _decode_card_number("nope") == ("", "")
     assert _decode_card_number("") == ("", "")
+
+
+# --- display-name trigger pattern ----------------------------------------
+
+
+def test_trigger_pattern_matches_variants():
+    for name in ("[accessgrid]", "x [accessgrid-apple] y", "[ACCESSGRID-Android]"):
+        assert TRIGGER_PATTERN.search(name) is not None
+
+
+def test_trigger_pattern_rejects_non_matches():
+    for name in ("accessgrid", "[accessgrid-windows]", "[access grid]", ""):
+        assert TRIGGER_PATTERN.search(name) is None
+
+
+def test_trigger_platform_capture():
+    assert _trigger_platform("Amy [accessgrid-apple]") == "apple"
+    assert _trigger_platform("[accessgrid-ANDROID]") == "android"
+    assert _trigger_platform("[accessgrid]") is None
+    assert _trigger_platform("no marker") is None

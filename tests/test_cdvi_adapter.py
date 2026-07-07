@@ -101,45 +101,60 @@ def test_bad_card_number_decodes_to_empty(make_cdvi_adapter, cdvi_user, cdvi_car
     assert creds[0].card_number == ""
 
 
-# --- trigger gating on the custom field ----------------------------------
+# --- trigger gating on the card display name -----------------------------
 
 
-def test_trigger_active_when_custom_field_set(make_cdvi_adapter, cdvi_user, cdvi_card):
+def _cred_with_name(make_cdvi_adapter, cdvi_user, cdvi_card, name):
+    card = copy.deepcopy(cdvi_card)
+    if name is None:
+        card.pop("name", None)
+    else:
+        card["name"] = name
+    client = FakeCdviClient(users=[cdvi_user], cards=[card])
+    return _people_then_creds(make_cdvi_adapter(client))[0]
+
+
+def test_trigger_active_with_platform_marker(make_cdvi_adapter, cdvi_user, cdvi_card):
+    # Default fixture name is "Amy iPhone [accessgrid-apple]".
     client = FakeCdviClient(users=[cdvi_user], cards=[cdvi_card])
     creds = _people_then_creds(make_cdvi_adapter(client))
     assert creds[0].trigger_active is True
 
 
-def test_trigger_inactive_when_custom_field_empty(make_cdvi_adapter, cdvi_user, cdvi_card):
-    user = copy.deepcopy(cdvi_user)
-    user["custom_large1"] = ""
-    client = FakeCdviClient(users=[user], cards=[cdvi_card])
-    creds = _people_then_creds(make_cdvi_adapter(client))
-    assert creds[0].trigger_active is False
+def test_trigger_active_with_bare_marker(make_cdvi_adapter, cdvi_user, cdvi_card):
+    cred = _cred_with_name(make_cdvi_adapter, cdvi_user, cdvi_card, "Front Desk [accessgrid]")
+    assert cred.trigger_active is True
 
 
-def test_trigger_inactive_when_custom_field_absent(make_cdvi_adapter, cdvi_user, cdvi_card):
-    user = copy.deepcopy(cdvi_user)
-    user.pop("custom_large1")
-    client = FakeCdviClient(users=[user], cards=[cdvi_card])
-    creds = _people_then_creds(make_cdvi_adapter(client))
-    assert creds[0].trigger_active is False
+def test_trigger_active_android_marker(make_cdvi_adapter, cdvi_user, cdvi_card):
+    cred = _cred_with_name(make_cdvi_adapter, cdvi_user, cdvi_card, "[accessgrid-android]")
+    assert cred.trigger_active is True
 
 
-def test_trigger_inactive_for_explicit_negative(make_cdvi_adapter, cdvi_user, cdvi_card):
-    user = copy.deepcopy(cdvi_user)
-    user["custom_large1"] = "No"
-    client = FakeCdviClient(users=[user], cards=[cdvi_card])
-    creds = _people_then_creds(make_cdvi_adapter(client))
-    assert creds[0].trigger_active is False
+def test_trigger_case_insensitive(make_cdvi_adapter, cdvi_user, cdvi_card):
+    cred = _cred_with_name(make_cdvi_adapter, cdvi_user, cdvi_card, "Badge [AccessGrid-Apple]")
+    assert cred.trigger_active is True
 
 
-def test_trigger_reads_alternate_custom_field_key(make_cdvi_adapter, cdvi_card):
-    # Controller returns the slot under a different spelling.
-    user = {"id": "5", "fn": "Amy", "ln": "Hyatt", "en": "1", "customLarge1": "yes"}
-    client = FakeCdviClient(users=[user], cards=[cdvi_card])
-    creds = _people_then_creds(make_cdvi_adapter(client))
-    assert creds[0].trigger_active is True
+def test_trigger_inactive_without_marker(make_cdvi_adapter, cdvi_user, cdvi_card):
+    cred = _cred_with_name(make_cdvi_adapter, cdvi_user, cdvi_card, "Amy Hyatt badge")
+    assert cred.trigger_active is False
+
+
+def test_trigger_inactive_when_name_absent(make_cdvi_adapter, cdvi_user, cdvi_card):
+    cred = _cred_with_name(make_cdvi_adapter, cdvi_user, cdvi_card, None)
+    assert cred.trigger_active is False
+
+
+def test_trigger_inactive_for_unknown_platform(make_cdvi_adapter, cdvi_user, cdvi_card):
+    # Only apple/android (or bare) are valid; a stray suffix must not match.
+    cred = _cred_with_name(make_cdvi_adapter, cdvi_user, cdvi_card, "[accessgrid-windows]")
+    assert cred.trigger_active is False
+
+
+def test_trigger_inactive_for_marker_without_brackets(make_cdvi_adapter, cdvi_user, cdvi_card):
+    cred = _cred_with_name(make_cdvi_adapter, cdvi_user, cdvi_card, "accessgrid apple")
+    assert cred.trigger_active is False
 
 
 # --- read-only guarantees ------------------------------------------------

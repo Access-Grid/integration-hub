@@ -2,14 +2,13 @@
 
 What makes CDVI different from the other adapters:
 
-  * The enrollment trigger lives on the *user*, via the Atrium **Custom
-    Fields** feature. The operator adds a custom text field (in the
-    reference tenant it's labelled "Uses AccessGrid", backed by the
-    Atrium `customLarge1` slot) and sets it on the users they want
-    synced. Any non-empty / affirmative value opts that user in — every
-    card assigned to them is then synced. We cache each user's custom
-    field value during list_people() so list_credentials() can gate on
-    it without a second round-trip.
+  * The enrollment trigger lives on the *card*, in its **Display Name**.
+    A card is opted in when its display name contains the marker
+    `[accessgrid]`, optionally with a wallet platform hint —
+    `[accessgrid-apple]` or `[accessgrid-android]` (see TRIGGER_PATTERN).
+    The trigger is evaluated per card, so an operator can enroll one of a
+    user's cards without touching the others, and the marker doubles as a
+    human-readable label in the Atrium UI.
 
   * CDVI cards don't store facility code + card number as separate
     fields — they store a single encoded hex `number` (8-bit site code
@@ -20,7 +19,7 @@ What makes CDVI different from the other adapters:
 
   * Cards are linked to users by the card's `user_id`. We fetch the card
     table once and group it by user_id, mirroring how the Alta adapter
-    caches externalId.
+    caches its per-person state.
 
 This adapter is **read-only**: it never creates or updates CDVI users
 (a hard requirement) and does no card writeback either — status
@@ -30,6 +29,7 @@ writeback is advertised as unsupported.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable
 
 from ..base import (
@@ -43,21 +43,35 @@ from .client import CdviClient
 
 logger = logging.getLogger(__name__)
 
-# Candidate attribute keys, in priority order, for the Atrium custom-large-1
-# slot that carries the "Uses AccessGrid" flag. The exact key returned by
-# users.xml varies by controller/firmware, so we probe a few known spellings
-# and take the first present. Confirm against a live users.xml if enrollment
-# isn't picked up.
-CUSTOM_FIELD_KEYS = (
-    "custom_large1",
-    "customLarge1",
-    "cust_large1",
-    "custom_large_1",
-    "customlarge1",
-)
+# Enrollment marker in a card's Display Name. Matches `[accessgrid]` and,
+# optionally, a wallet platform hint: `[accessgrid-apple]` /
+# `[accessgrid-android]`. Case-insensitive; matched anywhere in the name so
+# operators can keep their own label text alongside it, e.g.
+# "Amy iPhone [accessgrid-apple]". The captured group is the platform (or
+# None when the bare marker is used).
+TRIGGER_PATTERN = re.compile(r"\[accessgrid(?:-(apple|android))?\]", re.IGNORECASE)
 
-# Values that explicitly mean "not enrolled" even though the field is set.
-NEGATIVE_VALUES = {"", "0", "no", "false", "n", "off", "none"}
+# Candidate attribute keys, in priority order, for a card's display name.
+# The exact key returned by cards.xml varies by controller/firmware, so we
+# probe a few known spellings and take the first present.
+CARD_NAME_KEYS = ("name", "_name", "label")
+
+
+def _card_display_name(card: dict) -> str:
+    for key in CARD_NAME_KEYS:
+        if key in card and card[key] is not None:
+            return str(card[key])
+    return ""
+
+
+def _trigger_platform(display_name: str) -> str | None:
+    """Return the matched wallet platform, or None. Raises no match → None.
+
+    Callers distinguish "no marker" from "bare marker" via the boolean of
+    TRIGGER_PATTERN.search(); this only reports the captured platform.
+    """
+    m = TRIGGER_PATTERN.search(display_name)
+    return (m.group(1).lower() if m and m.group(1) else None)
 
 
 def _decode_card_number(encoded: str) -> tuple[str, str]:
@@ -78,24 +92,11 @@ def _decode_card_number(encoded: str) -> tuple[str, str]:
     return str(site_code), str(card_number)
 
 
-def _trigger_value(user: dict) -> str:
-    for key in CUSTOM_FIELD_KEYS:
-        if key in user and user[key] is not None:
-            return str(user[key]).strip()
-    return ""
-
-
-def _is_triggered(value: str) -> bool:
-    return value.strip().lower() not in NEGATIVE_VALUES
-
-
 class CdviAdapter:
     def __init__(self, base_url: str, username: str, password: str):
         self._client = CdviClient(base_url=base_url, username=username, password=password)
         from . import DESCRIPTOR
         self._descriptor = DESCRIPTOR
-        # person_id -> bool, populated by list_people().
-        self._triggered_by_person: dict[str, bool] = {}
         # person_id -> [card dict], lazily loaded on first list_credentials().
         self._cards_by_person: dict[str, list[dict]] | None = None
 
@@ -111,8 +112,6 @@ class CdviAdapter:
         self._cards_by_person = None
         for raw in self._client.list_users():
             pid = str(raw.get("id"))
-            self._triggered_by_person[pid] = _is_triggered(_trigger_value(raw))
-
             first = (raw.get("fn") or "").strip()
             last = (raw.get("ln") or "").strip()
             full_name = " ".join(p for p in (first, last) if p)
@@ -138,9 +137,17 @@ class CdviAdapter:
 
     def list_credentials(self, person_id: str) -> Iterable[Credential]:
         pid = str(person_id)
-        trigger = self._triggered_by_person.get(pid, False)
         for raw in self._ensure_cards_loaded().get(pid, []):
             site_code, card_number = _decode_card_number(str(raw.get("number") or ""))
+
+            # The trigger lives on the card's display name.
+            display_name = _card_display_name(raw)
+            trigger = TRIGGER_PATTERN.search(display_name) is not None
+            if trigger:
+                logger.debug(
+                    "CDVI card %s enrolled via display name (platform=%s)",
+                    raw.get("id"), _trigger_platform(display_name) or "unspecified",
+                )
 
             # A card is active only when enabled and not flagged lost/stolen.
             enabled = str(raw.get("en", "1")) == "1"
@@ -178,13 +185,15 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "pacs.cdvi.username": "Atrium username",
         "pacs.cdvi.password": "Atrium password",
         "pacs.cdvi.trigger_help": (
-            "To enroll a user, open the user in Atrium, expand Custom "
-            "Fields, and set the 'Uses AccessGrid' field to any value (for "
-            "example 'yes'). Every card assigned to that user is then "
-            "synced — the card's encoded number is decoded into the "
-            "AccessGrid site code and card number. The sync engine picks "
-            "the user up on the next cycle and provisions an AccessGrid "
-            "pass. This integration never creates or modifies CDVI users."
+            "To enroll a card, open it in Atrium and put the marker "
+            "'[accessgrid]' in its Display Name — optionally with a wallet "
+            "hint, '[accessgrid-apple]' or '[accessgrid-android]'. You can "
+            "keep your own label alongside it, e.g. 'Amy iPhone "
+            "[accessgrid-apple]'. The card's encoded number is decoded into "
+            "the AccessGrid site code and card number, and the sync engine "
+            "provisions a pass for the card's assigned user on the next "
+            "cycle. This integration never creates or modifies CDVI users "
+            "or cards."
         ),
     },
     "es": {
@@ -192,15 +201,17 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "pacs.cdvi.username": "Usuario de Atrium",
         "pacs.cdvi.password": "Contraseña de Atrium",
         "pacs.cdvi.trigger_help": (
-            "Para inscribir a un usuario, ábralo en Atrium, expanda "
-            "'Custom Fields' (Campos personalizados) y establezca el campo "
-            "'Uses AccessGrid' con cualquier valor (por ejemplo 'yes'). "
-            "Se sincronizará cada tarjeta asignada a ese usuario: el número "
-            "codificado de la tarjeta se decodifica en el código de sitio y "
-            "el número de tarjeta de AccessGrid. El motor de sincronización "
-            "tomará al usuario en el próximo ciclo y aprovisionará un pase "
-            "de AccessGrid. Esta integración nunca crea ni modifica "
-            "usuarios de CDVI."
+            "Para inscribir una tarjeta, ábrala en Atrium y coloque el "
+            "marcador '[accessgrid]' en su Nombre para mostrar (Display "
+            "Name), opcionalmente con una pista de billetera: "
+            "'[accessgrid-apple]' o '[accessgrid-android]'. Puede mantener "
+            "su propia etiqueta junto al marcador, p. ej. 'Amy iPhone "
+            "[accessgrid-apple]'. El número codificado de la tarjeta se "
+            "decodifica en el código de sitio y el número de tarjeta de "
+            "AccessGrid, y el motor de sincronización aprovisiona un pase "
+            "para el usuario asignado a la tarjeta en el próximo ciclo. "
+            "Esta integración nunca crea ni modifica usuarios ni tarjetas "
+            "de CDVI."
         ),
     },
 }
