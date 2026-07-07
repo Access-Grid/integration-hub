@@ -26,9 +26,32 @@ def test_person_maps_name_and_active(make_cdvi_adapter, cdvi_user):
     assert p.full_name == "Amy Hyatt"
     assert p.first_name == "Amy"
     assert p.last_name == "Hyatt"
-    # users.xml carries no email/phone — the field is left blank.
+    # No trigger-active card here, so no email is fetched — field is blank.
     assert p.email == ""
     assert p.active is True
+
+
+def test_email_fetched_only_for_triggered_users(make_cdvi_adapter, cdvi_user, cdvi_card):
+    # cdvi_card's display name matches the trigger, so user 5 is enrolled
+    # and its email is read from the (faked) SDK cfg2 record.
+    client = FakeCdviClient(
+        users=[cdvi_user], cards=[cdvi_card], emails={"5": "amy@example.com"}
+    )
+    people = {p.id: p for p in make_cdvi_adapter(client).list_people()}
+    assert people["5"].email == "amy@example.com"
+
+
+def test_email_not_fetched_without_trigger(make_cdvi_adapter, cdvi_user, cdvi_card):
+    import copy
+
+    untriggered = copy.deepcopy(cdvi_card)
+    untriggered["name"] = "Amy badge"  # no [accessgrid] marker
+    client = FakeCdviClient(
+        users=[cdvi_user], cards=[untriggered], emails={"5": "amy@example.com"}
+    )
+    people = {p.id: p for p in make_cdvi_adapter(client).list_people()}
+    # Not enrolled → we don't spend the SDK read, so email stays blank.
+    assert people["5"].email == ""
 
 
 def test_person_inactive_when_state_zero(make_cdvi_adapter, cdvi_user):

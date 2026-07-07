@@ -31,9 +31,10 @@ class FakeCdviClient:
     without going near the encrypted XML protocol.
     """
 
-    def __init__(self, users=None, cards=None):
+    def __init__(self, users=None, cards=None, emails=None):
         self._users = users or []
         self._cards = cards or []
+        self._emails = emails or {}  # user_id -> email (from the SDK cfg2 read)
 
     def test_connection(self):
         return True, ""
@@ -43,6 +44,9 @@ class FakeCdviClient:
 
     def list_cards(self):
         return self._cards
+
+    def get_user_email(self, user_id):
+        return self._emails.get(str(user_id), "")
 
     def close(self):
         pass

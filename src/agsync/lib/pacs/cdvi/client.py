@@ -174,6 +174,8 @@ class CdviClient:
         self.session_id: str | None = None
         self.device_serial: str | None = None
         self.logged_in = False
+        # user_id -> email, memoized across get_user_email() calls.
+        self._email_cache: dict[str, str] = {}
 
         self._client = httpx.Client(
             verify=False,  # Atrium controllers ship self-signed certs on-prem.
@@ -406,6 +408,64 @@ class CdviClient:
         )
         logger.info("CDVI: %d cards loaded", len(cards))
         return cards
+
+    def _encrypt_payload(self, payload: str) -> str | None:
+        """Wrap a plaintext body as `post_enc=..&post_chk=..` for the SDK.
+
+        Used only for read commands (cmd='read'); the adapter never issues
+        writes. Returns None if there is no session to key the cipher with.
+        """
+        if not self.session_id:
+            return None
+        return f"post_enc={rc4_encrypt(self.session_id, payload)}&post_chk={post_chk_calc(payload)}"
+
+    def get_user_email(self, user_id: str | int) -> str:
+        """Read a user's email from the SDK `cfg2` record (attribute email5).
+
+        Email is not present in users.xml; it lives in a separate per-user
+        SDK record. Users without an email have obj_status="free" and no
+        email5 attribute, so we return "". Result is memoized per user.
+        Any transport/parse failure degrades to "" rather than raising.
+        """
+        uid = str(user_id)
+        if uid in self._email_cache:
+            return self._email_cache[uid]
+
+        self._ensure_authenticated()
+        xml = (
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+            "<SDK xmlns='https://www.cdvi.ca/'><RECORDS>"
+            f"<REC trans_id='1' cmd='read' sernum='{self.device_serial}' "
+            f"type='user' id='{uid}' rec='cfg2'></REC>"
+            "</RECORDS></SDK>"
+        )
+        email = ""
+        body = self._encrypt_payload(xml)
+        if body is not None:
+            try:
+                resp = self._client.post(
+                    f"{self.base_url}/sdk.xml?_={int(time.time())}&sid={self.session_id}",
+                    content=body,
+                    headers={"Cookie": f"Session={self.session_id}"},
+                )
+                if resp.status_code == 200:
+                    email = self._extract_email(self.decrypt_payload(resp.text))
+            except httpx.HTTPError as e:
+                logger.warning("CDVI get_user_email(%s) transport error: %s", uid, e)
+
+        self._email_cache[uid] = email
+        return email
+
+    @staticmethod
+    def _extract_email(sdk_xml: str | None) -> str:
+        parsed = parse_xml_to_hash(sdk_xml) if sdk_xml else None
+        rec = (((parsed or {}).get("SDK") or {}).get("RECORDS") or {}).get("REC")
+        if isinstance(rec, list):
+            rec = rec[0] if rec else {}
+        data = (rec or {}).get("DATA") if isinstance(rec, dict) else None
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        return (data.get("email5") or "").strip() if isinstance(data, dict) else ""
 
 
 # Atrium pages list responses; a full page is typically this many rows.

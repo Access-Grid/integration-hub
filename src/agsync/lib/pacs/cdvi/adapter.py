@@ -25,7 +25,9 @@ What makes CDVI different from the other adapters:
 
 Shapes here match a live Atrium controller (firmware serial AA0089FE):
 users.xml rows use `state` for the enable flag and carry no email/phone;
-cards.xml rows use `en` and nest their assigned <USER>.
+cards.xml rows use `en` and nest their assigned <USER>. Email lives in a
+separate per-user SDK record (rec="cfg2", attribute email5), fetched only
+for users with a trigger-active card since only those get provisioned.
 
 This adapter is **read-only**: it never creates or updates CDVI users
 (a hard requirement) and does no card writeback either — status
@@ -116,18 +118,30 @@ class CdviAdapter:
     def list_people(self) -> Iterable[Person]:
         # A fresh people listing invalidates the card cache.
         self._cards_by_person = None
+        cards_by_person = self._ensure_cards_loaded()
+
+        # Email is not in users.xml — it takes a separate per-user SDK read.
+        # Only users with a trigger-active card ever get provisioned, so we
+        # pay that read for those users alone (zero when nothing is enrolled).
+        triggered_uids = {
+            uid
+            for uid, cards in cards_by_person.items()
+            if any(TRIGGER_PATTERN.search(_card_display_name(c)) for c in cards)
+        }
+
         for raw in self._client.list_users():
             pid = str(raw.get("id"))
             first = (raw.get("fn") or "").strip()
             last = (raw.get("ln") or "").strip()
             full_name = " ".join(p for p in (first, last) if p)
+            email = self._client.get_user_email(pid) if pid in triggered_uids else ""
             yield Person(
                 id=pid,
                 full_name=full_name,
                 first_name=first,
                 last_name=last,
-                # users.xml carries no email/phone; leave them blank.
-                email=(raw.get("email") or "").strip(),
+                # users.xml has no phone; email comes from the SDK cfg2 read.
+                email=email,
                 # User enable flag is `state` on users.xml (cards use `en`).
                 active=(str(raw.get("state", "1")) == "1"),
                 raw=raw,
