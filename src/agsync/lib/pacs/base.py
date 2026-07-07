@@ -54,6 +54,12 @@ class Credential:
     # the global site_code in settings (used by Avigilon Alta, whose facility
     # code is entered per-credential rather than configured once).
     site_code: str = ""
+    # Pre-encoded credential payload (hex), when the PACS stores one. CDVI
+    # keeps a single encoded card `number`; set this to that value so an
+    # operator can choose to transmit it verbatim as AccessGrid `file_data`
+    # instead of the decoded site_code + card_number. Empty when the vendor
+    # has no such blob (Avigilon, Alta).
+    file_data: str = ""
     status: CredentialStatus = CredentialStatus.UNKNOWN
     activate_date: datetime | None = None
     deactivate_date: datetime | None = None
@@ -77,6 +83,10 @@ class PacsDescriptor:
     trigger_help_key: str
     # Connection-form schema: list of (field_id, label_key, type, required)
     connection_fields: list[ConnectionField]
+    # True if this PACS exposes a pre-encoded credential payload that can be
+    # sent to AccessGrid as `file_data`. Gates the wizard's encoding radio;
+    # when False the operator only gets site_code + card_number.
+    supports_file_data: bool = False
 
 
 @dataclass(frozen=True)

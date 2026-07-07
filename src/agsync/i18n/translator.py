@@ -47,6 +47,11 @@ def _adapter_strings(locale: str) -> list[dict[str, str]]:
         out.append(LENEL_HELP.get(locale, LENEL_HELP.get(DEFAULT, {})))
     except ImportError:
         pass
+    try:
+        from agsync.lib.pacs.cdvi.adapter import HELP_TEXT as CDVI_HELP
+        out.append(CDVI_HELP.get(locale, CDVI_HELP.get(DEFAULT, {})))
+    except ImportError:
+        pass
     return out
 
 
