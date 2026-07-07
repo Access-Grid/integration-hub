@@ -86,3 +86,51 @@ def make_adapter():
         return adapter
 
     return _build
+
+
+# --- CDVI Atrium fixtures ------------------------------------------------
+#
+# These mirror the dict shape node_to_hash produces from Atrium's users.xml
+# and cards.xml (all attribute values are strings). The `number` on a card
+# is CDVI's encoded hex: high byte = site code, low two bytes = card number.
+# 0x45 = 69 (site code), 0xA455 = 42069 (card number).
+
+
+@pytest.fixture
+def cdvi_user() -> dict:
+    """An enrolled Atrium user — custom field 'Uses AccessGrid' set."""
+    return {
+        "id": "5",
+        "fn": "Amy",
+        "ln": "Hyatt",
+        "email": "amy@example.com",
+        "en": "1",
+        "custom_large1": "yes",
+    }
+
+
+@pytest.fixture
+def cdvi_card() -> dict:
+    """A card assigned to user 5, enabled, not lost/stolen."""
+    return {
+        "id": "77",
+        "user_id": "5",
+        "number": "000000000045A455",
+        "en": "1",
+        "lost": "0",
+        "stolen": "0",
+    }
+
+
+@pytest.fixture
+def make_cdvi_adapter():
+    """Build a CdviAdapter with its client swapped for a fake."""
+    from agsync.lib.pacs.cdvi.adapter import CdviAdapter
+
+    def _build(fake_client) -> CdviAdapter:
+        adapter = CdviAdapter(base_url="https://ctrl.test", username="u", password="p")
+        adapter._client.close()  # close the real httpx client built in __init__
+        adapter._client = fake_client
+        return adapter
+
+    return _build

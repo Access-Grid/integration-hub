@@ -21,3 +21,28 @@ class FakeAltaClient:
     def patch_credential_dates(self, user_id, credential_id, **kwargs):
         self.patch_calls.append({"user_id": user_id, "credential_id": credential_id, **kwargs})
         return self.patch_result
+
+
+class FakeCdviClient:
+    """Stand-in for CdviClient — no network, no crypto, no writes.
+
+    Returns already-parsed record dicts (the shape node_to_hash produces
+    from users.xml / cards.xml), so the adapter's mapping logic is exercised
+    without going near the encrypted XML protocol.
+    """
+
+    def __init__(self, users=None, cards=None):
+        self._users = users or []
+        self._cards = cards or []
+
+    def test_connection(self):
+        return True, ""
+
+    def list_users(self):
+        return self._users
+
+    def list_cards(self):
+        return self._cards
+
+    def close(self):
+        pass
