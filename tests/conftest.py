@@ -90,11 +90,14 @@ def make_adapter():
 
 # --- CDVI Atrium fixtures ------------------------------------------------
 #
-# These mirror the dict shape node_to_hash produces from Atrium's users.xml
-# and cards.xml (all attribute values are strings). The `number` on a card
-# is CDVI's encoded hex: high byte = site code, low two bytes = card number.
-# 0x45 = 69 (site code), 0xA455 = 42069 (card number). The enrollment
-# trigger is the `[accessgrid...]` marker in the card's `name` (Display Name).
+# These mirror the dict shape node_to_hash produces from a live Atrium
+# controller's users.xml and cards.xml (all attribute values are strings).
+# Real shapes: users.xml rows use `state` for the enable flag and carry no
+# email; cards.xml rows use `en` and nest their assigned <USER> element
+# (parsed to card["USER"]). The `number` on a card is CDVI's encoded hex:
+# high byte = site code, low two bytes = card number. 0x45 = 69 (site),
+# 0x00E4 = 228 (card). The enrollment trigger is the `[accessgrid...]`
+# marker in the card's `name` (Display Name).
 
 
 @pytest.fixture
@@ -104,8 +107,8 @@ def cdvi_user() -> dict:
         "id": "5",
         "fn": "Amy",
         "ln": "Hyatt",
-        "email": "amy@example.com",
-        "en": "1",
+        "state": "1",
+        "al0": "0",
     }
 
 
@@ -114,12 +117,13 @@ def cdvi_card() -> dict:
     """A card assigned to user 5, enrolled via its Display Name marker."""
     return {
         "id": "77",
-        "user_id": "5",
         "name": "Amy iPhone [accessgrid-apple]",
-        "number": "000000000045a455",  # Ruby convert_card_data emits lowercase hex
+        "number": "00000000004500e4",  # site 69, card 228 (lowercase hex)
+        "format": "0",
         "en": "1",
         "lost": "0",
         "stolen": "0",
+        "USER": {"id": "5", "fn": "Amy", "ln": "Hyatt"},
     }
 
 

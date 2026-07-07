@@ -17,9 +17,15 @@ What makes CDVI different from the other adapters:
     Credential.site_code + Credential.card_number so phase 1 can dedupe
     and provision.
 
-  * Cards are linked to users by the card's `user_id`. We fetch the card
-    table once and group it by user_id, mirroring how the Alta adapter
-    caches its per-person state.
+  * Cards are linked to users by a nested <USER> element on each card
+    (card["USER"]["id"] once parsed), not a flat attribute. Unassigned
+    cards carry <USER id="-1">. We fetch the card table once and group it
+    by that user id, mirroring how the Alta adapter caches per-person
+    state.
+
+Shapes here match a live Atrium controller (firmware serial AA0089FE):
+users.xml rows use `state` for the enable flag and carry no email/phone;
+cards.xml rows use `en` and nest their assigned <USER>.
 
 This adapter is **read-only**: it never creates or updates CDVI users
 (a hard requirement) and does no card writeback either — status
@@ -120,8 +126,10 @@ class CdviAdapter:
                 full_name=full_name,
                 first_name=first,
                 last_name=last,
+                # users.xml carries no email/phone; leave them blank.
                 email=(raw.get("email") or "").strip(),
-                active=(str(raw.get("en", "1")) == "1"),
+                # User enable flag is `state` on users.xml (cards use `en`).
+                active=(str(raw.get("state", "1")) == "1"),
                 raw=raw,
             )
 
@@ -129,8 +137,11 @@ class CdviAdapter:
         if self._cards_by_person is None:
             grouped: dict[str, list[dict]] = {}
             for card in self._client.list_cards():
-                uid = str(card.get("user_id") or "")
-                if uid:
+                # Each card nests its assigned <USER>; id == "-1" means
+                # unassigned. There is no flat user_id attribute.
+                user = card.get("USER")
+                uid = str(user.get("id")) if isinstance(user, dict) else ""
+                if uid and uid != "-1":
                     grouped.setdefault(uid, []).append(card)
             self._cards_by_person = grouped
         return self._cards_by_person

@@ -5,11 +5,8 @@ service — RC4, the payload checksum, MD5 auth hashing, the encrypted-body
 decrypt path, and Nokogiri-style XML→hash conversion.
 
 The RUBY_* vectors below are ground truth captured from the real Ruby
-service (accessgrid.com app/services/cdvi.rb). Regenerate them with:
-
-    ruby scripts/cdvi_crypto_vectors.rb
-
-The Python port must reproduce every one of these byte-for-byte.
+service (accessgrid.com app/services/cdvi.rb) by exercising its crypto
+methods directly. The Python port must reproduce every one byte-for-byte.
 """
 
 from __future__ import annotations

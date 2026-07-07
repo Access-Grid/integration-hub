@@ -17,7 +17,7 @@ def _people_then_creds(adapter, person_id="5"):
 # --- people mapping ------------------------------------------------------
 
 
-def test_person_maps_name_email_and_active(make_cdvi_adapter, cdvi_user):
+def test_person_maps_name_and_active(make_cdvi_adapter, cdvi_user):
     client = FakeCdviClient(users=[cdvi_user], cards=[])
     people = list(make_cdvi_adapter(client).list_people())
     assert len(people) == 1
@@ -26,13 +26,14 @@ def test_person_maps_name_email_and_active(make_cdvi_adapter, cdvi_user):
     assert p.full_name == "Amy Hyatt"
     assert p.first_name == "Amy"
     assert p.last_name == "Hyatt"
-    assert p.email == "amy@example.com"
+    # users.xml carries no email/phone — the field is left blank.
+    assert p.email == ""
     assert p.active is True
 
 
-def test_person_inactive_when_en_zero(make_cdvi_adapter, cdvi_user):
+def test_person_inactive_when_state_zero(make_cdvi_adapter, cdvi_user):
     user = copy.deepcopy(cdvi_user)
-    user["en"] = "0"
+    user["state"] = "0"
     client = FakeCdviClient(users=[user], cards=[])
     people = list(make_cdvi_adapter(client).list_people())
     assert people[0].active is False
@@ -48,23 +49,24 @@ def test_card_number_decodes_site_and_card(make_cdvi_adapter, cdvi_user, cdvi_ca
     c = creds[0]
     assert c.id == "77"
     assert c.person_id == "5"
-    assert c.site_code == "69"       # high byte 0x45
-    assert c.card_number == "42069"  # low two bytes 0xA455
+    assert c.site_code == "69"      # high byte 0x45
+    assert c.card_number == "228"   # low two bytes 0x00E4
 
 
 def test_only_cards_for_that_user_are_returned(make_cdvi_adapter, cdvi_user, cdvi_card):
     other = copy.deepcopy(cdvi_card)
     other["id"] = "88"
-    other["user_id"] = "999"
+    other["USER"] = {"id": "999", "fn": "Someone", "ln": "Else"}
     client = FakeCdviClient(users=[cdvi_user], cards=[cdvi_card, other])
     creds = _people_then_creds(make_cdvi_adapter(client))
     assert [c.id for c in creds] == ["77"]
 
 
 def test_unassigned_cards_are_ignored(make_cdvi_adapter, cdvi_user, cdvi_card):
+    # Atrium marks unassigned cards with <USER id="-1">.
     floating = copy.deepcopy(cdvi_card)
     floating["id"] = "88"
-    floating.pop("user_id")
+    floating["USER"] = {"id": "-1", "fn": "", "ln": ""}
     client = FakeCdviClient(users=[cdvi_user], cards=[cdvi_card, floating])
     creds = _people_then_creds(make_cdvi_adapter(client))
     assert [c.id for c in creds] == ["77"]
