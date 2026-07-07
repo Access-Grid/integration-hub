@@ -16,11 +16,11 @@ RC4-encrypted, checksummed body of the form `post_enc=<hex>&post_chk=<hex>`
 that we decrypt with the session id.
 
 This client ports login, the list endpoints, the per-user email read, and
-**card** assign/unassign for status writeback. It deliberately does NOT
-port any user create/update path — CDVI *users* are never mutated by the
-sync tool. The only writes it can perform are reassigning or unassigning
-an existing card, which suspend/reactivate a credential without creating,
-deleting, or editing users.
+a **card** enable/disable write for status writeback. It deliberately does
+NOT port any user create/update path — CDVI *users* are never mutated by
+the sync tool. The only write it performs flips an existing card's `en`
+(State) flag to suspend/reactivate a credential; no card or user is
+created or deleted.
 """
 
 from __future__ import annotations
@@ -472,30 +472,39 @@ class CdviClient:
         return (data.get("email5") or "").strip() if isinstance(data, dict) else ""
 
     # ------------------------------------------------------------------
-    # Writes — card assignment only. USER records are never written.
+    # Writes — card enable/disable only. USER records are never written.
     # ------------------------------------------------------------------
 
-    def assign_card(self, card_id: str | int, user_id: str | int) -> bool:
-        """Assign an existing card to a user (reactivates a credential)."""
-        return self._card_command({
-            "T_card_cmd": "assign",
-            "T_card_id": str(card_id),
-            "T_card_user_id": str(user_id),
-        })
+    # Card fields echoed back on an edit so flipping `en` doesn't blank the
+    # rest of the card (mirrors the field set the Ruby card form submits).
+    _CARD_ECHO_FIELDS = (
+        "name", "format", "number", "program", "stolen", "lost", "dswipe",
+        "act_utc", "exp_utc", "ld_act", "ld_deact", "ld_over", "ld_ack",
+    )
 
-    def unassign_card(self, card_id: str | int) -> bool:
-        """Unassign an existing card from its user (suspends a credential)."""
-        return self._card_command({
-            "T_card_cmd": "unassign",
-            "T_card_id": str(card_id),
-        })
+    def set_card_enabled(self, card: dict[str, Any], enabled: bool) -> bool:
+        """Set an existing card's State (the `en` flag) to active/inactive.
+
+        Suspends a credential by disabling its card and reactivates it by
+        enabling — the card keeps its user, number, and dates. The existing
+        fields are echoed back so the edit doesn't clear them. This edits
+        an existing card (identified by T_card_id); it never adds a new
+        card, deletes one, or writes any user record.
+        """
+        post: dict[str, str] = {"T_card_cmd": "add", "T_card_id": str(card.get("id"))}
+        for key in self._CARD_ECHO_FIELDS:
+            value = card.get(key)
+            if value is not None:
+                post[f"T_card_{key}"] = str(value)
+        post["T_card_en"] = "1" if enabled else "0"
+        return self._card_command(post)
 
     def _card_command(self, post_data: dict[str, str]) -> bool:
-        """POST an encrypted card command to cards_T_card.xml.
+        """POST an encrypted card edit to cards_T_card.xml.
 
-        Only 'assign'/'unassign' are issued here — never 'add' or 'delete',
-        so no card is ever created or destroyed, and no user is touched.
-        Returns True when the controller echoes back a real card id.
+        Used only to edit an existing card's fields (keyed by T_card_id) —
+        never to delete a card or touch a user. Returns True when the
+        controller echoes back a real card id.
         """
         self._ensure_authenticated()
         body = self._encrypt_payload(urlencode(post_data))

@@ -23,6 +23,13 @@ What makes CDVI different from the other adapters:
     by that user id, mirroring how the Alta adapter caches per-person
     state.
 
+  * Atrium reuses object ids: a deleted card/user id is handed to the next
+    one created. So a card's slot id alone is not a stable identifier. The
+    credential id folds in the decoded site+card number (see
+    _make_credential_id), and status writeback re-checks that identity
+    against the slot's current occupant before writing, so a reused slot
+    can never cause the wrong card to be suspended.
+
 Shapes here match a live Atrium controller (firmware serial AA0089FE):
 users.xml rows use `state` for the enable flag and carry no email/phone;
 cards.xml rows use `en` and nest their assigned <USER>. Email lives in a
@@ -31,9 +38,9 @@ for users with a trigger-active card since only those get provisioned.
 
 This adapter never creates or updates CDVI **users** (a hard
 requirement). It does support credential status writeback, but only by
-assigning/unassigning an existing **card**: suspend unassigns the card
-from its user, reactivate reassigns it. No card is created or deleted,
-and no user record is ever written.
+flipping an existing **card**'s State (the `en` flag): suspend disables
+the card, reactivate re-enables it. The card keeps its user, number, and
+dates; no card is created or deleted, and no user record is ever written.
 """
 
 from __future__ import annotations
@@ -84,6 +91,26 @@ def _trigger_platform(display_name: str) -> str | None:
     return (m.group(1).lower() if m and m.group(1) else None)
 
 
+def _make_credential_id(slot_id: str, site_code: str, card_number: str) -> str:
+    """Build a credential id that is stable to the *physical* card.
+
+    Atrium reuses card slot ids after deletion (a deleted id is handed to the
+    next created card), so a bare slot id is not a durable identifier. Folding
+    the decoded site + card number into the id means a reused slot produces a
+    different credential id — a new tracking row — instead of silently
+    inheriting the deleted card's provisioning/state.
+    """
+    return f"{slot_id}:{site_code}:{card_number}"
+
+
+def _parse_credential_id(credential_id: str) -> tuple[str, tuple[str, str] | None]:
+    """Split a credential id into (slot_id, expected (site, card) or None)."""
+    parts = str(credential_id).split(":")
+    slot = parts[0]
+    expected = (parts[1], parts[2]) if len(parts) >= 3 else None
+    return slot, expected
+
+
 def _decode_card_number(encoded: str) -> tuple[str, str]:
     """Reverse CDVI's `convert_card_data`: encoded hex → (site_code, card_number).
 
@@ -109,6 +136,8 @@ class CdviAdapter:
         self._descriptor = DESCRIPTOR
         # person_id -> [card dict], lazily loaded on first list_credentials().
         self._cards_by_person: dict[str, list[dict]] | None = None
+        # card id -> card dict, populated alongside _cards_by_person.
+        self._card_by_id: dict[str, dict] = {}
 
     def descriptor(self) -> PacsDescriptor:
         return self._descriptor
@@ -152,7 +181,9 @@ class CdviAdapter:
     def _ensure_cards_loaded(self) -> dict[str, list[dict]]:
         if self._cards_by_person is None:
             grouped: dict[str, list[dict]] = {}
+            by_id: dict[str, dict] = {}
             for card in self._client.list_cards():
+                by_id[str(card.get("id"))] = card
                 # Each card nests its assigned <USER>; id == "-1" means
                 # unassigned. There is no flat user_id attribute.
                 user = card.get("USER")
@@ -160,6 +191,7 @@ class CdviAdapter:
                 if uid and uid != "-1":
                     grouped.setdefault(uid, []).append(card)
             self._cards_by_person = grouped
+            self._card_by_id = by_id
         return self._cards_by_person
 
     def list_credentials(self, person_id: str) -> Iterable[Credential]:
@@ -186,7 +218,7 @@ class CdviAdapter:
             )
 
             yield Credential(
-                id=str(raw.get("id")),
+                id=_make_credential_id(str(raw.get("id")), site_code, card_number),
                 person_id=pid,
                 card_number=card_number,
                 site_code=site_code,
@@ -199,14 +231,28 @@ class CdviAdapter:
         self, person_id: str, credential_id: str, status: CredentialStatus
     ) -> bool:
         # Writeback touches CARDS only — CDVI users are never modified.
-        # Suspend by unassigning the card from its user; reactivate by
-        # reassigning it. Both are reversible and use documented card
-        # commands (no card create/delete).
-        if status == CredentialStatus.SUSPENDED:
-            return self._client.unassign_card(credential_id)
-        if status == CredentialStatus.ACTIVE:
-            return self._client.assign_card(credential_id, person_id)
-        return False
+        # Suspend = disable the card's State; reactivate = re-enable it.
+        # The card keeps its user/number/dates (no unassign, no delete).
+        if status not in (CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED):
+            return False
+        slot, expected = _parse_credential_id(credential_id)
+        self._ensure_cards_loaded()
+        card = self._card_by_id.get(slot)
+        if card is None:
+            return False
+        # Atrium reuses slot ids, so confirm the card in this slot is still
+        # the same physical card we tracked before flipping its state — never
+        # suspend a different card that inherited a deleted one's id.
+        if expected is not None and _decode_card_number(str(card.get("number") or "")) != expected:
+            logger.warning(
+                "CDVI: card slot %s now holds a different card than tracked "
+                "(expected site/card %s) — skipping writeback (slot reuse)",
+                slot, expected,
+            )
+            return False
+        return self._client.set_card_enabled(
+            card, enabled=(status == CredentialStatus.ACTIVE)
+        )
 
     @property
     def supports_status_writeback(self) -> bool:
@@ -227,8 +273,8 @@ HELP_TEXT: dict[str, dict[str, str]] = {
             "the AccessGrid site code and card number, and the sync engine "
             "provisions a pass for the card's assigned user on the next "
             "cycle. This integration never creates or modifies CDVI users; "
-            "the only write it performs is unassigning/reassigning an "
-            "existing card to suspend or reactivate a credential."
+            "the only write it performs is toggling an existing card's "
+            "State (active/inactive) to suspend or reactivate a credential."
         ),
     },
     "es": {
@@ -246,8 +292,9 @@ HELP_TEXT: dict[str, dict[str, str]] = {
             "AccessGrid, y el motor de sincronización aprovisiona un pase "
             "para el usuario asignado a la tarjeta en el próximo ciclo. "
             "Esta integración nunca crea ni modifica usuarios de CDVI; la "
-            "única escritura que realiza es desasignar/reasignar una "
-            "tarjeta existente para suspender o reactivar una credencial."
+            "única escritura que realiza es cambiar el estado (State) de "
+            "una tarjeta existente (activa/inactiva) para suspender o "
+            "reactivar una credencial."
         ),
     },
 }
