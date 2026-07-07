@@ -116,7 +116,7 @@ def cdvi_card() -> dict:
         "id": "77",
         "user_id": "5",
         "name": "Amy iPhone [accessgrid-apple]",
-        "number": "000000000045A455",
+        "number": "000000000045a455",  # Ruby convert_card_data emits lowercase hex
         "en": "1",
         "lost": "0",
         "stolen": "0",

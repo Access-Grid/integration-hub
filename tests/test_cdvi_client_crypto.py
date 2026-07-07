@@ -3,9 +3,20 @@
 No network: these exercise the pure helpers ported from the Ruby `Cdvi`
 service — RC4, the payload checksum, MD5 auth hashing, the encrypted-body
 decrypt path, and Nokogiri-style XML→hash conversion.
+
+The RUBY_* vectors below are ground truth captured from the real Ruby
+service (accessgrid.com app/services/cdvi.rb). Regenerate them with:
+
+    ruby scripts/cdvi_crypto_vectors.rb
+
+The Python port must reproduce every one of these byte-for-byte.
 """
 
 from __future__ import annotations
+
+import hashlib
+
+import pytest
 
 from agsync.lib.pacs.cdvi.adapter import (
     TRIGGER_PATTERN,
@@ -21,60 +32,114 @@ from agsync.lib.pacs.cdvi.client import (
     rc4_encrypt,
 )
 
+SESSION = "1013B3842BBBA23D"
+
 
 def _client() -> CdviClient:
     # __init__ builds an httpx.Client but makes no network call.
     return CdviClient(base_url="https://ctrl.test", username="u", password="p")
 
 
-# --- RC4 (standard test vectors — proves parity with the Ruby port) ------
+# --- Ground-truth vectors from the Ruby service --------------------------
+
+# (key, plaintext) -> uppercase hex
+RUBY_RC4 = [
+    (SESSION, "auston", "32EF976ADA2D"),
+    (
+        SESSION,
+        "cmd=login&user=auston&pass=secret",
+        "30F78023D92C24EB1092DE5E332CA1A3EA56644EBB404112757434FAD228A109E6",
+    ),
+    ("Key", "Plaintext", "BBF316E8D940AF0AD3"),  # also the canonical RC4 vector
+    ("Wiki", "pedia", "1021BF0420"),
+    (
+        SESSION,
+        "T_card_cmd=add&T_card_name=AccessGrid+test",
+        "07C5877FC7271CE113D0964C323ABA96C0467153B1395F126B6234C8D428B61FE1E0659EFBA3D1E97C54",
+    ),
+    (SESSION, "", ""),
+]
+
+# text -> 4-char uppercase hex checksum
+RUBY_POST_CHK = [
+    ("AB", "0083"),
+    ("auston", "029A"),
+    ("<USERS><USER id='5'/></USERS>", "07DC"),
+    ("Plaintext", "03B9"),
+    ("", "0000"),
+]
+
+# (session, password) -> upper(md5(session + password))
+RUBY_MD5 = [
+    (SESSION, "secret", "783DEABCE62EA6F63C149F4C4D33CF9B"),
+    (SESSION, "hunter2", "36D42636EFA9C2A3ADCF0B8F49952FF2"),
+    ("SESSION", "secret", "97699CA225AB5665AA16284E8ABE2CD4"),
+]
+
+# encrypted body (session=SESSION) -> decrypted plaintext
+RUBY_DECRYPT = [
+    (
+        "post_enc=30FB967AEA202EE643D0CE41332AF9E4FC4462458A0F554E3235&post_chk=096C",
+        "card_cmd=delete&card_id=42",
+    ),
+    (
+        "post_enc=6FCFB75BE7107DBE2BE7EE7F7637F8FFB8103701B3080C54476A70AE9875EF43C7F452A5CCB6&post_chk=0A82",
+        "<USERS><USER id='5' fn='Amy'/></USERS>",
+    ),
+]
+
+# Ruby convert_card_data(site_code, card_number) -> encoded hex (lowercase!)
+RUBY_CONVERT = [
+    (69, 42069, "000000000045a455"),
+    (0, 0, "0000000000000000"),
+    (1, 1, "0000000000010001"),
+    (255, 65535, "0000000000ffffff"),
+    (12, 3456, "00000000000c0d80"),
+]
 
 
-def test_rc4_known_answer_vector():
-    # Canonical RC4 test vector: RC4("Key", "Plaintext") = BBF316E8D940AF0AD3.
-    assert rc4_encrypt("Key", "Plaintext") == "BBF316E8D940AF0AD3"
+# --- RC4 ----------------------------------------------------------------
 
 
-def test_rc4_second_known_vector():
-    assert rc4_encrypt("Wiki", "pedia") == "1021BF0420"
+@pytest.mark.parametrize(("key", "text", "expected_hex"), RUBY_RC4)
+def test_rc4_encrypt_matches_ruby(key, text, expected_hex):
+    assert rc4_encrypt(key, text) == expected_hex
 
 
-def test_rc4_round_trip():
-    key = "1013B3842BBBA23D"
-    text = "cmd=login&user=auston"
-    assert rc4_decrypt(key, rc4_encrypt(key, text)) == text
+@pytest.mark.parametrize(("key", "text", "expected_hex"), RUBY_RC4)
+def test_rc4_decrypt_matches_ruby(key, text, expected_hex):
+    assert rc4_decrypt(key, expected_hex) == text
 
 
 # --- checksum + password hashing ----------------------------------------
 
 
-def test_post_chk_calc_lower_16_bits():
-    # 'A'(65) + 'B'(66) = 131 = 0x0083.
-    assert post_chk_calc("AB") == "0083"
+@pytest.mark.parametrize(("text", "expected"), RUBY_POST_CHK)
+def test_post_chk_calc_matches_ruby(text, expected):
+    assert post_chk_calc(text) == expected
 
 
-def test_md5_password_is_upper_hex_of_session_plus_password():
-    import hashlib
-
-    expected = hashlib.md5(b"SESSIONsecret").hexdigest().upper()
-    assert md5_password("SESSION", "secret") == expected
+@pytest.mark.parametrize(("session", "password", "expected"), RUBY_MD5)
+def test_md5_password_matches_ruby(session, password, expected):
+    assert md5_password(session, password) == expected
+    # sanity: it really is upper(md5(session + password))
+    assert expected == hashlib.md5((session + password).encode()).hexdigest().upper()
 
 
 # --- decrypt_payload (the read path controllers use for list endpoints) --
 
 
-def test_decrypt_payload_round_trips_encrypted_body():
+@pytest.mark.parametrize(("body", "plaintext"), RUBY_DECRYPT)
+def test_decrypt_payload_matches_ruby(body, plaintext):
     c = _client()
-    c.session_id = "1013B3842BBBA23D"
-    plaintext = "<USERS><USER id='5' fn='Amy'/></USERS>"
-    body = f"post_enc={rc4_encrypt(c.session_id, plaintext)}&post_chk={post_chk_calc(plaintext)}"
+    c.session_id = SESSION
     assert c.decrypt_payload(body) == plaintext
     c.close()
 
 
 def test_decrypt_payload_rejects_bad_checksum():
     c = _client()
-    c.session_id = "1013B3842BBBA23D"
+    c.session_id = SESSION
     plaintext = "<USERS/>"
     body = f"post_enc={rc4_encrypt(c.session_id, plaintext)}&post_chk=FFFF"
     assert c.decrypt_payload(body) is None
@@ -124,9 +189,11 @@ def test_parse_bad_xml_returns_none():
 # --- card number decode (reverse of Ruby convert_card_data) --------------
 
 
-def test_decode_card_number_splits_site_and_card():
-    # 69 << 16 | 42069 = 0x45A455.
-    assert _decode_card_number("000000000045A455") == ("69", "42069")
+@pytest.mark.parametrize(("site_code", "card_number", "encoded"), RUBY_CONVERT)
+def test_decode_reverses_ruby_convert_card_data(site_code, card_number, encoded):
+    # We decode what Ruby's convert_card_data encodes — exact round-trip
+    # against the real encoded strings (note: Ruby emits lowercase hex).
+    assert _decode_card_number(encoded) == (str(site_code), str(card_number))
 
 
 def test_decode_card_number_short_hex():
