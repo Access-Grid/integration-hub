@@ -15,9 +15,12 @@ After login, list endpoints (`users.xml`, `cards.xml`) return an
 RC4-encrypted, checksummed body of the form `post_enc=<hex>&post_chk=<hex>`
 that we decrypt with the session id.
 
-This client is intentionally **read-only**. It ports only the login and
-the two list endpoints — it deliberately does NOT port user create/update
-(nor card writes). The sync tool must never mutate the CDVI directory.
+This client ports login, the list endpoints, the per-user email read, and
+**card** assign/unassign for status writeback. It deliberately does NOT
+port any user create/update path — CDVI *users* are never mutated by the
+sync tool. The only writes it can perform are reassigning or unassigning
+an existing card, which suspend/reactivate a credential without creating,
+deleting, or editing users.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import logging
 import re
 import time
 from typing import Any
+from urllib.parse import urlencode
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -466,6 +470,60 @@ class CdviClient:
         if isinstance(data, list):
             data = data[0] if data else {}
         return (data.get("email5") or "").strip() if isinstance(data, dict) else ""
+
+    # ------------------------------------------------------------------
+    # Writes — card assignment only. USER records are never written.
+    # ------------------------------------------------------------------
+
+    def assign_card(self, card_id: str | int, user_id: str | int) -> bool:
+        """Assign an existing card to a user (reactivates a credential)."""
+        return self._card_command({
+            "T_card_cmd": "assign",
+            "T_card_id": str(card_id),
+            "T_card_user_id": str(user_id),
+        })
+
+    def unassign_card(self, card_id: str | int) -> bool:
+        """Unassign an existing card from its user (suspends a credential)."""
+        return self._card_command({
+            "T_card_cmd": "unassign",
+            "T_card_id": str(card_id),
+        })
+
+    def _card_command(self, post_data: dict[str, str]) -> bool:
+        """POST an encrypted card command to cards_T_card.xml.
+
+        Only 'assign'/'unassign' are issued here — never 'add' or 'delete',
+        so no card is ever created or destroyed, and no user is touched.
+        Returns True when the controller echoes back a real card id.
+        """
+        self._ensure_authenticated()
+        body = self._encrypt_payload(urlencode(post_data))
+        if body is None:
+            return False
+        try:
+            resp = self._client.post(
+                f"{self.base_url}/cards_T_card.xml?_={int(time.time())}&sid={self.session_id}",
+                content=body,
+                headers={"Cookie": f"Session={self.session_id}"},
+            )
+        except httpx.HTTPError as e:
+            logger.error("CDVI card command transport error: %s", e)
+            return False
+        if resp.status_code != 200:
+            logger.error("CDVI card command HTTP %s", resp.status_code)
+            return False
+        parsed = parse_xml_to_hash(self.decrypt_payload(resp.text) or "")
+        if not parsed:
+            return False
+        root = next(iter(parsed.values()))
+        card = root.get("CARD") if isinstance(root, dict) else None
+        if isinstance(card, list):
+            card = card[0] if card else None
+        if isinstance(card, dict):
+            return str(card.get("id", "-1")) != "-1"
+        # No CARD echoed but a well-formed response — treat as success.
+        return True
 
 
 # Atrium pages list responses; a full page is typically this many rows.

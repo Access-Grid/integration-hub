@@ -182,12 +182,45 @@ def test_trigger_inactive_for_marker_without_brackets(make_cdvi_adapter, cdvi_us
     assert cred.trigger_active is False
 
 
-# --- read-only guarantees ------------------------------------------------
+# --- status writeback (card assign/unassign; never touches users) --------
 
 
-def test_writeback_is_unsupported_and_noop(make_cdvi_adapter, cdvi_user):
-    adapter = make_cdvi_adapter(FakeCdviClient(users=[cdvi_user], cards=[]))
-    assert adapter.supports_status_writeback is False
+def test_writeback_is_supported(make_cdvi_adapter):
+    adapter = make_cdvi_adapter(FakeCdviClient())
+    assert adapter.supports_status_writeback is True
+
+
+def test_suspend_unassigns_the_card(make_cdvi_adapter):
+    client = FakeCdviClient()
+    adapter = make_cdvi_adapter(client)
+    ok = adapter.update_credential_status("5", "77", CredentialStatus.SUSPENDED)
+    assert ok is True
+    assert client.unassign_calls == ["77"]
+    assert client.assign_calls == []
+
+
+def test_reactivate_reassigns_the_card_to_its_user(make_cdvi_adapter):
+    client = FakeCdviClient()
+    adapter = make_cdvi_adapter(client)
+    ok = adapter.update_credential_status("5", "77", CredentialStatus.ACTIVE)
+    assert ok is True
+    assert client.assign_calls == [{"card_id": "77", "user_id": "5"}]
+    assert client.unassign_calls == []
+
+
+def test_unknown_status_is_a_noop(make_cdvi_adapter):
+    client = FakeCdviClient()
+    adapter = make_cdvi_adapter(client)
+    ok = adapter.update_credential_status("5", "77", CredentialStatus.UNKNOWN)
+    assert ok is False
+    assert client.assign_calls == []
+    assert client.unassign_calls == []
+
+
+def test_writeback_propagates_client_failure(make_cdvi_adapter):
+    client = FakeCdviClient()
+    client.card_command_result = False
+    adapter = make_cdvi_adapter(client)
     assert adapter.update_credential_status("5", "77", CredentialStatus.SUSPENDED) is False
 
 

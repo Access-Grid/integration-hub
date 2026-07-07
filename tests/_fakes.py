@@ -35,6 +35,9 @@ class FakeCdviClient:
         self._users = users or []
         self._cards = cards or []
         self._emails = emails or {}  # user_id -> email (from the SDK cfg2 read)
+        self.assign_calls: list[dict] = []
+        self.unassign_calls: list[str] = []
+        self.card_command_result = True
 
     def test_connection(self):
         return True, ""
@@ -47,6 +50,14 @@ class FakeCdviClient:
 
     def get_user_email(self, user_id):
         return self._emails.get(str(user_id), "")
+
+    def assign_card(self, card_id, user_id):
+        self.assign_calls.append({"card_id": str(card_id), "user_id": str(user_id)})
+        return self.card_command_result
+
+    def unassign_card(self, card_id):
+        self.unassign_calls.append(str(card_id))
+        return self.card_command_result
 
     def close(self):
         pass

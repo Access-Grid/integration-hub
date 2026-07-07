@@ -29,9 +29,11 @@ cards.xml rows use `en` and nest their assigned <USER>. Email lives in a
 separate per-user SDK record (rec="cfg2", attribute email5), fetched only
 for users with a trigger-active card since only those get provisioned.
 
-This adapter is **read-only**: it never creates or updates CDVI users
-(a hard requirement) and does no card writeback either — status
-writeback is advertised as unsupported.
+This adapter never creates or updates CDVI **users** (a hard
+requirement). It does support credential status writeback, but only by
+assigning/unassigning an existing **card**: suspend unassigns the card
+from its user, reactivate reassigns it. No card is created or deleted,
+and no user record is ever written.
 """
 
 from __future__ import annotations
@@ -196,12 +198,19 @@ class CdviAdapter:
     def update_credential_status(
         self, person_id: str, credential_id: str, status: CredentialStatus
     ) -> bool:
-        # Read-only integration: we never write back to the CDVI directory.
+        # Writeback touches CARDS only — CDVI users are never modified.
+        # Suspend by unassigning the card from its user; reactivate by
+        # reassigning it. Both are reversible and use documented card
+        # commands (no card create/delete).
+        if status == CredentialStatus.SUSPENDED:
+            return self._client.unassign_card(credential_id)
+        if status == CredentialStatus.ACTIVE:
+            return self._client.assign_card(credential_id, person_id)
         return False
 
     @property
     def supports_status_writeback(self) -> bool:
-        return False
+        return True
 
 
 HELP_TEXT: dict[str, dict[str, str]] = {
@@ -217,8 +226,9 @@ HELP_TEXT: dict[str, dict[str, str]] = {
             "[accessgrid-apple]'. The card's encoded number is decoded into "
             "the AccessGrid site code and card number, and the sync engine "
             "provisions a pass for the card's assigned user on the next "
-            "cycle. This integration never creates or modifies CDVI users "
-            "or cards."
+            "cycle. This integration never creates or modifies CDVI users; "
+            "the only write it performs is unassigning/reassigning an "
+            "existing card to suspend or reactivate a credential."
         ),
     },
     "es": {
@@ -235,8 +245,9 @@ HELP_TEXT: dict[str, dict[str, str]] = {
             "decodifica en el código de sitio y el número de tarjeta de "
             "AccessGrid, y el motor de sincronización aprovisiona un pase "
             "para el usuario asignado a la tarjeta en el próximo ciclo. "
-            "Esta integración nunca crea ni modifica usuarios ni tarjetas "
-            "de CDVI."
+            "Esta integración nunca crea ni modifica usuarios de CDVI; la "
+            "única escritura que realiza es desasignar/reasignar una "
+            "tarjeta existente para suspender o reactivar una credencial."
         ),
     },
 }

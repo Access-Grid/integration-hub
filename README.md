@@ -7,14 +7,16 @@ into AccessGrid. Runs as a Windows Service on a NUC, exposes a web UI on port 53
 
 - Avigilon Unity (Plasec) — production
 - Avigilon Alta Access (cloud / OpenPath) — production
-- CDVI Atrium (on-prem) — production, read-only
+- CDVI Atrium (on-prem) — production
 - Lenel OnGuard — stub (interface only)
 
 ### CDVI Atrium
 
-CDVI is a **read-only** integration: the sync tool never creates or
-modifies CDVI users or cards. A **card** is enrolled by putting the
-marker `[accessgrid]` in its **Display Name** in the Atrium UI —
+The sync tool **never creates or modifies CDVI users**. Status writeback
+is supported but only reassigns or unassigns an existing **card**
+(suspend = unassign from user, reactivate = reassign) — it never creates
+or deletes a card. A **card** is enrolled by putting the marker
+`[accessgrid]` in its **Display Name** in the Atrium UI —
 optionally with a wallet hint, `[accessgrid-apple]` or
 `[accessgrid-android]`. Any surrounding label text is fine, e.g.
 `Amy iPhone [accessgrid-apple]`. The card's encoded number is decoded
