@@ -13,6 +13,9 @@ DESCRIPTOR = PacsDescriptor(
         ConnectionField("username", "pacs.cdvi.username"),
         ConnectionField("password", "pacs.cdvi.password", kind="password"),
     ],
+    # CDVI stores a single encoded card `number` that can be sent verbatim
+    # as AccessGrid file_data, so offer the encoding choice in the wizard.
+    supports_file_data=True,
 )
 
 register("cdvi", DESCRIPTOR, lambda params: CdviAdapter(**params))

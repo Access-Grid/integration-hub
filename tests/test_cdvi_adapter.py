@@ -70,9 +70,10 @@ def test_card_number_decodes_site_and_card(make_cdvi_adapter, cdvi_user, cdvi_ca
     creds = _people_then_creds(make_cdvi_adapter(client))
     assert len(creds) == 1
     c = creds[0]
-    # Credential id folds in the physical identity (slot:site:card) so a
-    # reused Atrium slot yields a different id. Raw slot id stays on c.raw.
-    assert c.id == "77:69:228"
+    # Credential id is the physical identity (site:card), independent of the
+    # Atrium slot id so a delete + re-create doesn't churn the pass. Raw slot
+    # id stays on c.raw for reference.
+    assert c.id == "69:228"
     assert c.raw["id"] == "77"
     assert c.person_id == "5"
     assert c.site_code == "69"      # high byte 0x45
@@ -118,6 +119,13 @@ def test_card_suspended_when_lost_or_stolen(make_cdvi_adapter, cdvi_user, cdvi_c
     client = FakeCdviClient(users=[cdvi_user], cards=[lost])
     creds = _people_then_creds(make_cdvi_adapter(client))
     assert creds[0].status == CredentialStatus.SUSPENDED
+
+
+def test_credential_exposes_padded_file_data(make_cdvi_adapter, cdvi_user, cdvi_card):
+    client = FakeCdviClient(users=[cdvi_user], cards=[cdvi_card])
+    creds = _people_then_creds(make_cdvi_adapter(client))
+    # Raw CDVI card number, left-padded to 16 hex chars, verbatim.
+    assert creds[0].file_data == "00000000004500e4"
 
 
 def test_bad_card_number_decodes_to_empty(make_cdvi_adapter, cdvi_user, cdvi_card):
@@ -196,7 +204,7 @@ def test_writeback_is_supported(make_cdvi_adapter):
 def test_suspend_disables_the_card(make_cdvi_adapter, cdvi_user, cdvi_card):
     client = FakeCdviClient(users=[cdvi_user], cards=[cdvi_card])
     adapter = make_cdvi_adapter(client)
-    ok = adapter.update_credential_status("5", "77:69:228", CredentialStatus.SUSPENDED)
+    ok = adapter.update_credential_status("5", "69:228", CredentialStatus.SUSPENDED)
     assert ok is True
     assert client.set_enabled_calls == [{"card_id": "77", "enabled": False}]
 
@@ -204,7 +212,7 @@ def test_suspend_disables_the_card(make_cdvi_adapter, cdvi_user, cdvi_card):
 def test_reactivate_enables_the_card(make_cdvi_adapter, cdvi_user, cdvi_card):
     client = FakeCdviClient(users=[cdvi_user], cards=[cdvi_card])
     adapter = make_cdvi_adapter(client)
-    ok = adapter.update_credential_status("5", "77:69:228", CredentialStatus.ACTIVE)
+    ok = adapter.update_credential_status("5", "69:228", CredentialStatus.ACTIVE)
     assert ok is True
     assert client.set_enabled_calls == [{"card_id": "77", "enabled": True}]
 
@@ -212,35 +220,38 @@ def test_reactivate_enables_the_card(make_cdvi_adapter, cdvi_user, cdvi_card):
 def test_unknown_status_is_a_noop(make_cdvi_adapter, cdvi_user, cdvi_card):
     client = FakeCdviClient(users=[cdvi_user], cards=[cdvi_card])
     adapter = make_cdvi_adapter(client)
-    ok = adapter.update_credential_status("5", "77:69:228", CredentialStatus.UNKNOWN)
+    ok = adapter.update_credential_status("5", "69:228", CredentialStatus.UNKNOWN)
     assert ok is False
     assert client.set_enabled_calls == []
 
 
-def test_writeback_returns_false_when_card_missing(make_cdvi_adapter, cdvi_user):
-    client = FakeCdviClient(users=[cdvi_user], cards=[])
-    adapter = make_cdvi_adapter(client)
-    ok = adapter.update_credential_status("5", "999:69:228", CredentialStatus.SUSPENDED)
-    assert ok is False
-    assert client.set_enabled_calls == []
-
-
-def test_writeback_skips_reused_slot(make_cdvi_adapter, cdvi_user, cdvi_card):
-    # Slot 77 still exists but now holds a different physical card (228),
-    # while the tracked credential expected card 999. Atrium reused the id,
-    # so we must NOT flip this card's state.
+def test_writeback_returns_false_when_identity_absent(make_cdvi_adapter, cdvi_user, cdvi_card):
     client = FakeCdviClient(users=[cdvi_user], cards=[cdvi_card])
     adapter = make_cdvi_adapter(client)
-    ok = adapter.update_credential_status("5", "77:69:999", CredentialStatus.SUSPENDED)
+    # No card has physical identity 1:1 — the credential is gone.
+    ok = adapter.update_credential_status("5", "1:1", CredentialStatus.SUSPENDED)
     assert ok is False
     assert client.set_enabled_calls == []
+
+
+def test_writeback_follows_card_to_a_new_slot(make_cdvi_adapter, cdvi_user, cdvi_card):
+    # Same physical card (site 69 / card 228) but Atrium moved it to a new
+    # slot id after a delete + re-create. Writeback resolves by identity, so
+    # it correctly toggles whatever slot now holds that card.
+    moved = copy.deepcopy(cdvi_card)
+    moved["id"] = "90"
+    client = FakeCdviClient(users=[cdvi_user], cards=[moved])
+    adapter = make_cdvi_adapter(client)
+    ok = adapter.update_credential_status("5", "69:228", CredentialStatus.SUSPENDED)
+    assert ok is True
+    assert client.set_enabled_calls == [{"card_id": "90", "enabled": False}]
 
 
 def test_writeback_propagates_client_failure(make_cdvi_adapter, cdvi_user, cdvi_card):
     client = FakeCdviClient(users=[cdvi_user], cards=[cdvi_card])
     client.card_command_result = False
     adapter = make_cdvi_adapter(client)
-    assert adapter.update_credential_status("5", "77:69:228", CredentialStatus.SUSPENDED) is False
+    assert adapter.update_credential_status("5", "69:228", CredentialStatus.SUSPENDED) is False
 
 
 def test_descriptor_registered():
@@ -249,6 +260,8 @@ def test_descriptor_registered():
     vendors = {d.vendor for d in available_pacs()}
     assert "cdvi" in vendors
     assert get_descriptor("cdvi").display_name == "CDVI Atrium (On-Prem)"
+    # CDVI advertises the file_data capability so the wizard shows the radio.
+    assert get_descriptor("cdvi").supports_file_data is True
     # Factory wiring: connection-field ids map straight to __init__ kwargs.
     adapter = build_adapter(
         "cdvi", {"base_url": "https://x", "username": "u", "password": "p"}

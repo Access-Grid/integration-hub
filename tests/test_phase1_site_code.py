@@ -72,3 +72,58 @@ def test_blank_credential_site_code_falls_back_to_global(stub_tracking):
     params = ag.access_cards.calls[0]
     assert params["site_code"] == 999
     assert params["metadata"]["site_code"] == "999"
+
+
+# --- file_data encoding mode --------------------------------------------
+
+
+def _cred_with_file_data(file_data: str) -> Credential:
+    return Credential(
+        id="c1",
+        person_id="p1",
+        card_number="228",
+        site_code="99",
+        file_data=file_data,
+        status=CredentialStatus.ACTIVE,
+        trigger_active=True,
+    )
+
+
+def test_file_data_mode_sends_blob_and_keeps_site_card_metadata(stub_tracking):
+    ag = FakeAG()
+    phase1_provision.run(
+        _snapshot(_cred_with_file_data("00000000004500E4")),
+        ag, "tpl", site_code="", use_file_data=True,
+    )
+    params = ag.access_cards.calls[0]
+    assert params["file_data"] == "00000000004500E4"
+    # Wire identity is file_data — site_code/card_number are NOT sent...
+    assert "site_code" not in params
+    assert "card_number" not in params
+    # ...but they remain in metadata for dedupe + debugging.
+    assert params["metadata"]["site_code"] == "99"
+    assert params["metadata"]["card_number"] == "228"
+
+
+def test_file_data_mode_falls_back_when_credential_has_no_blob(stub_tracking):
+    ag = FakeAG()
+    phase1_provision.run(
+        _snapshot(_cred_with_file_data("")),
+        ag, "tpl", site_code="", use_file_data=True,
+    )
+    params = ag.access_cards.calls[0]
+    assert "file_data" not in params
+    assert params["site_code"] == 99
+    assert params["card_number"] == "228"
+
+
+def test_default_mode_never_sends_file_data(stub_tracking):
+    ag = FakeAG()
+    phase1_provision.run(
+        _snapshot(_cred_with_file_data("00000000004500E4")),
+        ag, "tpl", site_code="",  # use_file_data defaults False
+    )
+    params = ag.access_cards.calls[0]
+    assert "file_data" not in params
+    assert params["site_code"] == 99
+    assert params["card_number"] == "228"

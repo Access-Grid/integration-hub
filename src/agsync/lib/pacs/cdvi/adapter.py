@@ -24,11 +24,12 @@ What makes CDVI different from the other adapters:
     state.
 
   * Atrium reuses object ids: a deleted card/user id is handed to the next
-    one created. So a card's slot id alone is not a stable identifier. The
-    credential id folds in the decoded site+card number (see
-    _make_credential_id), and status writeback re-checks that identity
-    against the slot's current occupant before writing, so a reused slot
-    can never cause the wrong card to be suspended.
+    one created (it never renumbers existing cards). So a slot id is not a
+    durable identifier across a delete + re-create. The credential id is the
+    card's physical identity instead (see _credential_identity), and status
+    writeback resolves the *current* slot holding that identity from the card
+    table (_card_by_identity) — so a reused slot can never suspend the wrong
+    card, and re-adding the same card doesn't churn its pass.
 
 Shapes here match a live Atrium controller (firmware serial AA0089FE):
 users.xml rows use `state` for the enable flag and carry no email/phone;
@@ -91,24 +92,34 @@ def _trigger_platform(display_name: str) -> str | None:
     return (m.group(1).lower() if m and m.group(1) else None)
 
 
-def _make_credential_id(slot_id: str, site_code: str, card_number: str) -> str:
-    """Build a credential id that is stable to the *physical* card.
+def _credential_identity(site_code: str, card_number: str, number: str, slot_id: str) -> str:
+    """Stable identifier for a physical card, independent of its Atrium slot.
 
-    Atrium reuses card slot ids after deletion (a deleted id is handed to the
-    next created card), so a bare slot id is not a durable identifier. Folding
-    the decoded site + card number into the id means a reused slot produces a
-    different credential id — a new tracking row — instead of silently
-    inheriting the deleted card's provisioning/state.
+    Atrium reuses slot ids after deletion (a deleted id is handed to the next
+    created card) and never renumbers existing cards. So the slot is stable
+    while a card lives, but NOT across a delete + re-create of the same
+    physical card — that would churn the AccessGrid pass. We therefore key on
+    the card's physical data: the decoded site:card, falling back to the raw
+    encoded number, and only to the slot if the card carries no number at all.
+    Re-adding the same card keeps the same identity; a slot reused by a
+    different card gets a different one; other cards' deletions never touch it.
     """
-    return f"{slot_id}:{site_code}:{card_number}"
+    if site_code and card_number:
+        return f"{site_code}:{card_number}"
+    if number:
+        return number
+    return slot_id
 
 
-def _parse_credential_id(credential_id: str) -> tuple[str, tuple[str, str] | None]:
-    """Split a credential id into (slot_id, expected (site, card) or None)."""
-    parts = str(credential_id).split(":")
-    slot = parts[0]
-    expected = (parts[1], parts[2]) if len(parts) >= 3 else None
-    return slot, expected
+def _pad_file_data(encoded: str) -> str:
+    """Normalize a CDVI card `number` for use as AccessGrid file_data.
+
+    CDVI stores the full encoded payload as hex; we transmit it verbatim,
+    left-padded with zeros to 16 hex chars (the width Atrium's own encoder
+    emits). Empty in, empty out.
+    """
+    encoded = (encoded or "").strip()
+    return encoded.rjust(16, "0") if encoded else ""
 
 
 def _decode_card_number(encoded: str) -> tuple[str, str]:
@@ -136,8 +147,8 @@ class CdviAdapter:
         self._descriptor = DESCRIPTOR
         # person_id -> [card dict], lazily loaded on first list_credentials().
         self._cards_by_person: dict[str, list[dict]] | None = None
-        # card id -> card dict, populated alongside _cards_by_person.
-        self._card_by_id: dict[str, dict] = {}
+        # credential identity -> current card dict, for status writeback.
+        self._card_by_identity: dict[str, dict] = {}
 
     def descriptor(self) -> PacsDescriptor:
         return self._descriptor
@@ -181,9 +192,12 @@ class CdviAdapter:
     def _ensure_cards_loaded(self) -> dict[str, list[dict]]:
         if self._cards_by_person is None:
             grouped: dict[str, list[dict]] = {}
-            by_id: dict[str, dict] = {}
+            by_identity: dict[str, dict] = {}
             for card in self._client.list_cards():
-                by_id[str(card.get("id"))] = card
+                number = str(card.get("number") or "")
+                site, cardno = _decode_card_number(number)
+                identity = _credential_identity(site, cardno, number, str(card.get("id")))
+                by_identity[identity] = card
                 # Each card nests its assigned <USER>; id == "-1" means
                 # unassigned. There is no flat user_id attribute.
                 user = card.get("USER")
@@ -191,13 +205,14 @@ class CdviAdapter:
                 if uid and uid != "-1":
                     grouped.setdefault(uid, []).append(card)
             self._cards_by_person = grouped
-            self._card_by_id = by_id
+            self._card_by_identity = by_identity
         return self._cards_by_person
 
     def list_credentials(self, person_id: str) -> Iterable[Credential]:
         pid = str(person_id)
         for raw in self._ensure_cards_loaded().get(pid, []):
-            site_code, card_number = _decode_card_number(str(raw.get("number") or ""))
+            number = str(raw.get("number") or "")
+            site_code, card_number = _decode_card_number(number)
 
             # The trigger lives on the card's display name.
             display_name = _card_display_name(raw)
@@ -218,10 +233,11 @@ class CdviAdapter:
             )
 
             yield Credential(
-                id=_make_credential_id(str(raw.get("id")), site_code, card_number),
+                id=_credential_identity(site_code, card_number, number, str(raw.get("id"))),
                 person_id=pid,
                 card_number=card_number,
                 site_code=site_code,
+                file_data=_pad_file_data(number),
                 status=status,
                 trigger_active=trigger,
                 raw=raw,
@@ -233,22 +249,15 @@ class CdviAdapter:
         # Writeback touches CARDS only — CDVI users are never modified.
         # Suspend = disable the card's State; reactivate = re-enable it.
         # The card keeps its user/number/dates (no unassign, no delete).
+        #
+        # The credential id is a physical identity, so resolve the card that
+        # *currently* holds it — this naturally follows a card that moved to a
+        # new slot and refuses to write when the physical card is gone.
         if status not in (CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED):
             return False
-        slot, expected = _parse_credential_id(credential_id)
         self._ensure_cards_loaded()
-        card = self._card_by_id.get(slot)
+        card = self._card_by_identity.get(str(credential_id))
         if card is None:
-            return False
-        # Atrium reuses slot ids, so confirm the card in this slot is still
-        # the same physical card we tracked before flipping its state — never
-        # suspend a different card that inherited a deleted one's id.
-        if expected is not None and _decode_card_number(str(card.get("number") or "")) != expected:
-            logger.warning(
-                "CDVI: card slot %s now holds a different card than tracked "
-                "(expected site/card %s) — skipping writeback (slot reuse)",
-                slot, expected,
-            )
             return False
         return self._client.set_card_enabled(
             card, enabled=(status == CredentialStatus.ACTIVE)
@@ -264,6 +273,12 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "pacs.cdvi.base_url": "Controller URL (e.g. https://192.168.1.50)",
         "pacs.cdvi.username": "Atrium username",
         "pacs.cdvi.password": "Atrium password",
+        "pacs.cdvi.encoding_label": "How should card data reach AccessGrid?",
+        "pacs.cdvi.encoding_site_card": "Site code + card number (default)",
+        "pacs.cdvi.encoding_file_data": (
+            "Raw file_data — send the card's encoded number verbatim "
+            "(use for non-26-bit card formats)"
+        ),
         "pacs.cdvi.trigger_help": (
             "To enroll a card, open it in Atrium and put the marker "
             "'[accessgrid]' in its Display Name — optionally with a wallet "
@@ -281,6 +296,12 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "pacs.cdvi.base_url": "URL del controlador (p. ej. https://192.168.1.50)",
         "pacs.cdvi.username": "Usuario de Atrium",
         "pacs.cdvi.password": "Contraseña de Atrium",
+        "pacs.cdvi.encoding_label": "¿Cómo deben enviarse los datos de la tarjeta a AccessGrid?",
+        "pacs.cdvi.encoding_site_card": "Código de sitio + número de tarjeta (predeterminado)",
+        "pacs.cdvi.encoding_file_data": (
+            "file_data en bruto — enviar el número codificado de la tarjeta "
+            "tal cual (para formatos de tarjeta que no sean de 26 bits)"
+        ),
         "pacs.cdvi.trigger_help": (
             "Para inscribir una tarjeta, ábrala en Atrium y coloque el "
             "marcador '[accessgrid]' en su Nombre para mostrar (Display "

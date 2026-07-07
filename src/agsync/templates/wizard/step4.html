@@ -16,6 +16,19 @@
                {% if f.required %}required{% endif %}>
       </label>
     {% endfor %}
+    {% if descriptor.supports_file_data %}
+      <fieldset class="encoding-choice">
+        <legend>{{ t('pacs.' ~ vendor ~ '.encoding_label') }}</legend>
+        <label class="radio-row">
+          <input type="radio" name="credential_encoding" value="site_card" checked>
+          {{ t('pacs.' ~ vendor ~ '.encoding_site_card') }}
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="credential_encoding" value="file_data">
+          {{ t('pacs.' ~ vendor ~ '.encoding_file_data') }}
+        </label>
+      </fieldset>
+    {% endif %}
     <div class="row">
       <button type="button"
               hx-post="/api/test-pacs"

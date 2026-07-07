@@ -148,7 +148,11 @@ async def wizard_pacs(request: Request):
     if descriptor is None:
         return RedirectResponse(url="/wizard", status_code=303)
     params = {f.id: form.get(f.id, "") for f in descriptor.connection_fields}
-    PacsConfig.save(vendor, params)
+    options: dict = {}
+    if descriptor.supports_file_data:
+        enc = form.get("credential_encoding", "site_card")
+        options["credential_encoding"] = "file_data" if enc == "file_data" else "site_card"
+    PacsConfig.save(vendor, params, options)
     # Setup is complete — start the engine.
     if is_configured():
         get_engine().start()
