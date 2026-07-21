@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 
 from ..auth import require_admin
 from ..config import get_settings
+from ..lib.pacs import get_descriptor
 from ..settings_store import AccessGridConfig, PacsConfig
 
 # Match what AccessGrid accepts for metadata keys: keep it conservative —
@@ -46,6 +47,8 @@ def settings_page(
     ag = AccessGridConfig.load() or {}
     pacs = PacsConfig.load() or {}
     extras: dict[str, str] = ag.get("extra_metadata") or {}
+    vendor_id = pacs.get("vendor", "")
+    descriptor = get_descriptor(vendor_id) if vendor_id else None
     return request.app.state.template_response(
         request, "settings.html",
         {
@@ -55,7 +58,7 @@ def settings_page(
             "ag_dedupe": bool(ag.get("dedupe_by_site_card", False)),
             "ag_extra_metadata": list(extras.items()),
             "ag_reserved_keys": sorted(AccessGridConfig.RESERVED_METADATA_KEYS),
-            "pacs_vendor": pacs.get("vendor", ""),
+            "pacs_vendor": descriptor.display_name if descriptor else vendor_id,
             "pacs_params_keys": list((pacs.get("params") or {}).keys()),
             "db_path": str(s.db_path),
             "host_port": f"{s.host}:{s.port}",

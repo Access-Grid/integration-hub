@@ -232,11 +232,16 @@ class SyncEngine:
         site_code = (ag_cfg.get("site_code") or "").strip()
         dedupe = bool(ag_cfg.get("dedupe_by_site_card", False))
         extra_metadata = dict(ag_cfg.get("extra_metadata") or {})
+        use_file_data = (
+            (pacs_cfg.get("options") or {}).get("credential_encoding")
+            == PacsConfig.ENCODING_FILE_DATA
+        )
         try:
             result.provisioned = phase1_provision.run(
                 snapshot, ag, ag_cfg["template_id"], site_code,
                 dedupe_by_site_card=dedupe,
                 extra_metadata=extra_metadata,
+                use_file_data=use_file_data,
             )
             result.status_changes = phase2_local_to_ag.run(snapshot, ag)
             result.deleted = phase3_deletions.run(snapshot, ag)
@@ -245,6 +250,7 @@ class SyncEngine:
                 snapshot, ag, ag_cfg["template_id"], site_code,
                 dedupe_by_site_card=dedupe,
                 extra_metadata=extra_metadata,
+                use_file_data=use_file_data,
             )
             result.field_updates = phase6_field_changes.run(snapshot, ag)
         except Exception as e:  # noqa: BLE001

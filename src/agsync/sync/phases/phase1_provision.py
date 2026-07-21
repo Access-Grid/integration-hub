@@ -30,6 +30,7 @@ def run(
     site_code: str = "",
     dedupe_by_site_card: bool = False,
     extra_metadata: dict | None = None,
+    use_file_data: bool = False,
 ) -> int:
     provisioned = 0
     skipped = 0
@@ -119,16 +120,23 @@ def run(
                 "expiration_date": expiration_date,
                 "metadata": metadata,
             }
-            if eff_site_code and eff_site_code.isdigit():
-                params["site_code"] = int(eff_site_code)
+            # Wire format: either the pre-encoded file_data blob (opt-in, when
+            # the adapter supplies one) or the decoded site_code + card_number
+            # (default). site_code/card_number stay in metadata either way so
+            # dedupe and debugging still work.
+            if use_file_data and cred.file_data:
+                params["file_data"] = cred.file_data
+            else:
+                if eff_site_code and eff_site_code.isdigit():
+                    params["site_code"] = int(eff_site_code)
+                if cred.card_number:
+                    params["card_number"] = cred.card_number
             if person.email:
                 params["email"] = person.email
             if person.phone:
                 params["phone_number"] = person.phone
             if person.title:
                 params["title"] = person.title
-            if cred.card_number:
-                params["card_number"] = cred.card_number
 
             # Insert tracking row in 'pending' state before the API call so a
             # failed provision still leaves a row for phase 5 to retry.

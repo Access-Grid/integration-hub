@@ -119,13 +119,27 @@ class AccessGridConfig:
 class PacsConfig:
     KEY = "pacs"
 
+    # How a credential's identity is transmitted to AccessGrid.
+    ENCODING_SITE_CARD = "site_card"  # default: decoded site_code + card_number
+    ENCODING_FILE_DATA = "file_data"  # verbatim pre-encoded payload
+
     @staticmethod
-    def save(vendor: str, params: dict[str, Any]) -> None:
-        _set_encrypted_json(PacsConfig.KEY, {"vendor": vendor, "params": params})
+    def save(vendor: str, params: dict[str, Any], options: dict[str, Any] | None = None) -> None:
+        _set_encrypted_json(
+            PacsConfig.KEY,
+            {"vendor": vendor, "params": params, "options": dict(options or {})},
+        )
 
     @staticmethod
     def load() -> dict[str, Any] | None:
         return _get_encrypted_json(PacsConfig.KEY)
+
+    @staticmethod
+    def credential_encoding() -> str:
+        """Return the configured encoding, defaulting to site_card."""
+        cfg = _get_encrypted_json(PacsConfig.KEY) or {}
+        enc = (cfg.get("options") or {}).get("credential_encoding")
+        return enc if enc == PacsConfig.ENCODING_FILE_DATA else PacsConfig.ENCODING_SITE_CARD
 
 
 def is_configured() -> bool:
