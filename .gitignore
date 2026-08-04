@@ -35,6 +35,9 @@ env/
 *.swp
 .DS_Store
 
+# Local agent notes / config
+.claude/
+
 # Logs
 *.log
 avigilon-alta.txt

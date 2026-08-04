@@ -58,6 +58,7 @@
   "credentials.title": "Credenciales emitidas",
   "credentials.holder": "Titular",
   "credentials.employee_id": "ID de empleado",
+  "credentials.credential_data": "Datos de credencial",
   "credentials.status": "Estado",
   "credentials.install": "Enlace de instalación",
   "credentials.copy": "Copiar",

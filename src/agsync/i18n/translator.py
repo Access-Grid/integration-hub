@@ -52,6 +52,11 @@ def _adapter_strings(locale: str) -> list[dict[str, str]]:
         out.append(CDVI_HELP.get(locale, CDVI_HELP.get(DEFAULT, {})))
     except ImportError:
         pass
+    try:
+        from agsync.lib.pacs.dmp.adapter import HELP_TEXT as DMP_HELP
+        out.append(DMP_HELP.get(locale, DMP_HELP.get(DEFAULT, {})))
+    except ImportError:
+        pass
     return out
 
 

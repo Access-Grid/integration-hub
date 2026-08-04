@@ -24,6 +24,7 @@ dependencies = [
     "sentry-sdk==2.14.0",
     "click==8.1.7",
     "segno==1.6.1",
+    "pydbisam==1.2.1",
     "accessgrid",
     "pywin32==306; sys_platform == 'win32'",
 ]

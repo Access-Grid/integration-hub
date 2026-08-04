@@ -8,7 +8,32 @@ into AccessGrid. Runs as a Windows Service on a NUC, exposes a web UI on port 53
 - Avigilon Unity (Plasec) — production
 - Avigilon Alta Access (cloud / OpenPath) — production
 - CDVI Atrium (on-prem) — production
+- DMP System Link (on-prem) — production, read-only
 - Lenel OnGuard — stub (interface only)
+
+### DMP System Link
+
+On-prem DMP panels (XR-series) programmed by System Link, which stores its data
+in a Blowfish-encrypted DBISAM database. The adapter reads that database
+directly off disk each cycle and decrypts it. Connection settings: DMP database
+folder path, encryption key, and (optional) the User Field holding the email.
+
+**Read-only.** System Link is store-and-forward — edits don't reach the panel
+without an operator-run `Panel > Send`, which the panel gates behind keypad
+authorization we can't automate. So the tool **never writes back to DMP**;
+revocation is handled on the AccessGrid side (suspend the pass). The DMP adapter
+advertises no status writeback and the engine's AG→PACS phases are no-ops for it.
+
+**Enrollment trigger + email.** DMP user records carry no email or phone, so the
+operator puts each person's email in a DMP **User Field** (`U_FIELD1` by
+default) in System Link. That field is both AccessGrid's delivery channel and
+the enrollment trigger — a user is synced iff it has an email there. (There's no
+name-marker option like CDVI's: the DMP `NAME` field truncates at 16 chars.)
+
+**Card data → AccessGrid.** The card number is the user's **Code** field. DMP
+does not retain the facility/site code, so the wizard's global site code is
+applied; `PROFILE1-4` hold the user's access levels. Recycled DMP user-number
+slots are handled by keying credentials on the stable card number.
 
 ### CDVI Atrium
 

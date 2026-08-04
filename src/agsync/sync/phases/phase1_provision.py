@@ -138,6 +138,15 @@ def run(
             if person.title:
                 params["title"] = person.title
 
+            # The credential's wire identity, shown in the pass listing:
+            # file_data when that's what we transmit, else site_code/card_number.
+            if use_file_data and cred.file_data:
+                credential_data = cred.file_data
+            elif eff_site_code and cred.card_number:
+                credential_data = f"{eff_site_code}/{cred.card_number}"
+            else:
+                credential_data = str(cred.card_number or cred.file_data or "")
+
             # Insert tracking row in 'pending' state before the API call so a
             # failed provision still leaves a row for phase 5 to retry.
             tracking.upsert(
@@ -151,6 +160,7 @@ def run(
                 last_synced_phone=person.phone,
                 last_synced_full_name=person.full_name,
                 last_synced_title=person.title,
+                credential_data=credential_data,
             )
 
             try:
@@ -170,6 +180,7 @@ def run(
                     last_synced_full_name=person.full_name,
                     last_synced_title=person.title,
                     last_known_ag_state=ag_state,
+                    credential_data=credential_data,
                 )
                 provisioned += 1
                 logger.info("  Provisioned AG card %s for %s", ag_card_id, person.full_name)
