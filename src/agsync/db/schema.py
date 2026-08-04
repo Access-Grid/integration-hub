@@ -86,6 +86,16 @@ MIGRATIONS: list[tuple[str, str]] = [
         ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0;
         """,
     ),
+    (
+        "004_credential_data",
+        """
+        -- The credential's wire identity as shown in the pass listing: either
+        -- the site_code/card_number pair or the pre-encoded file_data blob,
+        -- whichever the adapter transmits to AccessGrid.
+        ALTER TABLE ag_credentials
+        ADD COLUMN credential_data TEXT;
+        """,
+    ),
 ]
 
 
