@@ -56,3 +56,38 @@ class FakeCdviClient:
 
     def close(self):
         pass
+
+
+class FakeMillenniumUltraClient:
+    """Stand-in for MillenniumUltraClient — no network.
+
+    Serves a roster of {"ID": ...} rows and a {cardholder_id: html} map, which
+    is exactly what the real client returns, so the adapter's mapping and
+    trigger logic run against real page markup.
+    """
+
+    def __init__(self, roster=None, pages=None, company="ICON"):
+        self._roster = roster or []
+        self._pages = pages or {}
+        self.company = company
+        self.roster_calls = 0
+        self.page_calls: list[list[str]] = []
+
+    def list_roster(self):
+        self.roster_calls += 1
+        return self._roster
+
+    def get_cardholder_html(self, cardholder_id):
+        return self._pages[str(cardholder_id)]
+
+    def get_cardholders_html(self, ids):
+        self.page_calls.append(list(ids))
+        return {pid: self._pages[pid] for pid in ids if pid in self._pages}
+
+    def test_connection(self):
+        if not self._roster:
+            return False, f"Connected as {self.company}, but no cardholders are visible to this account."
+        return True, f"Connected as {self.company} — {len(self._roster):,} cardholders found."
+
+    def close(self):
+        pass

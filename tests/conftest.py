@@ -139,3 +139,37 @@ def make_cdvi_adapter():
         return adapter
 
     return _build
+
+
+# --- Millennium Ultra fixtures -------------------------------------------
+#
+# The cardholder page is the only place card data lives, so the adapter is
+# exercised against real (if synthetic) page markup rather than dicts.
+
+
+@pytest.fixture(scope="session")
+def mu_cardholder_html() -> str:
+    from pathlib import Path
+
+    return (Path(__file__).parent / "fixtures" / "millennium_ultra_cardholder.html").read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.fixture
+def make_mu_adapter():
+    """Build a MillenniumUltraAdapter with its client swapped for a fake."""
+    from agsync.lib.pacs.millennium_ultra.adapter import MillenniumUltraAdapter
+
+    def _build(fake_client, card_format="7", email_domain="iconcreds.com"):
+        adapter = MillenniumUltraAdapter(
+            base_url="https://mu.test",
+            session=".AspNet.UltraAuth=abc",
+            card_format=card_format,
+            email_domain=email_domain,
+        )
+        adapter._client.close()  # close the real httpx client built in __init__
+        adapter._client = fake_client
+        return adapter
+
+    return _build

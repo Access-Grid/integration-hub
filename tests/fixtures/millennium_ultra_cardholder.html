@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<!--
+  Synthetic Millennium Ultra cardholder page. Structurally faithful to a live
+  tenant (attribute spellings, empty-slot rendering, disabled personal-info
+  fields, the malformed "00:00 AM" midnight) but with invented people, so no
+  real cardholder data lives in the repo.
+
+  Slot 1 : populated, active, format 7 (HID 37)
+  Slot 2 : populated, inactive, format 1 (Wiegand Card), midnight timestamps
+  Slot 3 : empty — note the inputs carry no value= attribute at all
+-->
+<html lang="en">
+<head><title>Cardholders - Millennium Ultra</title></head>
+<body>
+<form action="/Cardholders/Cardholders/Index/12345" enctype="multipart/form-data" id="myForm" method="post">
+<input name="__RequestVerificationToken" type="hidden" value="TOKEN-FROM-THE-PAGE" />
+
+<div role="tabpanel" class="tab-pane active" id="identification">
+  <input name="FirstName" class="form-control" id="FirstName" type="text" value="Rosalind" />
+  <input name="LastName" class="form-control" id="LastName" type="text" value="Marchetti" />
+  <!-- relabelled "Card Type" on this tenant; do not parse by label -->
+  <input class="form-control" id="MiddleName" name="MiddleName" type="text" value="HID" />
+  <input name="EmployeeID" class="form-control" id="EmployeeID" type="text" value="30373420026" />
+  <select class="form-control selectpicker disabled" disabled="disabled" id="Sex" name="Sex">
+    <option selected="selected" value=""> </option>
+    <option value="M">Male</option>
+    <option value="F">Female</option>
+  </select>
+  <input class="form-control disabled" disabled="disabled" id="Address1" name="Address1" type="text" value="" />
+  <input class="form-control disabled" disabled="disabled" id="City" name="City" type="text" value="" />
+  <input class="form-control disabled" disabled="disabled" id="Phone" name="Phone" type="text" value="" />
+  <input class="form-control disabled" disabled="disabled" id="EMail" name="EMail" type="text" value="" />
+  <input data-val="true" id="CardholderType" name="CardholderType" type="hidden" value="Cardholder" />
+</div>
+
+<div role="tabpanel" class="tab-pane" id="cards">
+<div class="tab-content" id="cardsTabs">
+
+  <div role="tabpanel" class="tab-pane" id="Card_1">
+    <input type="hidden" name="Card_1_CardID" id="Card_1_CardID" value="6630" />
+    <input name="Card_1_PrintedCardNumber" id="Card_1_PrintedCardNumber" type="text" disabled="disabled" value="" />
+    <input name="Card_1_ActivationDate" class="form-control" id="Card_1_ActivationDate" type="text" value="02/18/2025 01:00 AM" />
+    <input type="checkbox" name="Card_1_Active" id="Card_1_Active" checked value="true">
+    <input name="Card_1_EncodedCardNumber" class="form-control" id="Card_1_EncodedCardNumber" type="text" value="30373420026" />
+    <input name="Card_1_ExpirationDate" class="form-control" id="Card_1_ExpirationDate" type="text" value="02/18/2026 01:00 AM" />
+    <input name="Card_1_FaciltyCode" class="form-control" id="Card_1_FaciltyCode" type="text" value="0" />
+    <select name="Card_1_CardFormat" id="Card_1_CardFormat" class="form-control selectpicker">
+      <option value="4" >ABA Card</option>
+      <option value="6" >Blue 37</option>
+      <option value="7" selected>HID 37</option>
+      <option value="3" >Marlok</option>
+      <option value="5" >None</option>
+      <option value="2" >Ultra - Wiegand 26 No FC</option>
+      <option value="1" >Wiegand Card</option>
+    </select>
+    <input name="Card_1_PinCode" id="Card_1_PinCode" type="text" disabled="disabled" />
+    <input name="Card_1_CardExpirationCount" class="form-control" id="Card_1_CardExpirationCount" type="text" value="0" />
+    <input type="checkbox" name="Card_1_Tenant_0" id="Card_1_Tenant_0" value="0" checked>
+    <input type="hidden" name="Card_1_AccessLevels" id="Card_1_AccessLevels" value="{}" />
+  </div>
+
+  <div role="tabpanel" class="tab-pane" id="Card_2">
+    <input type="hidden" name="Card_2_CardID" id="Card_2_CardID" value="6631" />
+    <input name="Card_2_ActivationDate" class="form-control" id="Card_2_ActivationDate" type="text" value="08/18/2026 00:00 AM" />
+    <input type="checkbox" name="Card_2_Active" id="Card_2_Active" value="true">
+    <input name="Card_2_EncodedCardNumber" class="form-control" id="Card_2_EncodedCardNumber" type="text" value="884422" />
+    <input name="Card_2_ExpirationDate" class="form-control" id="Card_2_ExpirationDate" type="text" value="08/17/2028 00:00 AM" />
+    <input name="Card_2_FaciltyCode" class="form-control" id="Card_2_FaciltyCode" type="text" value="12" />
+    <select name="Card_2_CardFormat" id="Card_2_CardFormat" class="form-control selectpicker">
+      <option value="4" >ABA Card</option>
+      <option value="6" >Blue 37</option>
+      <option value="7" >HID 37</option>
+      <option value="3" >Marlok</option>
+      <option value="5" >None</option>
+      <option value="2" >Ultra - Wiegand 26 No FC</option>
+      <option value="1" selected>Wiegand Card</option>
+    </select>
+    <input name="Card_2_CardExpirationCount" class="form-control" id="Card_2_CardExpirationCount" type="text" value="0" />
+    <input type="hidden" name="Card_2_AccessLevels" id="Card_2_AccessLevels" value="{}" />
+  </div>
+
+  <div role="tabpanel" class="tab-pane" id="Card_3">
+    <input type="hidden" name="Card_3_CardID" id="Card_3_CardID" />
+    <input name="Card_3_ActivationDate" class="form-control" id="Card_3_ActivationDate" type="text" value="" />
+    <input type="checkbox" name="Card_3_Active" id="Card_3_Active" value="true">
+    <input name="Card_3_EncodedCardNumber" class="form-control" id="Card_3_EncodedCardNumber" type="text" />
+    <input name="Card_3_ExpirationDate" class="form-control" id="Card_3_ExpirationDate" type="text" value="" />
+    <input name="Card_3_FaciltyCode" class="form-control" id="Card_3_FaciltyCode" type="text" />
+    <select name="Card_3_CardFormat" id="Card_3_CardFormat" class="form-control selectpicker">
+      <option value="4" >ABA Card</option>
+      <option value="6" >Blue 37</option>
+      <option value="7" >HID 37</option>
+      <option value="3" >Marlok</option>
+      <option value="5" >None</option>
+      <option value="2" >Ultra - Wiegand 26 No FC</option>
+      <option value="1" >Wiegand Card</option>
+    </select>
+    <input name="Card_3_CardExpirationCount" class="form-control" id="Card_3_CardExpirationCount" type="text" value="0" />
+    <input type="hidden" name="Card_3_AccessLevels" id="Card_3_AccessLevels" value="{}" />
+  </div>
+
+</div>
+</div>
+
+<div role="tabpanel" class="tab-pane" id="generalinfo">
+  <select class="form-control selectpicker disabled" disabled="disabled" id="Department" name="Department">
+    <option value="0"> </option>
+    <option value="51">Tenant</option>
+  </select>
+  <textarea name="Comment1" class="form-control" id="Comment1" rows="10"></textarea>
+</div>
+
+<div role="tabpanel" class="tab-pane" id="userfields">
+  <input type="text" name="UserField2" id="UserField" class="form-control" value="Tenant" />
+  <input type="text" name="UserField3" id="UserField" class="form-control" />
+  <input type="text" name="UserField1" id="UserField" class="form-control" value="2810" />
+</div>
+
+<input name="ID" id="ID" type="hidden" value="12345">
+<input name="TenantsAsJson" id="TenantsAsJson" type="hidden" value="[0]">
+<button type="submit" class="btn btn-primary" id="saveButton">Save</button>
+</form>
+</body>
+</html>
