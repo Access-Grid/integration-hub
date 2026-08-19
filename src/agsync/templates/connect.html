@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card narrow">
+  <h1>{{ t('connect.title') }}</h1>
+  <p class="muted">{{ t('connect.subtitle') }}</p>
+
+  {% if no_url %}
+    <div class="err">{{ t('connect.no_url') }}</div>
+  {% else %}
+    {% if not uri_registered %}
+      <div class="err">{{ t('wizard.connect.not_registered') }}</div>
+    {% endif %}
+    <div id="connect-panel"
+         hx-get="/connect/status?launch={{ launch_id }}"
+         hx-trigger="load, every 2s"
+         hx-swap="innerHTML">
+      <p class="muted">{{ t('common.loading') }}</p>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,39 @@
+{# Swapped in once AG Connect has handed back a session. The card formats
+   below are read live from the PACS — there is no static list. #}
+<div class="test-result ok">{{ t('wizard.connect.connected') }}</div>
+
+{% if error %}
+  <div class="err">{{ error }}</div>
+  <a class="button" href="/wizard/connect">{{ t('wizard.connect.retry') }}</a>
+{% elif not formats %}
+  <div class="err">{{ t('wizard.connect.no_formats') }}</div>
+  <a class="button" href="/wizard/connect">{{ t('wizard.connect.retry') }}</a>
+{% else %}
+  <form action="/wizard/pacs-trigger" method="post">
+    <h3>{{ t('wizard.connect.trigger_title') }}</h3>
+    <p class="muted">{{ t('wizard.connect.trigger_subtitle') }}</p>
+    <fieldset class="vendor-list">
+      {% for f in formats %}
+        <label class="vendor-card">
+          <input type="radio" name="trigger_card_format" value="{{ f.id }}"
+                 {% if loop.first %}required{% endif %}>
+          <span class="title">{{ f.label }}</span>
+        </label>
+      {% endfor %}
+    </fieldset>
+
+    <fieldset class="encoding-choice">
+      <legend>{{ t('pacs.' ~ vendor ~ '.mode_label') }}</legend>
+      <label class="radio-row">
+        <input type="radio" name="mode" value="desfire" checked>
+        {{ t('pacs.' ~ vendor ~ '.mode_desfire') }}
+      </label>
+      <label class="radio-row">
+        <input type="radio" name="mode" value="seos">
+        {{ t('pacs.' ~ vendor ~ '.mode_seos') }}
+      </label>
+    </fieldset>
+
+    <button type="submit">{{ t('common.finish') }}</button>
+  </form>
+{% endif %}

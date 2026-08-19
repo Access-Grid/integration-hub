@@ -14,6 +14,13 @@ populated by the adapter — the engine never knows which field on which
 object the operator must set to "accessgrid" (or whatever the local
 sentinel is). That mapping is owned by the adapter alongside the help
 text shown in the wizard.
+
+Most PACS are a source of credentials: the card exists there first and we
+copy it out. Millennium Ultra in Seos mode is the other direction —
+AccessGrid mints the facility code and card number and the adapter writes
+them back. Those adapters set `Credential.allocate_identity` so phase 1
+sends no identity of its own, advertise `supports_credential_writeback`,
+and receive the result as `CredentialIdentity` values.
 """
 
 from __future__ import annotations
@@ -23,6 +30,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
+
+
+class PacsAuthExpired(RuntimeError):
+    """The PACS session we were given is no longer valid.
+
+    Distinct from an ordinary connection error because no amount of retrying
+    fixes it — a human has to sign in again. The engine stops the cycle,
+    flags the UI, and notifies the operator instead of letting an empty
+    result look like "every cardholder was deleted".
+    """
 
 
 class CredentialStatus(str, Enum):
@@ -54,6 +71,12 @@ class Credential:
     # the global site_code in settings (used by Avigilon Alta, whose facility
     # code is entered per-credential rather than configured once).
     site_code: str = ""
+    # True when AccessGrid should mint the credential's identity instead of
+    # the PACS supplying one. Phase 1 then omits site_code/card_number
+    # entirely (AccessGrid allocates on omission) and skips dedupe, since
+    # there is nothing yet to dedupe against. Set by adapters that write
+    # credentials *into* the PACS — see supports_credential_writeback.
+    allocate_identity: bool = False
     # Pre-encoded credential payload (hex), when the PACS stores one. CDVI
     # keeps a single encoded card `number`; set this to that value so an
     # operator can choose to transmit it verbatim as AccessGrid `file_data`
@@ -65,6 +88,20 @@ class Credential:
     deactivate_date: datetime | None = None
     trigger_active: bool = False
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CredentialIdentity:
+    """An AccessGrid-allocated credential, on its way back into a PACS.
+
+    One per issued device: a pass installed on both a phone and a watch
+    yields two, each with its own card number.
+    """
+
+    site_code: str
+    card_number: str
+    activate_date: datetime | None = None
+    deactivate_date: datetime | None = None
 
 
 @dataclass
@@ -87,6 +124,11 @@ class PacsDescriptor:
     # sent to AccessGrid as `file_data`. Gates the wizard's encoding radio;
     # when False the operator only gets site_code + card_number.
     supports_file_data: bool = False
+    # True if the operator must hand us a browser session before the
+    # integration can talk to the PACS at all (Millennium Ultra's login is
+    # captcha-gated). The wizard then runs the AG Connect step, and only
+    # afterwards can it read live values such as the card-format list.
+    requires_connect: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,3 +159,22 @@ class PacsAdapter(Protocol):
     # Capability flags. Default True; adapters can advertise less.
     @property
     def supports_status_writeback(self) -> bool: ...
+
+    # Optional: adapters whose PACS *receives* credentials from AccessGrid.
+    # When True, phase 1 hands back the identities AccessGrid allocated so
+    # the adapter can write them into the PACS, and phase 4 re-offers any
+    # that appear later (a second device installed after provisioning).
+    @property
+    def supports_credential_writeback(self) -> bool: ...
+
+    def write_back_credentials(
+        self,
+        person_id: str,
+        credential_id: str,
+        identities: list[CredentialIdentity],
+    ) -> bool:
+        """Write AccessGrid-allocated identities into the PACS.
+
+        Must be idempotent: it is re-offered every cycle with the full list,
+        and identities already present are expected to be skipped.
+        """

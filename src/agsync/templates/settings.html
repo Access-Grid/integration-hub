@@ -9,6 +9,9 @@
   {% if ok == 'dedupe' %}
     <div class="test-result ok">{{ t('settings.dedupe.saved') }}</div>
   {% endif %}
+  {% if ok == 'notifications' %}
+    <div class="test-result ok">{{ t('settings.ok.notifications') }}</div>
+  {% endif %}
   {% if ok == 'extra_metadata' %}
     <div class="test-result ok">{{ t('settings.extra_metadata.saved') }}</div>
   {% endif %}
@@ -115,6 +118,44 @@
       });
     })();
   </script>
+
+  {% if pacs_requires_connect %}
+  <h2>{{ t('settings.pacs_session.title') }}</h2>
+  <p>
+    {% if pacs_session_at %}
+      <span class="badge ok">{{ t('settings.pacs_session.connected', when=pacs_session_at) }}</span>
+    {% else %}
+      <span class="badge err">{{ t('settings.pacs_session.disconnected') }}</span>
+    {% endif %}
+  </p>
+  <p><a class="button" href="/connect">{{ t('connect.action') }}</a></p>
+  {% endif %}
+
+  <h2>{{ t('settings.notifications.title') }}</h2>
+  <p class="muted">{{ t('settings.notifications.subtitle') }}</p>
+  <form action="/settings/notifications" method="post">
+    <label>{{ t('settings.notifications.smtp_host') }}
+      <input name="smtp_host" value="{{ smtp_host }}" placeholder="smtp.example.com">
+    </label>
+    <label>{{ t('settings.notifications.smtp_port') }}
+      <input name="smtp_port" type="number" min="1" max="65535" value="{{ smtp_port }}">
+    </label>
+    <label>{{ t('settings.notifications.from_address') }}
+      <input name="from_address" value="{{ smtp_from }}" placeholder="agsync@example.com">
+    </label>
+    <label>{{ t('settings.notifications.smtp_username') }}
+      <input name="smtp_username" value="{{ smtp_username }}" autocomplete="off">
+    </label>
+    <label>{{ t('settings.notifications.smtp_password') }}
+      {# Left blank on load; an empty submit keeps the stored password. #}
+      <input name="smtp_password" type="password" value="" autocomplete="new-password">
+    </label>
+    <label class="radio-row">
+      <input type="checkbox" name="use_ssl" value="1" {% if smtp_use_ssl %}checked{% endif %}>
+      {{ t('settings.notifications.use_ssl') }}
+    </label>
+    <button type="submit">{{ t('common.save') }}</button>
+  </form>
 
   <h2>{{ t('settings.about') }}</h2>
   <dl class="kv">

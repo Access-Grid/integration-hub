@@ -8,7 +8,12 @@ from fastapi.responses import RedirectResponse
 from ..auth import require_admin
 from ..config import get_settings
 from ..lib.pacs import get_descriptor
-from ..settings_store import AccessGridConfig, PacsConfig
+from ..settings_store import (
+    AccessGridConfig,
+    MillenniumSession,
+    NotificationConfig,
+    PacsConfig,
+)
 
 # Match what AccessGrid accepts for metadata keys: keep it conservative —
 # letters, digits, underscore, hyphen — to avoid surprises in their API
@@ -49,6 +54,8 @@ def settings_page(
     extras: dict[str, str] = ag.get("extra_metadata") or {}
     vendor_id = pacs.get("vendor", "")
     descriptor = get_descriptor(vendor_id) if vendor_id else None
+    smtp = NotificationConfig.load() or {}
+    session = MillenniumSession.load() or {}
     return request.app.state.template_response(
         request, "settings.html",
         {
@@ -60,6 +67,13 @@ def settings_page(
             "ag_reserved_keys": sorted(AccessGridConfig.RESERVED_METADATA_KEYS),
             "pacs_vendor": descriptor.display_name if descriptor else vendor_id,
             "pacs_params_keys": list((pacs.get("params") or {}).keys()),
+            "pacs_requires_connect": bool(descriptor and descriptor.requires_connect),
+            "pacs_session_at": session.get("captured_at", "") if session.get("auth_cookie") else "",
+            "smtp_host": smtp.get("smtp_host", ""),
+            "smtp_port": smtp.get("smtp_port", 587),
+            "smtp_from": smtp.get("from_address", ""),
+            "smtp_username": smtp.get("smtp_username", ""),
+            "smtp_use_ssl": bool(smtp.get("use_ssl", False)),
             "db_path": str(s.db_path),
             "host_port": f"{s.host}:{s.port}",
             "ips": _local_ips(),
@@ -95,6 +109,41 @@ def update_dedupe(
     if not AccessGridConfig.update_dedupe(flag):
         return RedirectResponse(url="/settings?err=not_configured", status_code=303)
     return RedirectResponse(url="/settings?ok=dedupe", status_code=303)
+
+
+@router.post("/settings/notifications")
+def update_notifications(
+    request: Request,
+    smtp_host: str = Form(""),
+    smtp_port: str = Form("587"),
+    from_address: str = Form(""),
+    smtp_username: str = Form(""),
+    smtp_password: str = Form(""),
+    use_ssl: str = Form(""),
+    _user=Depends(require_admin),
+):
+    """Save the optional SMTP relay used for reconnect notices.
+
+    An empty password field means "keep the stored one", so the form can be
+    re-submitted without the secret ever being rendered back to the browser.
+    """
+    existing = NotificationConfig.load() or {}
+    try:
+        port = int(smtp_port or 587)
+    except ValueError:
+        return RedirectResponse(url="/settings?err=smtp_port", status_code=303)
+    ssl_on = use_ssl.strip().lower() in ("1", "on", "true", "yes")
+    NotificationConfig.save(
+        smtp_host=smtp_host.strip(),
+        smtp_port=port,
+        smtp_username=smtp_username.strip(),
+        smtp_password=smtp_password or existing.get("smtp_password", ""),
+        from_address=from_address.strip(),
+        # STARTTLS is the default for everything except implicit-SSL relays.
+        use_starttls=not ssl_on,
+        use_ssl=ssl_on,
+    )
+    return RedirectResponse(url="/settings?ok=notifications", status_code=303)
 
 
 def _validate_meta_key(key: str) -> str:

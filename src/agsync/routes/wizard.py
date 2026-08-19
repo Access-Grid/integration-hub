@@ -7,6 +7,13 @@ Five steps:
   4. PACS creds + test
   5. Done — start the engine
 
+A PACS that advertises `requires_connect` splits step 4 in two, because
+nothing about it can be reached until a human has signed in: first the
+connection settings, then an AG Connect hand-off followed by the trigger
+choice, which is read live from the PACS. The engine is only started once
+that trigger exists — a half-configured install would otherwise start
+syncing against no trigger at all.
+
 We don't persist multi-step state in a session; each step submits the
 data it needs and the next step is rendered. Refreshing a step is safe.
 """
@@ -20,6 +27,7 @@ from fastapi.responses import RedirectResponse
 
 from ..auth import SESSION_COOKIE, current_user, sign_session
 from ..auth.store import admin_exists, create_admin
+from ..connect import register as uri_register
 from ..lib.pacs import available_pacs, get_descriptor
 from ..settings_store import AccessGridConfig, PacsConfig, is_configured
 from ..sync import get_engine
@@ -51,21 +59,36 @@ def _require_admin_if_bootstrapped(request: Request) -> None:
         )
 
 
+def _needs_connect_step(pacs: dict | None) -> bool:
+    """True when a connect-gated PACS is saved but has no trigger yet."""
+    if not pacs:
+        return False
+    descriptor = get_descriptor(pacs.get("vendor", ""))
+    if descriptor is None or not descriptor.requires_connect:
+        return False
+    return not (pacs.get("params") or {}).get("trigger_card_format")
+
+
 def _step(request: Request) -> int:
     if not admin_exists():
         return 1
     if AccessGridConfig.load() is None:
         return 2
-    if PacsConfig.load() is None:
+    pacs = PacsConfig.load()
+    if pacs is None:
         # If they got partway through PACS step we route based on whether
         # a vendor has been picked yet via the form param.
         return 3
+    if _needs_connect_step(pacs):
+        return 4
     return 5
 
 
 @router.get("")
 def wizard_index(request: Request):
     s = _step(request)
+    if s == 4:
+        return RedirectResponse(url="/wizard/connect", status_code=303)
     return request.app.state.template_response(
         request, f"wizard/step{s}.html",
         {"step": s, "pacs_options": available_pacs()},
@@ -153,7 +176,60 @@ async def wizard_pacs(request: Request):
         enc = form.get("credential_encoding", "site_card")
         options["credential_encoding"] = "file_data" if enc == "file_data" else "site_card"
     PacsConfig.save(vendor, params, options)
+    if descriptor.requires_connect:
+        # Nothing works until a human signs in, so hand off to AG Connect
+        # rather than starting the engine against an unusable connection.
+        return RedirectResponse(url="/wizard/connect", status_code=303)
     # Setup is complete — start the engine.
     if is_configured():
         get_engine().start()
+    return RedirectResponse(url="/wizard", status_code=303)
+
+
+@router.get("/connect")
+def wizard_connect(request: Request):
+    """Step 4b — hand off to AG Connect, then pick the trigger card format."""
+    _require_admin_if_bootstrapped(request)
+    pacs = PacsConfig.load()
+    if not pacs:
+        return RedirectResponse(url="/wizard", status_code=303)
+    descriptor = get_descriptor(pacs.get("vendor", ""))
+    if descriptor is None or not descriptor.requires_connect:
+        return RedirectResponse(url="/wizard", status_code=303)
+
+    from .connect import _login_url, _registry
+
+    login_url = _login_url()
+    launch_id = _registry.create(login_url).launch_id if login_url else ""
+    return request.app.state.template_response(
+        request, "wizard/step4_connect.html",
+        {
+            "step": 4,
+            "vendor": descriptor.vendor,
+            "descriptor": descriptor,
+            "launch_id": launch_id,
+            "uri_registered": uri_register.is_registered(),
+        },
+    )
+
+
+@router.post("/pacs-trigger")
+def wizard_pacs_trigger(
+    request: Request,
+    trigger_card_format: str = Form(...),
+    mode: str = Form("desfire"),
+):
+    """Record the enrollment trigger, completing a connect-gated setup."""
+    _require_admin_if_bootstrapped(request)
+    pacs = PacsConfig.load()
+    if not pacs:
+        return RedirectResponse(url="/wizard", status_code=303)
+    params = dict(pacs.get("params") or {})
+    params["trigger_card_format"] = trigger_card_format.strip()
+    params["mode"] = "seos" if mode == "seos" else "desfire"
+    PacsConfig.save(pacs["vendor"], params, pacs.get("options") or {})
+    engine = get_engine()
+    engine.invalidate_pacs_adapter()
+    if is_configured():
+        engine.start()
     return RedirectResponse(url="/wizard", status_code=303)

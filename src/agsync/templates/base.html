@@ -9,7 +9,13 @@
 </head>
 <body>
 {% if engine_status is defined %}
-  {% if not engine_status.pacs_reachable %}
+  {% if engine_status.reconnect_required %}
+    {# Only a human can clear this one: the PACS login is captcha-gated. #}
+    <div class="banner err">
+      {{ t('alert.reconnect_required') }}
+      <a href="/connect">{{ t('connect.action') }}</a>
+    </div>
+  {% elif not engine_status.pacs_reachable %}
     <div class="banner err">{{ t('alert.pacs_unreachable') }}</div>
   {% endif %}
   {% if not engine_status.ag_reachable %}

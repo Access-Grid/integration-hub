@@ -1,0 +1,681 @@
+"""Millennium Ultra → vendor-agnostic adapter.
+
+What makes Millennium different from every other adapter here:
+
+  * **There is no API.** The adapter drives the operator's own web screens
+    with a session cookie captured by the AG Connect side-car, because the
+    login is captcha-gated and can never be replayed headlessly. When the
+    cookie dies, MillenniumAuthError propagates and the engine asks a human
+    to reconnect (see agsync.notifications) instead of guessing.
+
+  * **The trigger is a card format, not a sentinel field.** The operator
+    picks one format at setup time — "HID 37", say — and any card slot on
+    any cardholder carrying that format is enrolled. There is nothing to
+    type into a comment field. An *empty* slot cannot carry a format
+    (verified live: Millennium discards a format posted for a slot with no
+    card), so the trigger is always evaluated against a slot that holds a
+    real card.
+
+  * **It runs in one of two directions**, chosen at setup:
+
+      DESFire — the card already exists in Millennium. We copy its facility
+        code + card number out to AccessGrid. Millennium is the source of
+        truth and we never write a card, only toggle State.
+
+      Seos — AccessGrid mints the credential. The trigger card marks *who*
+        should get a pass; AccessGrid allocates the facility code and card
+        number, and we write them back into the cardholder's empty slots.
+        A cardholder is only eligible with **two** free slots, because a
+        person who installs on both a phone and a watch needs two — running
+        out halfway would leave the second device unprovisionable.
+
+  * **Every write is a full-form round-trip.** Millennium's save replaces
+    the whole cardholder record, so html_form re-posts every field the page
+    served and mutates only the slot in question. Access levels, photos,
+    user fields and vehicle details are echoed back untouched — this
+    adapter never edits a cardholder's access levels.
+
+  * **Cardholders are people and cards at once.** This install has ~1800 of
+    them, one detail page each at ~90 KB, so a full sweep costs ~5 minutes.
+    We pay that once to build a profile cache, then each cycle refetch only
+    the cardholders that are enrolled plus a rotating slice of the rest, so
+    a newly-enrolled card is still discovered without re-reading 158 MB
+    every 30 minutes. See _profile_for.
+
+This install stores no email addresses or phone numbers, so phase 1 would
+skip every cardholder for want of a delivery channel. Instead we synthesize
+a deterministic address per cardholder from their name and primary key
+against an operator-supplied domain; distribution happens through the
+/credentials page's QR code and install URL.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+from ..base import (
+    ConnectionResult,
+    Credential,
+    CredentialIdentity,
+    CredentialStatus,
+    PacsDescriptor,
+    Person,
+)
+from .client import CARD_SLOTS, MillenniumAuthError, MillenniumUltraClient
+from .html_form import CardholderForm
+
+logger = logging.getLogger(__name__)
+
+MODE_DESFIRE = "desfire"
+MODE_SEOS = "seos"
+
+# Seos needs this many free slots before we will provision. Millennium gives
+# each cardholder three; a phone and a watch install consume one each.
+REQUIRED_EMPTY_SLOTS = 2
+
+# Cardholders whose detail page we re-read per cycle beyond the enrolled
+# ones. Enrolled cardholders are always refreshed; this budget is what
+# discovers newly-enrolled cards, so it trades discovery latency for load.
+DEFAULT_SWEEP_BUDGET = 400
+
+# Millennium's date/time fields, e.g. "08/17/2028 12:00 AM".
+DATE_FORMAT = "%m/%d/%Y %I:%M %p"
+
+# Roster names arrive as "Last, Middle. First" — this install repurposes the
+# middle-name field as a card-type label ("HID", "RFID"), so a cardholder
+# with none is simply "Last, First".
+_ROSTER_NAME = re.compile(r"^(?P<last>[^,]+),\s*(?:(?P<middle>\S+)\.\s+)?(?P<first>.+)$")
+
+
+@dataclass(frozen=True)
+class Slot:
+    """One of a cardholder's three card slots."""
+
+    index: int
+    card_id: str
+    card_number: str
+    facility_code: str
+    card_format: str
+    active: bool
+
+    @property
+    def empty(self) -> bool:
+        return not self.card_id and not self.card_number
+
+
+def parse_roster_name(name: str) -> tuple[str, str]:
+    """"Abayan, HID. Tanyabella" -> ("Tanyabella", "Abayan").
+
+    Used only for the initial listing; once a cardholder's detail page is
+    read, its FirstName/LastName fields win.
+    """
+    match = _ROSTER_NAME.match((name or "").strip())
+    if not match:
+        return "", (name or "").strip()
+    return match.group("first").strip(), match.group("last").strip()
+
+
+def synthesize_email(first: str, last: str, cardholder_id: str, domain: str) -> str:
+    """Deterministic address for an install that stores none.
+
+    The cardholder's primary key is part of the local part because this
+    install carries genuine duplicates — the same human appears once per
+    card technology — and each is a separate pass.
+    """
+    domain = (domain or "").strip().lstrip("@")
+    if not domain:
+        return ""
+    parts = [re.sub(r"[^a-z0-9]", "", (p or "").lower()) for p in (first, last)]
+    local = ".".join([p for p in parts if p] + [str(cardholder_id)])
+    return f"{local}@{domain}"
+
+
+def format_datetime(value: datetime, offset_seconds: int) -> str:
+    """Render a UTC instant the way Millennium's date fields expect it.
+
+    The server parses these fields against the browser's `timeoffset`
+    cookie, which AG Connect captured alongside the session, so a UTC string
+    would land hours away from the intended local time.
+    """
+    if value.tzinfo is not None:
+        value = value.astimezone(UTC).replace(tzinfo=None)
+    return (value + timedelta(seconds=offset_seconds)).strftime(DATE_FORMAT)
+
+
+class SeosLedger:
+    """Which Millennium slots hold the AccessGrid-allocated cards.
+
+    In Seos mode the card does not exist in Millennium until we write it, so
+    there is nothing on the cardholder that says "this slot belongs to
+    AccessGrid". Stamping a marker into a customer-visible field would be a
+    side effect on their data, so we keep the mapping on our side instead.
+    """
+
+    KEY = "millennium_seos_slots"
+
+    @staticmethod
+    def _load_all() -> dict[str, list[dict]]:
+        from ....settings_store import get_json
+
+        return get_json(SeosLedger.KEY) or {}
+
+    @staticmethod
+    def _save_all(data: dict[str, list[dict]]) -> None:
+        from ....settings_store import set_json
+
+        set_json(SeosLedger.KEY, data)
+
+    @staticmethod
+    def _key(person_id: str, credential_id: str) -> str:
+        return f"{person_id}:{credential_id}"
+
+    @staticmethod
+    def get(person_id: str, credential_id: str) -> list[dict]:
+        return SeosLedger._load_all().get(SeosLedger._key(person_id, credential_id), [])
+
+    @staticmethod
+    def record(person_id: str, credential_id: str, entries: list[dict]) -> None:
+        """Replace the recorded slots, keeping one entry per physical card.
+
+        A card that was deleted in Millennium gets rewritten into a fresh
+        slot, so the same facility code + card number can be recorded twice
+        over a credential's life; the later slot is the live one.
+        """
+        deduped: dict[tuple[str, str], dict] = {}
+        for entry in entries:
+            deduped[(str(entry.get("facility_code")), str(entry.get("card_number")))] = entry
+        data = SeosLedger._load_all()
+        data[SeosLedger._key(person_id, credential_id)] = list(deduped.values())
+        SeosLedger._save_all(data)
+
+    @staticmethod
+    def forget(person_id: str, credential_id: str) -> None:
+        data = SeosLedger._load_all()
+        if data.pop(SeosLedger._key(person_id, credential_id), None) is not None:
+            SeosLedger._save_all(data)
+
+
+class MillenniumUltraAdapter:
+    def __init__(
+        self,
+        base_url: str = "",
+        email_domain: str = "",
+        notify_email: str = "",
+        trigger_card_format: str = "",
+        mode: str = MODE_DESFIRE,
+        auth_cookie: str = "",
+        company_name: str = "",
+        time_offset: str = "",
+        sweep_budget: int = DEFAULT_SWEEP_BUDGET,
+    ):
+        session = _stored_session() if not auth_cookie else {}
+        self.base_url = base_url or session.get("base_url", "")
+        self.email_domain = email_domain
+        self.notify_email = notify_email
+        self.trigger_card_format = str(trigger_card_format or "")
+        self.mode = MODE_SEOS if mode == MODE_SEOS else MODE_DESFIRE
+        self._offset_seconds = int(time_offset or session.get("time_offset") or 0)
+        self._client = MillenniumUltraClient(
+            base_url=self.base_url,
+            auth_cookie=auth_cookie or session.get("auth_cookie", ""),
+            company_name=company_name or session.get("company_name", ""),
+            time_offset=str(time_offset or session.get("time_offset") or ""),
+        )
+        self._sweep_budget = int(sweep_budget)
+
+        from . import DESCRIPTOR
+
+        self._descriptor = DESCRIPTOR
+        # cardholder id -> {"slots": [Slot], "first": str, "last": str}
+        self._profiles: dict[str, dict] = {}
+        # Roster ids seen in the current list_people() pass.
+        self._roster: dict[str, dict] = {}
+        # Un-enrolled cardholders whose detail page this cycle will re-read.
+        self._sweep: set[str] = set()
+        # Where the next cycle's slice starts, so coverage rotates rather
+        # than re-reading the same head of the roster forever.
+        self._sweep_cursor = 0
+        self._cold = True
+
+    # -- contract --------------------------------------------------------
+
+    def descriptor(self) -> PacsDescriptor:
+        return self._descriptor
+
+    def test_connection(self) -> ConnectionResult:
+        ok, message = self._client.test_connection()
+        return ConnectionResult(ok=ok, message=message)
+
+    def card_formats(self) -> list[tuple[str, str]]:
+        """Every card format defined on this install, for the setup screen.
+
+        Millennium has no endpoint that lists formats, so we read the
+        <select> off the first cardholder in the roster.
+        """
+        roster = self._client.list_cardholders()
+        if not roster:
+            return []
+        return self._client.card_formats(roster[0]["ID"])
+
+    def list_people(self) -> Iterable[Person]:
+        self._roster = {}
+        roster = self._client.list_cardholders()
+        self._plan_sweep([str(r.get("ID")) for r in roster])
+
+        for row in roster:
+            pid = str(row.get("ID"))
+            self._roster[pid] = row
+            first, last = parse_roster_name(row.get("Name", ""))
+            profile = self._profiles.get(pid)
+            if profile:
+                first = profile.get("first") or first
+                last = profile.get("last") or last
+            full_name = " ".join(p for p in (first, last) if p)
+            yield Person(
+                id=pid,
+                full_name=full_name,
+                first_name=first,
+                last_name=last,
+                email=synthesize_email(first, last, pid, self.email_domain),
+                # Millennium has no cardholder-level enable flag; the
+                # roster's IsActive only marks the row the UI has selected.
+                active=True,
+                raw=row,
+            )
+        self._cold = False
+
+    def _plan_sweep(self, ids: list[str]) -> None:
+        """Pick which un-enrolled cardholders to re-read this cycle.
+
+        Enrolled cardholders are always refreshed, so this slice exists only
+        to notice cards that became enrolled since we last looked. It walks
+        the roster a window at a time, so every cardholder is revisited
+        within a bounded number of cycles instead of the same head being
+        re-read forever.
+        """
+        if self._cold:
+            # Nothing is cached yet, so a partial read would look like a
+            # population with no credentials — which phase 3 reads as mass
+            # deletion. Take the whole thing once.
+            self._sweep = set(ids)
+            logger.info(
+                "Millennium: first sweep — reading all %d cardholder detail pages; "
+                "later cycles refresh enrolled cardholders plus %d others",
+                len(ids), self._sweep_budget,
+            )
+            return
+
+        if not ids or self._sweep_budget <= 0:
+            self._sweep = set()
+            return
+
+        start = self._sweep_cursor % len(ids)
+        window = min(self._sweep_budget, len(ids))
+        # Wrap around the end of the roster so the slice stays contiguous.
+        self._sweep = set((ids + ids)[start : start + window])
+        self._sweep_cursor = (start + window) % len(ids)
+        logger.debug(
+            "Millennium: re-reading %d of %d cardholders this cycle (from index %d)",
+            window, len(ids), start,
+        )
+
+    def list_credentials(self, person_id: str) -> Iterable[Credential]:
+        pid = str(person_id)
+        profile = self._profile_for(pid)
+        if profile is None:
+            return []
+        slots: list[Slot] = profile["slots"]
+        triggers = [s for s in slots if self._is_trigger(s)]
+        if not triggers:
+            return []
+
+        if self.mode == MODE_DESFIRE:
+            return [self._desfire_credential(pid, s) for s in triggers]
+        return self._seos_credentials(pid, slots, triggers[0])
+
+    def update_credential_status(
+        self, person_id: str, credential_id: str, status: CredentialStatus
+    ) -> bool:
+        """Suspend or resume by toggling the card's Active checkbox.
+
+        Millennium has no other switch: an unchecked Card_N_Active is an
+        inactive card. The card keeps its number, dates and access levels.
+        """
+        if status not in (CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED):
+            return False
+        want_active = status == CredentialStatus.ACTIVE
+        pid = str(person_id)
+        slots = self._slots_for_credential(pid, credential_id)
+        if not slots:
+            logger.warning(
+                "Millennium: no slot backs credential %s/%s — not writing",
+                pid, credential_id,
+            )
+            return False
+
+        form = self._client.get_cardholder_form(pid)
+        by_index = {s.index: s for s in _read_slots(form)}
+        writable = 0
+        changed = False
+        for index in slots:
+            field = f"Card_{index}_Active"
+            slot = by_index.get(index)
+            if form.find(field) is None or slot is None or slot.empty:
+                # The card behind this credential is gone. Activating an
+                # empty slot would be rejected by Millennium's own
+                # validation anyway; report the failure and let phase 3
+                # reconcile the disappearance.
+                logger.warning(
+                    "Millennium: slot %s on cardholder %s holds no card — "
+                    "not writing status",
+                    index, pid,
+                )
+                continue
+            writable += 1
+            if form.is_checked(field) != want_active:
+                form.set_checked(field, want_active)
+                changed = True
+        if not writable:
+            return False
+        if not changed:
+            return True
+        ok = self._client.save_cardholder(pid, form)
+        if ok:
+            self._profiles.pop(pid, None)
+        return ok
+
+    @property
+    def supports_status_writeback(self) -> bool:
+        return True
+
+    @property
+    def supports_credential_writeback(self) -> bool:
+        """Seos mints credentials in AccessGrid and writes them into the PACS."""
+        return self.mode == MODE_SEOS
+
+    def write_back_credentials(
+        self,
+        person_id: str,
+        credential_id: str,
+        identities: list[CredentialIdentity],
+    ) -> bool:
+        """Write AccessGrid-allocated cards into the cardholder's empty slots.
+
+        Called once per newly-issued identity — a pass installed on both a
+        phone and a watch yields two, which is why provisioning demands two
+        free slots up front. Identities already present (matched by facility
+        code + card number) are skipped, so this is safe to re-run.
+        """
+        if self.mode != MODE_SEOS or not identities:
+            return False
+        pid = str(person_id)
+        form = self._client.get_cardholder_form(pid)
+        slots = _read_slots(form)
+        existing = {(s.facility_code, s.card_number) for s in slots if not s.empty}
+        free = [s.index for s in slots if s.empty]
+
+        written = list(SeosLedger.get(pid, credential_id))
+        pending = [
+            i for i in identities
+            if (str(i.site_code), str(i.card_number)) not in existing
+        ]
+        if not pending:
+            return True
+
+        if len(pending) > len(free):
+            logger.error(
+                "Millennium: cardholder %s has %d free slot(s) but %d credential(s) "
+                "to write — writing none",
+                pid, len(free), len(pending),
+            )
+            return False
+
+        for identity in pending:
+            slot = free.pop(0)
+            if not self._client.card_number_is_free(
+                slot, str(identity.card_number), str(identity.site_code),
+                self.trigger_card_format,
+            ):
+                logger.error(
+                    "Millennium: card %s/%s is already in use — not writing for %s",
+                    identity.site_code, identity.card_number, pid,
+                )
+                return False
+            self._fill_slot(form, slot, identity)
+            written.append({
+                "slot": slot,
+                "card_number": str(identity.card_number),
+                "facility_code": str(identity.site_code),
+            })
+
+        if not self._client.save_cardholder(pid, form):
+            return False
+        SeosLedger.record(pid, credential_id, written)
+        self._profiles.pop(pid, None)
+        logger.info(
+            "Millennium: wrote %d credential(s) into cardholder %s", len(pending), pid,
+        )
+        return True
+
+    # -- internals -------------------------------------------------------
+
+    def _is_trigger(self, slot: Slot) -> bool:
+        # A slot only carries a format when it holds a real card, so this is
+        # never true for an empty slot.
+        return (
+            bool(self.trigger_card_format)
+            and slot.card_format == self.trigger_card_format
+            and not slot.empty
+        )
+
+    def _desfire_credential(self, pid: str, slot: Slot) -> Credential:
+        return Credential(
+            id=f"slot{slot.index}",
+            person_id=pid,
+            card_number=slot.card_number,
+            site_code=slot.facility_code,
+            status=(
+                CredentialStatus.ACTIVE if slot.active else CredentialStatus.SUSPENDED
+            ),
+            trigger_active=True,
+            raw={"slot": slot.index, "card_id": slot.card_id},
+        )
+
+    def _seos_credentials(
+        self, pid: str, slots: list[Slot], trigger: Slot
+    ) -> list[Credential]:
+        credential_id = f"seos-slot{trigger.index}"
+        ledger = SeosLedger.get(pid, credential_id)
+        empty = [s for s in slots if s.empty]
+
+        if not ledger and len(empty) < REQUIRED_EMPTY_SLOTS:
+            logger.info(
+                "Millennium: skipping cardholder %s — Seos needs %d free card slot(s), "
+                "found %d",
+                pid, REQUIRED_EMPTY_SLOTS, len(empty),
+            )
+            return []
+
+        # Once written, the AccessGrid cards' own State drives status; before
+        # that there is nothing in Millennium yet, so the pass starts active.
+        written = {str(e.get("slot")) for e in ledger}
+        backing = [s for s in slots if str(s.index) in written]
+        status = (
+            CredentialStatus.ACTIVE
+            if not backing or any(s.active for s in backing)
+            else CredentialStatus.SUSPENDED
+        )
+        return [
+            Credential(
+                id=credential_id,
+                person_id=pid,
+                # Empty on purpose: AccessGrid allocates the facility code and
+                # card number, and phase 1 must not send one of its own.
+                card_number="",
+                site_code="",
+                status=status,
+                trigger_active=True,
+                allocate_identity=True,
+                raw={"trigger_slot": trigger.index, "written_slots": sorted(written)},
+            )
+        ]
+
+    def _slots_for_credential(self, pid: str, credential_id: str) -> list[int]:
+        """Which Millennium slot(s) a tracked credential maps to."""
+        if credential_id.startswith("seos-"):
+            return [int(e["slot"]) for e in SeosLedger.get(pid, credential_id)]
+        match = re.fullmatch(r"slot(\d+)", credential_id)
+        return [int(match.group(1))] if match else []
+
+    def _fill_slot(
+        self, form: CardholderForm, slot: int, identity: CredentialIdentity
+    ) -> None:
+        """Turn an empty slot into a live card.
+
+        Leaving Card_N_CardID empty is what tells Millennium to create a card
+        rather than update one; it assigns the id itself on save.
+        """
+        form.set_value(f"Card_{slot}_CardID", "")
+        form.set_value(f"Card_{slot}_EncodedCardNumber", str(identity.card_number))
+        form.set_value(f"Card_{slot}_FaciltyCode", str(identity.site_code))
+        form.set_value(f"Card_{slot}_CardFormat", self.trigger_card_format)
+        if identity.activate_date:
+            form.set_value(
+                f"Card_{slot}_ActivationDate",
+                format_datetime(identity.activate_date, self._offset_seconds),
+            )
+        if identity.deactivate_date:
+            form.set_value(
+                f"Card_{slot}_ExpirationDate",
+                format_datetime(identity.deactivate_date, self._offset_seconds),
+            )
+        form.set_checked(f"Card_{slot}_Active", True)
+
+    def _profile_for(self, pid: str) -> dict | None:
+        """Current slot state for a cardholder, refetched when it matters.
+
+        Enrolled cardholders are always refreshed — their state drives phases
+        2 through 6, and a stale "no credentials" answer would look like a
+        deletion. Everyone else is refreshed within the per-cycle budget so
+        newly-enrolled cards are still found without re-reading every page.
+        """
+        cached = self._profiles.get(pid)
+        enrolled = bool(cached and cached.get("enrolled"))
+        if cached is not None and not enrolled and pid not in self._sweep:
+            return cached
+
+        try:
+            form = self._client.get_cardholder_form(pid)
+        except MillenniumAuthError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Millennium: failed to read cardholder %s: %s", pid, e)
+            return cached
+
+        slots = _read_slots(form)
+        profile = {
+            "slots": slots,
+            "first": form.value("FirstName"),
+            "last": form.value("LastName"),
+            "enrolled": any(self._is_trigger(s) for s in slots),
+        }
+        self._profiles[pid] = profile
+        return profile
+
+
+def _read_slots(form: CardholderForm) -> list[Slot]:
+    slots: list[Slot] = []
+    for index in CARD_SLOTS:
+        prefix = f"Card_{index}_"
+        # A slot with no selected format submits the <select>'s first option,
+        # which would masquerade as a real format on an empty slot.
+        format_control = form.find(f"{prefix}CardFormat")
+        selected = ""
+        if format_control is not None:
+            selected = next(
+                (o.value for o in format_control.options if o.selected), ""
+            )
+        slots.append(
+            Slot(
+                index=index,
+                card_id=form.value(f"{prefix}CardID"),
+                card_number=form.value(f"{prefix}EncodedCardNumber"),
+                facility_code=form.value(f"{prefix}FaciltyCode"),
+                card_format=selected,
+                active=form.is_checked(f"{prefix}Active"),
+            )
+        )
+    return slots
+
+
+def _stored_session() -> dict:
+    """The cookie AG Connect captured, if the operator has connected."""
+    try:
+        from ....settings_store import MillenniumSession
+
+        return MillenniumSession.load() or {}
+    except Exception:  # noqa: BLE001 — settings/db may not exist yet in tests
+        return {}
+
+
+HELP_TEXT: dict[str, dict[str, str]] = {
+    "en": {
+        "pacs.millennium_ultra.base_url": "Millennium Ultra login URL (e.g. https://hosted8.mgiaccess.com)",
+        "pacs.millennium_ultra.email_domain": "Domain for synthesized email addresses (e.g. cards.example.com)",
+        "pacs.millennium_ultra.notify_email": "Notification email (used when the Millennium session expires)",
+        "pacs.millennium_ultra.mode_label": "Which credential technology is this install issuing?",
+        "pacs.millennium_ultra.mode_desfire": "DESFire — the card already exists in Millennium; copy its facility code and card number to AccessGrid",
+        "pacs.millennium_ultra.mode_seos": "HID Seos — AccessGrid allocates the facility code and card number and writes them into Millennium",
+        "pacs.millennium_ultra.trigger_help": (
+            "Millennium Ultra has no API and its login is protected by a "
+            "captcha, so this integration works through a session you open "
+            "yourself: click Connect to Millennium, sign in, and the browser "
+            "hands the session back encrypted. Then choose the card format "
+            "that acts as the enrollment trigger — any cardholder holding a "
+            "card in that format gets an AccessGrid pass on the next cycle. "
+            "In DESFire mode the card's facility code and number are copied "
+            "out to AccessGrid. In Seos mode AccessGrid mints them and the "
+            "sync engine writes them into the cardholder's empty card slots, "
+            "which is why a cardholder needs two free slots before Seos will "
+            "provision — a phone and a watch install use one each. "
+            "Cardholders here store no email address, so one is synthesized "
+            "from the name and record id against the domain above; hand the "
+            "pass out with the QR code on the Credentials page. Suspending or "
+            "resuming a pass toggles the card's Active box; access levels, "
+            "photos and every other field are left exactly as they are."
+        ),
+    },
+    "es": {
+        "pacs.millennium_ultra.base_url": "URL de inicio de sesión de Millennium Ultra (p. ej. https://hosted8.mgiaccess.com)",
+        "pacs.millennium_ultra.email_domain": "Dominio para las direcciones de correo sintetizadas (p. ej. cards.example.com)",
+        "pacs.millennium_ultra.notify_email": "Correo de notificación (se usa cuando caduca la sesión de Millennium)",
+        "pacs.millennium_ultra.mode_label": "¿Qué tecnología de credencial emite esta instalación?",
+        "pacs.millennium_ultra.mode_desfire": "DESFire — la tarjeta ya existe en Millennium; copiar su código de instalación y número de tarjeta a AccessGrid",
+        "pacs.millennium_ultra.mode_seos": "HID Seos — AccessGrid asigna el código de instalación y el número de tarjeta y los escribe en Millennium",
+        "pacs.millennium_ultra.trigger_help": (
+            "Millennium Ultra no tiene API y su inicio de sesión está "
+            "protegido por un captcha, por lo que esta integración funciona "
+            "mediante una sesión que usted mismo abre: pulse Conectar con "
+            "Millennium, inicie sesión y el navegador devuelve la sesión "
+            "cifrada. Después elija el formato de tarjeta que actúa como "
+            "disparador de inscripción: cualquier titular con una tarjeta de "
+            "ese formato recibirá un pase de AccessGrid en el siguiente "
+            "ciclo. En modo DESFire se copian a AccessGrid el código de "
+            "instalación y el número de la tarjeta. En modo Seos, AccessGrid "
+            "los genera y el motor de sincronización los escribe en las "
+            "ranuras de tarjeta libres del titular; por eso Seos exige dos "
+            "ranuras libres, ya que una instalación en teléfono y otra en "
+            "reloj usan una cada una. Aquí los titulares no guardan correo "
+            "electrónico, así que se sintetiza uno a partir del nombre y del "
+            "identificador con el dominio indicado arriba; entregue el pase "
+            "con el código QR de la página Credenciales. Suspender o "
+            "reanudar un pase cambia la casilla Activa de la tarjeta; los "
+            "niveles de acceso, las fotos y todos los demás campos quedan "
+            "intactos."
+        ),
+    },
+}

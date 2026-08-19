@@ -10,10 +10,18 @@ Lifecycle:
   - dynamic interval: 3 × snapshot build time, clamped [10s, 600s]
   - circuit breaker: 10 consecutive failures pause the engine
   - status payload exposed via get_status() for the web UI
+
+One failure is special. A PACS whose session was handed to us by a human
+(Millennium Ultra, whose login is captcha-gated) can lose that session, and
+no retry will ever fix it. PacsAuthExpired therefore short-circuits the
+cycle: the engine flags `reconnect_required`, mails the operator, and stops
+touching AccessGrid — an expired session must never be mistaken for a PACS
+that suddenly has no cardholders left.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -22,6 +30,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..ag import build_client as build_ag_client
+from ..lib.pacs import PacsAuthExpired, get_descriptor
 from ..lib.pacs import build_adapter as build_pacs_adapter
 from ..settings_store import AccessGridConfig, PacsConfig
 from .phases import (
@@ -68,6 +77,8 @@ class EngineStatus:
     consecutive_errors: int = 0
     pacs_reachable: bool = True
     ag_reachable: bool = True
+    # Set when the PACS session expired: only a human signing in clears it.
+    reconnect_required: bool = False
 
 
 class SyncEngine:
@@ -78,6 +89,11 @@ class SyncEngine:
         self._cycle_lock = threading.Lock()
         self._status = EngineStatus()
         self._status_lock = threading.Lock()
+        # (config fingerprint, adapter). Adapters are reused across cycles:
+        # some hold a warm cache that is expensive to rebuild (Millennium
+        # reads ~1800 detail pages to prime one) and an HTTP connection pool
+        # that would otherwise leak a little on every cycle.
+        self._pacs: tuple[str, Any] | None = None
 
     # ----- public API --------------------------------------------------
 
@@ -95,12 +111,22 @@ class SyncEngine:
         self._trigger.set()  # wake from sleep
         if self._thread:
             self._thread.join(timeout=timeout)
+        self._retire_pacs_adapter()
         with self._status_lock:
             self._status.running = False
 
     def trigger_now(self) -> None:
         """Run a cycle ASAP (will wait for the current cycle if one is running)."""
         self._trigger.set()
+
+    def invalidate_pacs_adapter(self) -> None:
+        """Drop the cached adapter so the next cycle rebuilds it.
+
+        Needed when something the adapter read at construction changed
+        without the connection settings changing — a recaptured PACS session
+        being the case that matters.
+        """
+        self._retire_pacs_adapter()
 
     def get_status(self) -> dict[str, Any]:
         with self._status_lock:
@@ -116,6 +142,7 @@ class SyncEngine:
                 "consecutive_errors": s.consecutive_errors,
                 "pacs_reachable": s.pacs_reachable,
                 "ag_reachable": s.ag_reachable,
+                "reconnect_required": s.reconnect_required,
             }
 
     def run_cycle_blocking(self) -> CycleResult:
@@ -211,7 +238,7 @@ class SyncEngine:
             return result
 
         try:
-            pacs = build_pacs_adapter(pacs_cfg["vendor"], pacs_cfg["params"])
+            pacs = self._pacs_adapter(pacs_cfg)
         except Exception as e:  # noqa: BLE001
             result.error = f"pacs_init: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
@@ -224,6 +251,9 @@ class SyncEngine:
             with self._status_lock:
                 self._status.pacs_reachable = bool(snapshot.people)
                 self._status.ag_reachable = True
+                self._status.reconnect_required = False
+        except PacsAuthExpired as e:
+            return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)
         except Exception as e:  # noqa: BLE001
             result.error = f"snapshot: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
@@ -242,6 +272,7 @@ class SyncEngine:
                 dedupe_by_site_card=dedupe,
                 extra_metadata=extra_metadata,
                 use_file_data=use_file_data,
+                pacs=pacs,
             )
             result.status_changes = phase2_local_to_ag.run(snapshot, ag)
             result.deleted = phase3_deletions.run(snapshot, ag)
@@ -251,8 +282,11 @@ class SyncEngine:
                 dedupe_by_site_card=dedupe,
                 extra_metadata=extra_metadata,
                 use_file_data=use_file_data,
+                pacs=pacs,
             )
             result.field_updates = phase6_field_changes.run(snapshot, ag)
+        except PacsAuthExpired as e:
+            return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)
         except Exception as e:  # noqa: BLE001
             result.error = f"phase: {e}"
             logger.exception("Phase failure during sync")
@@ -264,6 +298,52 @@ class SyncEngine:
             result.duration_ms, result.provisioned, result.status_changes,
             result.deleted, result.ag_to_pacs, result.field_updates, result.retried,
         )
+        return result
+
+
+    def _pacs_adapter(self, pacs_cfg: dict[str, Any]):
+        """The adapter for this config, built once and reused."""
+        fingerprint = json.dumps(pacs_cfg, sort_keys=True, default=str)
+        if self._pacs is not None and self._pacs[0] == fingerprint:
+            return self._pacs[1]
+        self._retire_pacs_adapter()
+        adapter = build_pacs_adapter(pacs_cfg["vendor"], pacs_cfg["params"])
+        self._pacs = (fingerprint, adapter)
+        return adapter
+
+    def _retire_pacs_adapter(self) -> None:
+        previous, self._pacs = self._pacs, None
+        if previous is None:
+            return
+        close = getattr(previous[1], "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001 — nothing useful to do on close
+                logger.debug("Ignoring error closing the previous PACS adapter")
+
+    def _handle_auth_expired(
+        self, vendor: str, error: Exception, result: CycleResult, start_ms: float,
+    ) -> CycleResult:
+        """Park the cycle and ask a human to sign in again.
+
+        Deliberately not counted toward the circuit breaker: the engine
+        should keep waking up and clear the flag the moment a new session
+        appears, rather than needing a restart after ten quiet retries.
+        """
+        from ..notifications import notify_reconnect_required
+
+        descriptor = get_descriptor(vendor)
+        name = descriptor.display_name if descriptor else vendor
+        with self._status_lock:
+            self._status.reconnect_required = True
+            self._status.pacs_reachable = False
+        result.error = f"pacs_auth_expired: {error}"
+        result.duration_ms = int((time.time() - start_ms) * 1000)
+        try:
+            notify_reconnect_required(name, str(error))
+        except Exception:  # noqa: BLE001 — notification must not mask the cause
+            logger.exception("Failed to send the reconnect notification")
         return result
 
 

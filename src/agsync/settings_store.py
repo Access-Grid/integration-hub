@@ -47,6 +47,19 @@ def _get_encrypted_json(key: str) -> dict[str, Any] | None:
     return json.loads(decrypt(raw))
 
 
+def set_json(key: str, payload: Any) -> None:
+    """Store an arbitrary encrypted JSON blob under `key`."""
+    set(key, encrypt(json.dumps(payload)))
+
+
+def get_json(key: str) -> Any:
+    """Read back a blob written by set_json, or None."""
+    raw = get(key)
+    if not raw:
+        return None
+    return json.loads(decrypt(raw))
+
+
 # ---- well-known keys -------------------------------------------------------
 
 class AccessGridConfig:
@@ -142,5 +155,107 @@ class PacsConfig:
         return enc if enc == PacsConfig.ENCODING_FILE_DATA else PacsConfig.ENCODING_SITE_CARD
 
 
+class NotificationConfig:
+    """Optional SMTP relay for operator notifications.
+
+    Optional on purpose: the only notification that exists is the "sign in
+    again" nag, and an install with no relay still shows it in the UI and
+    the logs. Nothing here gates syncing.
+    """
+
+    KEY = "notifications"
+
+    @staticmethod
+    def save(
+        smtp_host: str = "",
+        smtp_port: int = 587,
+        smtp_username: str = "",
+        smtp_password: str = "",
+        from_address: str = "",
+        use_starttls: bool = True,
+        use_ssl: bool = False,
+    ) -> None:
+        _set_encrypted_json(
+            NotificationConfig.KEY,
+            {
+                "smtp_host": smtp_host,
+                "smtp_port": int(smtp_port or 587),
+                "smtp_username": smtp_username,
+                "smtp_password": smtp_password,
+                "from_address": from_address,
+                "use_starttls": bool(use_starttls),
+                "use_ssl": bool(use_ssl),
+            },
+        )
+
+    @staticmethod
+    def load() -> dict[str, Any] | None:
+        return _get_encrypted_json(NotificationConfig.KEY)
+
+
+class MillenniumSession:
+    """The Millennium Ultra web session AG Connect captured.
+
+    Kept apart from PacsConfig because it has a different lifetime: the
+    cookie expires and gets recaptured by the operator without any of the
+    connection settings changing, and a reconnect must not be able to
+    disturb them.
+    """
+
+    KEY = "millennium_session"
+
+    @staticmethod
+    def save(
+        auth_cookie: str,
+        base_url: str = "",
+        company_name: str = "",
+        time_offset: str = "",
+        captured_at: str = "",
+    ) -> None:
+        _set_encrypted_json(
+            MillenniumSession.KEY,
+            {
+                "auth_cookie": auth_cookie,
+                "base_url": base_url,
+                "company_name": company_name,
+                # Millennium renders and parses its date fields against this
+                # browser offset, so it travels with the cookie.
+                "time_offset": time_offset,
+                "captured_at": captured_at,
+            },
+        )
+
+    @staticmethod
+    def load() -> dict[str, Any] | None:
+        return _get_encrypted_json(MillenniumSession.KEY)
+
+    @staticmethod
+    def clear() -> None:
+        delete(MillenniumSession.KEY)
+
+    @staticmethod
+    def is_connected() -> bool:
+        session = _get_encrypted_json(MillenniumSession.KEY) or {}
+        return bool(session.get("auth_cookie"))
+
+
 def is_configured() -> bool:
-    return AccessGridConfig.load() is not None and PacsConfig.load() is not None
+    """True when the wizard has produced a configuration the engine can run.
+
+    A PACS that advertises `requires_connect` is not finished until its
+    enrollment trigger has been chosen, which can only happen after the
+    operator has signed in — so a saved-but-unconnected Millennium install
+    reads as unconfigured and the engine stays parked.
+    """
+    if AccessGridConfig.load() is None:
+        return False
+    pacs = PacsConfig.load()
+    if pacs is None:
+        return False
+
+    from .lib.pacs import get_descriptor
+
+    descriptor = get_descriptor(pacs.get("vendor", ""))
+    if descriptor is not None and descriptor.requires_connect:
+        return bool((pacs.get("params") or {}).get("trigger_card_format"))
+    return True

@@ -9,6 +9,13 @@ Skip rules (with reasons logged):
   - person has no email and no phone (AG needs a delivery channel)
   - person has no full_name
   - tracking row exists with a non-NULL ag_card_id (already provisioned)
+
+Most PACS hand us a card that already exists and we copy its identity to
+AccessGrid. A credential flagged `allocate_identity` runs the other way:
+AccessGrid mints the facility code and card number (it allocates whenever
+they are omitted), and we hand the result straight back to the adapter to
+write into the PACS. Dedupe is skipped for those — there is no identity yet
+to collide with.
 """
 
 from __future__ import annotations
@@ -17,8 +24,10 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from ...ag import AccessGrid, AccessGridError
+from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
+from .writeback import push_allocated_identities
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +40,7 @@ def run(
     dedupe_by_site_card: bool = False,
     extra_metadata: dict | None = None,
     use_file_data: bool = False,
+    pacs: PacsAdapter | None = None,
 ) -> int:
     provisioned = 0
     skipped = 0
@@ -79,6 +89,7 @@ def run(
             # credential, don't double-provision.
             if (
                 dedupe_by_site_card
+                and not cred.allocate_identity
                 and eff_site_code
                 and cred.card_number
             ):
@@ -107,10 +118,11 @@ def run(
             # sync-managed keys on top so they always win the merge.
             metadata: dict = dict(extra_metadata or {})
             metadata["pacs_credential_id"] = cred.id
-            if eff_site_code:
-                metadata["site_code"] = eff_site_code
-            if cred.card_number:
-                metadata["card_number"] = str(cred.card_number)
+            if not cred.allocate_identity:
+                if eff_site_code:
+                    metadata["site_code"] = eff_site_code
+                if cred.card_number:
+                    metadata["card_number"] = str(cred.card_number)
 
             params: dict = {
                 "card_template_id": template_id,
@@ -124,7 +136,11 @@ def run(
             # the adapter supplies one) or the decoded site_code + card_number
             # (default). site_code/card_number stay in metadata either way so
             # dedupe and debugging still work.
-            if use_file_data and cred.file_data:
+            if cred.allocate_identity:
+                # Send no identity at all: AccessGrid allocates the facility
+                # code and card number, and the adapter writes them back.
+                pass
+            elif use_file_data and cred.file_data:
                 params["file_data"] = cred.file_data
             else:
                 if eff_site_code and eff_site_code.isdigit():
@@ -173,6 +189,10 @@ def run(
                 )
                 provisioned += 1
                 logger.info("  Provisioned AG card %s for %s", ag_card_id, person.full_name)
+                if cred.allocate_identity and pacs is not None:
+                    # Hand the freshly-minted identity straight back so the
+                    # card exists in the PACS before the next cycle reads it.
+                    push_allocated_identities(pacs, pid, cred.id, card)
             except AccessGridError as e:
                 logger.error("  Provision failed for %s: %s", person.full_name, e)
                 tracking.record_error(pid, cred.id, str(e))

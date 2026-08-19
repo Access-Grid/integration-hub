@@ -1,0 +1,17 @@
+{# Polled by step4_connect. Shows the launch button until the side-car
+   reports back, then /connect/status starts returning the format picker. #}
+{% if state == 'cancelled' or state == 'error' or state == 'expired' %}
+  <div class="err">
+    {% if message %}{{ message }}{% else %}{{ t('wizard.connect.expired') }}{% endif %}
+  </div>
+  <a class="button" href="{{ '/wizard/connect' if pick else '/connect' }}">{{ t('wizard.connect.retry') }}</a>
+{% else %}
+  <a class="button" href="{{ launch_uri }}" id="connect-launch">
+    {{ t('wizard.connect.button') }}
+  </a>
+  <div class="waiting">
+    <span class="spinner" aria-hidden="true"></span>
+    <span>{{ t('wizard.connect.waiting') }}</span>
+  </div>
+  <p class="muted small">{{ t('wizard.connect.hint') }}</p>
+{% endif %}

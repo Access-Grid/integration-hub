@@ -10,6 +10,7 @@ Routes:
   /settings       -> connection edit + about
   /api/test-ag    -> wizard ajax connection test
   /api/test-pacs  -> wizard ajax connection test
+  /connect/*      -> AG Connect hand-off for captcha-gated PACS logins
   /api/health     -> public, used by an external HC if anyone wires one
 """
 
@@ -32,6 +33,7 @@ from .i18n import default_locale, get_translator
 from .logs import install_handler as install_log_handler
 from .routes import api, wizard
 from .routes import auth as auth_routes
+from .routes import connect as connect_route
 from .routes import credentials as credentials_route
 from .routes import logs as logs_route
 from .routes import settings as settings_route
@@ -117,5 +119,6 @@ def create_app() -> FastAPI:
     app.include_router(logs_route.router)
     app.include_router(settings_route.router)
     app.include_router(api.router)
+    app.include_router(connect_route.router)
 
     return app

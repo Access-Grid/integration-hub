@@ -162,3 +162,20 @@ table.creds td { padding: 0.75rem 0.6rem; border-bottom: 1px solid var(--border)
 }
 .kv-edit .meta-remove:hover { color: var(--err-fg); }
 #meta-add-row { margin-right: 0.5rem; background: #e5e7eb; color: var(--fg); }
+
+/* AG Connect hand-off: the operator signs in elsewhere, so this panel is
+   the only feedback they get until the side-car reports back. */
+.waiting { display: flex; align-items: center; gap: 0.6rem; margin: 1rem 0; color: var(--muted); font-size: 0.9rem; }
+.spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+.small { font-size: 0.85rem; }
+.banner a { color: inherit; font-weight: 600; }

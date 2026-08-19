@@ -7,6 +7,10 @@ Subcommands:
   reset-admin        — wipe the admin user; the wizard will prompt for a
                        new one on the next page load
   generate-key       — print a new Fernet key for AG_SYNC_ENCRYPTION_KEY
+  register-uri       — register the agconnect:// handler for this user
+  unregister-uri     — remove it
+  connect            — AG Connect side-car; normally started by the OS when
+                       the operator clicks an agconnect:// link, not by hand
 """
 
 from __future__ import annotations
@@ -100,6 +104,41 @@ def generate_key_cmd() -> None:
     """Print a new Fernet key. Set AG_SYNC_ENCRYPTION_KEY to its value."""
     from cryptography.fernet import Fernet
     click.echo(Fernet.generate_key().decode())
+
+
+@cli.command("connect")
+@click.argument("uri")
+def connect_cmd(uri: str) -> None:
+    """Capture a PACS session for the running service.
+
+    The OS invokes this with an agconnect:// URI when the operator clicks
+    Connect in the web UI. It opens a throwaway browser at the PACS login
+    page, waits for the sign-in, and hands the session back encrypted.
+    """
+    from .connect import run_from_uri
+
+    _bootstrap_logging()
+    raise SystemExit(run_from_uri(uri, on_status=click.echo))
+
+
+@cli.command("register-uri")
+def register_uri_cmd() -> None:
+    """Register the agconnect:// handler for the current user.
+
+    Run this as the operator who will do the signing in — registration is
+    per-user, so it needs no elevation and touches nothing machine-wide.
+    """
+    from .connect import register as uri_register
+
+    click.echo(f"Registered agconnect:// -> {uri_register.register()}")
+
+
+@cli.command("unregister-uri")
+def unregister_uri_cmd() -> None:
+    """Remove the agconnect:// handler for the current user."""
+    from .connect import register as uri_register
+
+    click.echo(uri_register.unregister())
 
 
 @cli.command("install-service")
