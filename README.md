@@ -64,7 +64,11 @@ Connect side-car, and the side-car opens a throwaway Chromium at the login
 page, waits for the sign-in, and returns the session cookie sealed with a
 one-shot AES-256-GCM key held only by the service. Run
 `agsync register-uri` once, as the operator who will be signing in, to
-register the handler (per-user; no elevation).
+register the handler (per-user; no elevation). On Windows that writes an
+`HKCU` protocol handler. macOS delivers a URL as an Apple Event rather than
+an argument, so there it compiles a small AppleScript applet into
+`~/Applications/AG Connect.app` — a bundle wrapping a plain executable would
+be launched with no arguments and the URL would be lost.
 
 Sessions expire. When one does, syncing pauses, a banner appears in the web
 UI, and — if SMTP is configured under Settings → Notifications — a message

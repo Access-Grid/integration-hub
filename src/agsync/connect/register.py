@@ -5,10 +5,15 @@ on the operator's desktop, so the OS is the bridge: the wizard renders an
 ``agconnect://`` link and the OS hands it to this executable. Registration is
 per-user — no elevation, and nothing machine-wide to clean up.
 
-Windows writes the standard ``HKCU\\Software\\Classes`` protocol handler.
-macOS has no equivalent for a bare executable, so we generate a minimal
-application bundle in ~/Applications whose Info.plist claims the scheme and
-whose entry point execs this same binary; Launch Services picks it up.
+Windows writes the standard ``HKCU\\Software\\Classes`` protocol handler,
+where the URL arrives as ``%1`` on the command line.
+
+macOS does not work that way. Launch Services delivers a URL as a
+``kAEGetURL`` Apple Event, not as an argument, so an app bundle wrapping a
+plain executable is launched with *no arguments at all* and the URL is
+lost. The bundle therefore has to be something that can receive that event,
+which is why we compile a small AppleScript applet with an
+``on open location`` handler and let it shell back into this CLI.
 """
 
 from __future__ import annotations
@@ -16,9 +21,11 @@ from __future__ import annotations
 import logging
 import os
 import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from .protocol import URI_SCHEME
@@ -26,6 +33,10 @@ from .protocol import URI_SCHEME
 logger = logging.getLogger(__name__)
 
 _MAC_APP_NAME = "AG Connect.app"
+_LSREGISTER = (
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks"
+    "/LaunchServices.framework/Support/lsregister"
+)
 
 
 def _executable() -> tuple[str, list[str]]:
@@ -79,45 +90,82 @@ def _mac_app_dir() -> Path:
 
 def _register_macos() -> str:
     program, leading = _executable()
+    # Two layers of quoting: shlex for the shell that `do shell script` runs,
+    # then AppleScript's own string literal around the whole command.
+    command = _applescript_quote(
+        shlex.join([program, *leading])
+    )
+
     app = _mac_app_dir()
-    macos_dir = app / "Contents" / "MacOS"
-    macos_dir.mkdir(parents=True, exist_ok=True)
+    app.parent.mkdir(parents=True, exist_ok=True)
+    # osacompile refuses to overwrite, and a stale bundle would keep the old
+    # command line, so always start from nothing.
+    shutil.rmtree(app, ignore_errors=True)
 
-    info = {
-        "CFBundleName": "AG Connect",
-        "CFBundleIdentifier": "com.accessgrid.agconnect",
-        "CFBundleExecutable": "agconnect",
-        "CFBundlePackageType": "APPL",
-        "CFBundleInfoDictionaryVersion": "6.0",
-        # Background-only: the window the operator sees belongs to Chromium.
-        "LSUIElement": True,
-        "CFBundleURLTypes": [
-            {
-                "CFBundleURLName": "AG Connect",
-                "CFBundleURLSchemes": [URI_SCHEME],
-            }
-        ],
-    }
-    (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
+    source = _applescript_source(command)
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".applescript", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(source)
+        script_path = handle.name
+    try:
+        result = subprocess.run(
+            ["/usr/bin/osacompile", "-o", str(app), script_path],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"osacompile failed: {result.stderr.strip()}")
+    finally:
+        os.unlink(script_path)
 
-    quoted = " ".join([f'"{program}"', *[f'"{a}"' for a in leading]])
-    shim = macos_dir / "agconnect"
-    shim.write_text(f'#!/bin/sh\nexec {quoted} "$1"\n', encoding="utf-8")
-    shim.chmod(0o755)
+    _claim_scheme_in_plist(app / "Contents" / "Info.plist")
 
     # Nudge Launch Services so the scheme resolves without a logout.
-    lsregister = (
-        "/System/Library/Frameworks/CoreServices.framework/Frameworks"
-        "/LaunchServices.framework/Support/lsregister"
+    if os.path.exists(_LSREGISTER):
+        subprocess.run([_LSREGISTER, "-f", str(app)], check=False)
+    return str(app)
+
+
+def _applescript_quote(value: str) -> str:
+    """Render a Python string as a single AppleScript string literal."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _applescript_source(command: str) -> str:
+    """The applet's handler. `command` must already be one quoted literal.
+
+    `with timeout` because the operator has to find the window, solve a
+    captcha and sign in — well past AppleScript's default patience.
+    """
+    return (
+        "on open location this_URL\n"
+        "    with timeout of 3600 seconds\n"
+        f"        do shell script {command} & \" \" & quoted form of this_URL\n"
+        "    end timeout\n"
+        "end open location\n"
     )
-    if os.path.exists(lsregister):
-        subprocess.run([lsregister, "-f", str(app)], check=False)
-    return f"{app}"
+
+
+def _claim_scheme_in_plist(plist_path: Path) -> None:
+    """Add our URL scheme to the applet's generated Info.plist."""
+    info = plistlib.loads(plist_path.read_bytes())
+    info["CFBundleName"] = "AG Connect"
+    info["CFBundleIdentifier"] = "com.accessgrid.agconnect"
+    # Background-only: the window the operator sees belongs to Chromium, and
+    # a Dock icon for a handler that does nothing visible is just confusing.
+    info["LSUIElement"] = True
+    info["CFBundleURLTypes"] = [
+        {"CFBundleURLName": "AG Connect", "CFBundleURLSchemes": [URI_SCHEME]}
+    ]
+    plist_path.write_bytes(plistlib.dumps(info))
 
 
 def _unregister_macos() -> str:
     app = _mac_app_dir()
     shutil.rmtree(app, ignore_errors=True)
+    if os.path.exists(_LSREGISTER):
+        subprocess.run([_LSREGISTER, "-u", str(app)], check=False)
     return f"Removed {app}"
 
 
