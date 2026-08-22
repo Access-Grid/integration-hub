@@ -26,7 +26,7 @@ import logging
 import threading
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..ag import PROTOCOL_SEOS, template_protocol
@@ -50,6 +50,10 @@ MIN_INTERVAL_S = 10
 MAX_INTERVAL_S = 600
 INTERVAL_MULTIPLIER = 3
 ERROR_BACKOFF_S = 30
+# How long to wait between attempts while a human has to sign in again.
+# Each attempt costs a full roster sweep, and nothing changes until someone
+# acts, so retrying briskly just loads the PACS for no benefit.
+RECONNECT_RETRY_S = 120
 MAX_CONSECUTIVE_ERRORS = 10
 
 
@@ -234,6 +238,7 @@ class SyncEngine:
                         break
                 continue
 
+            logger.info("Sync cycle starting")
             result = self._run_one_cycle()
             with self._status_lock:
                 self._status.last_cycle = result
@@ -241,6 +246,11 @@ class SyncEngine:
                     self._status.consecutive_errors += 1
                     self._status.last_error = result.error
                     sleep_s = ERROR_BACKOFF_S
+                elif self._status.reconnect_required:
+                    # Waiting on a person to sign in. Retrying every few
+                    # seconds only hammers the PACS with a full roster sweep
+                    # per attempt for as long as nobody is looking.
+                    sleep_s = RECONNECT_RETRY_S
                 else:
                     self._status.consecutive_errors = 0
                     self._status.last_error = None
@@ -250,10 +260,15 @@ class SyncEngine:
                         min(MAX_INTERVAL_S, (result.duration_ms / 1000.0) * INTERVAL_MULTIPLIER),
                     )
                 self._status.cached_interval_s = sleep_s
-                self._status.next_run_iso = (
-                    datetime.now(UTC).isoformat(timespec="seconds")
-                )
+                next_run = datetime.now(UTC) + timedelta(seconds=sleep_s)
+                self._status.next_run_iso = next_run.isoformat(timespec="seconds")
 
+            # Otherwise the engine goes quiet for up to ten minutes with
+            # nothing saying it is alive, which reads as a stopped sync.
+            logger.info(
+                "Next sync cycle in %ds (at %s)",
+                int(sleep_s), next_run.strftime("%H:%M:%S UTC"),
+            )
             self._trigger.wait(timeout=sleep_s)
             self._trigger.clear()
 

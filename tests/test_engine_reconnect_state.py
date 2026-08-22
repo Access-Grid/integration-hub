@@ -71,3 +71,64 @@ def test_an_abandoned_cycle_does_not_count_either(engine):
 def test_an_ordinary_failure_still_counts():
     # The breaker must still exist for the failures it was built for.
     assert CycleResult(started_at="now", duration_ms=0, error="boom").counts_as_failure
+
+
+# --- saying what it is doing --------------------------------------------
+
+
+def test_the_next_run_time_is_in_the_future(engine, monkeypatch):
+    """"Next sync" was set to the moment the cycle ended, not the next one.
+
+    So the status page reported a next run a second or two after the last
+    one, every time, while the engine actually slept for minutes.
+    """
+    from datetime import UTC, datetime
+
+    from agsync.sync.engine import CycleResult
+
+    monkeypatch.setattr(
+        engine, "_run_one_cycle",
+        lambda: CycleResult(started_at="now", duration_ms=20_000),
+    )
+    monkeypatch.setattr(engine._trigger, "wait", lambda timeout: engine._stop.set())
+    engine._run_loop()
+
+    status = engine.get_status()
+    next_run = datetime.fromisoformat(status["next_run_iso"])
+    # 20s cycle x3 = 60s ahead, not "now".
+    assert (next_run - datetime.now(UTC)).total_seconds() > 30
+    assert status["cached_interval_s"] == 60
+
+
+def test_waiting_on_a_human_backs_off(engine, monkeypatch):
+    # Each retry is a full roster sweep, and nothing changes until someone
+    # signs in, so a ten-second retry is pure load on the PACS.
+    from agsync.sync.engine import RECONNECT_RETRY_S, CycleResult
+
+    def expired_cycle():
+        return engine._handle_auth_expired(
+            "millennium_ultra", RuntimeError("gone"),
+            CycleResult(started_at="now", duration_ms=100), 0.0,
+        )
+
+    monkeypatch.setattr(engine, "_run_one_cycle", expired_cycle)
+    monkeypatch.setattr(engine._trigger, "wait", lambda timeout: engine._stop.set())
+    engine._run_loop()
+
+    assert engine.get_status()["cached_interval_s"] == RECONNECT_RETRY_S
+
+
+def test_the_loop_announces_each_cycle_and_the_wait(engine, monkeypatch, caplog):
+    from agsync.sync.engine import CycleResult
+
+    monkeypatch.setattr(
+        engine, "_run_one_cycle",
+        lambda: CycleResult(started_at="now", duration_ms=5_000),
+    )
+    monkeypatch.setattr(engine._trigger, "wait", lambda timeout: engine._stop.set())
+    with caplog.at_level("INFO"):
+        engine._run_loop()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("Sync cycle starting" in m for m in messages)
+    assert any("Next sync cycle in" in m for m in messages)
