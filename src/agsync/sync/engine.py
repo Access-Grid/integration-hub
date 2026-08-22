@@ -53,6 +53,30 @@ ERROR_BACKOFF_S = 30
 MAX_CONSECUTIVE_ERRORS = 10
 
 
+def derived_pacs_params(ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Fill in `mode` from the AccessGrid template, for adapters that ask.
+
+    Module-level because the engine is not the only caller: anything that
+    builds an adapter to ask what it has done needs the same direction, and
+    reading it from the stored params alone silently yields the default.
+    """
+    descriptor = get_descriptor(pacs_cfg.get("vendor", ""))
+    if descriptor is None or not descriptor.derives_mode_from_template:
+        return pacs_cfg
+
+    protocol = template_protocol(ag, ag_cfg["template_id"])
+    # An unreadable template must not silently flip a read-only integration
+    # into one that writes cards into the PACS.
+    mode = "seos" if protocol == PROTOCOL_SEOS else "desfire"
+    if not protocol:
+        logger.warning(
+            "Could not read the card template's protocol — assuming %s", mode,
+        )
+    params = dict(pacs_cfg.get("params") or {})
+    params["mode"] = mode
+    return {**pacs_cfg, "params": params}
+
+
 @dataclass
 class CycleResult:
     started_at: str
@@ -359,30 +383,19 @@ class SyncEngine:
     def _with_derived_mode(
         self, ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]
     ) -> dict[str, Any]:
-        """Fill in `mode` from the AccessGrid template, for adapters that ask.
+        """Resolve the PACS direction, logging when it changes.
 
         Resolved every cycle rather than stored at setup, so swapping the
         card template for one of a different technology takes effect on its
         own. The adapter cache is keyed on the config, so a change here
         rebuilds the adapter automatically.
         """
-        descriptor = get_descriptor(pacs_cfg.get("vendor", ""))
-        if descriptor is None or not descriptor.derives_mode_from_template:
-            return pacs_cfg
-
-        protocol = template_protocol(ag, ag_cfg["template_id"])
-        # An unreadable template must not silently flip a read-only
-        # integration into one that writes cards into the PACS.
-        mode = "seos" if protocol == PROTOCOL_SEOS else "desfire"
-        if not protocol:
-            logger.warning(
-                "Could not read the card template's protocol — assuming %s", mode,
-            )
-        params = dict(pacs_cfg.get("params") or {})
-        if params.get("mode") != mode:
-            logger.info("Card template protocol %r — running in %s mode", protocol, mode)
-        params["mode"] = mode
-        return {**pacs_cfg, "params": params}
+        resolved = derived_pacs_params(ag, ag_cfg, pacs_cfg)
+        was = (pacs_cfg.get("params") or {}).get("mode")
+        now = (resolved.get("params") or {}).get("mode")
+        if now and was != now:
+            logger.info("Running in %s mode", now)
+        return resolved
 
     def _abandon(self, result: CycleResult, start_ms: float) -> CycleResult:
         """Stop a cycle whose configuration changed underneath it."""

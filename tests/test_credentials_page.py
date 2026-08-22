@@ -84,3 +84,23 @@ def test_the_page_renders_both_states(millennium_page, seos_ledger, monkeypatch)
     assert "not saved to Millennium Ultra (MGI)" in html
     # The numbers themselves are on the badge for looking up a failing pass.
     assert 'title="1216, 1217"' in html
+
+
+def test_the_page_derives_the_direction_rather_than_reading_stored_params(monkeypatch):
+    """The mode is not in the saved params — the engine derives it per cycle.
+
+    Building an adapter from the raw params gets the read-only default, so
+    the page reported every pass as unwritten no matter what the ledger said.
+    """
+    from agsync.sync.engine import derived_pacs_params
+
+    monkeypatch.setattr(
+        "agsync.sync.engine.template_protocol", lambda client, tid: "seos",
+    )
+    stored = {"vendor": "millennium_ultra", "params": {"base_url": "https://m.test"}}
+    assert "mode" not in stored["params"]
+
+    resolved = derived_pacs_params(object(), {"template_id": "tpl"}, stored)
+    assert resolved["params"]["mode"] == "seos"
+    # And the stored config is left alone.
+    assert "mode" not in stored["params"]

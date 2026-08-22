@@ -20,6 +20,7 @@ from ..auth import require_admin
 from ..lib.pacs import build_adapter, get_descriptor
 from ..settings_store import AccessGridConfig, PacsConfig
 from ..sync import tracking
+from ..sync.engine import derived_pacs_params
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +53,17 @@ def _written_credentials() -> tuple[dict[tuple[str, str], list[str]], str]:
     if descriptor is None:
         return {}, ""
     try:
-        adapter = build_adapter(vendor, dict(pacs.get("params") or {}))
+        # The direction is derived from the AccessGrid template, not stored,
+        # so building from the raw params would get the read-only default
+        # and report every pass as unwritten.
+        ag_cfg = AccessGridConfig.load() or {}
+        resolved = pacs
+        if ag_cfg:
+            client = build_client(ag_cfg["account_id"], ag_cfg["api_secret"])
+            resolved = derived_pacs_params(client, ag_cfg, pacs)
+        adapter = build_adapter(vendor, dict(resolved.get("params") or {}))
         if not getattr(adapter, "supports_credential_writeback", False):
-            return {}, descriptor.display_name
+            return {}, ""
         return adapter.written_credentials(), descriptor.display_name
     except Exception as e:  # noqa: BLE001 — a listing page must still render
         logger.warning("credentials: could not read PACS writeback state: %s", e)
