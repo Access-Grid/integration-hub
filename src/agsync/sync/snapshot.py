@@ -30,6 +30,26 @@ class Snapshot:
     # have tagged with this convention.
     ag_cards_by_site_card: dict[tuple[str, str], Any] = field(default_factory=dict)
 
+    def resolve_ag_card(
+        self, ag_card_id: str | None, person_id: str = "", credential_id: str = "",
+    ) -> Any | None:
+        """Find a tracked pass in this snapshot.
+
+        By id where possible. But a pass issued against a card template
+        *pair* is tracked by its unified id, and listing a template returns
+        the individual cards rather than that pass — so the id is simply not
+        in the index. Those cards do carry the employee id and the
+        pacs_credential_id we stamped, which is what the token index is for,
+        so fall back to it rather than concluding the pass is gone.
+        """
+        if ag_card_id:
+            card = self.ag_card_by_id.get(ag_card_id)
+            if card is not None:
+                return card
+        if person_id and credential_id:
+            return self.ag_cards_by_token.get((person_id, credential_id))
+        return None
+
     @property
     def total_credentials(self) -> int:
         return sum(len(v) for v in self.credentials_by_person.values())

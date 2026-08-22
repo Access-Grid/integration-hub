@@ -84,9 +84,9 @@ def run(
                 # Already provisioned (or already deduped) — keep tracking row fresh.
                 if existing.status == "deduped":
                     continue
-                ag_card = snapshot.ag_cards_by_token.get((pid, cred.id))
-                if ag_card is None:
-                    ag_card = snapshot.ag_card_by_id.get(existing.ag_card_id)
+                ag_card = snapshot.resolve_ag_card(
+                    existing.ag_card_id, pid, cred.id,
+                )
                 ag_state = (getattr(ag_card, "state", "") or "").lower() if ag_card else ""
                 if ag_state and ag_state != existing.last_known_ag_state:
                     tracking.update_last_known_ag_state(pid, cred.id, ag_state)

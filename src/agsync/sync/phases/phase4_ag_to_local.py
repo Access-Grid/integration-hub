@@ -45,7 +45,9 @@ def run(snapshot: Snapshot, pacs: PacsAdapter) -> int:
         if tracked.status in ("deleted", "deduped") or not tracked.ag_card_id:
             continue
 
-        ag_card = snapshot.ag_card_by_id.get(tracked.ag_card_id)
+        ag_card = snapshot.resolve_ag_card(
+            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+        )
         if ag_card is None:
             continue
 
@@ -115,7 +117,9 @@ def _push_new_credentials(snapshot: Snapshot, pacs: PacsAdapter) -> int:
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
         if cred is None or not cred.allocate_identity:
             continue
-        card = snapshot.ag_card_by_id.get(tracked.ag_card_id)
+        card = snapshot.resolve_ag_card(
+            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+        )
         if card is None:
             continue
         if push_allocated_identities(

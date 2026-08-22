@@ -55,7 +55,9 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             continue
 
         # Compare PACS status to AG-tracked status.
-        ag_card = snapshot.ag_card_by_id.get(tracked.ag_card_id)
+        ag_card = snapshot.resolve_ag_card(
+            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+        )
         ag_state = (getattr(ag_card, "state", "") or "").lower() if ag_card else ""
 
         # If AG state diverged from what we last knew, leave it for phase 4.

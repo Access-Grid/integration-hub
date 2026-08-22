@@ -98,10 +98,18 @@ unreadable template falls back to DESFire, the direction that never writes.
   *who* gets a pass; AccessGrid allocates the facility code and card number
   (it allocates whenever they are omitted) and the sync engine writes them
   into the cardholder's empty card slots. A cardholder needs **two** free
-  slots before Seos will provision, because a holder who installs on both a
-  phone and a watch needs one slot each — running out halfway would strand
-  the second device. (The template's own `allowed_device_counts` agrees:
-  one iPhone plus one watch.)
+  slots before Seos will provision, because a pass routinely carries two
+  credentials — a card template *pair* issues one per platform, and a holder
+  who installs on both a phone and a watch needs one slot each. Running out
+  halfway would strand the second.
+
+  A pair is worth calling out: issuing against one returns a *unified pass*
+  rather than a card. Its credentials are in `details`, one per platform,
+  each with its own card number, and the pass itself has none — so both
+  halves are read from there. Listing the template returns those individual
+  cards and not the unified id we track, so passes are resolved by the
+  employee id plus the `pacs_credential_id` we stamp when an id lookup
+  misses (`Snapshot.resolve_ag_card`).
 
 **Write safety.** Millennium's save replaces the entire cardholder record:
 any field not echoed back is wiped. Rather than maintain a field list, the

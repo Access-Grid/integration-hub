@@ -20,10 +20,18 @@ from ...lib.pacs import CredentialIdentity, PacsAdapter
 
 logger = logging.getLogger(__name__)
 
-# Where an AccessGrid card exposes its per-device credentials. The API is
-# still growing this surface, so we probe the plausible spellings and fall
-# back to the card's own identity, which is always present.
-_DEVICE_COLLECTIONS = ("device_credentials", "devices", "credentials")
+# Where an AccessGrid pass exposes more than one credential.
+#
+# `details` is the important one: issuing against a card template *pair*
+# returns a unified pass whose identities are one per platform (an Apple
+# card and an Android card, each with its own card number) and whose own
+# site_code/card_number are absent. Reading only the top level finds nothing
+# there, and the pass looks like it has no credential at all.
+#
+# The others are probed because the per-device surface is still growing;
+# today they carry no card numbers, so the card's own identity is the
+# fallback for a single-template issue.
+_DEVICE_COLLECTIONS = ("details", "device_credentials", "devices", "credentials")
 _SITE_KEYS = ("site_code", "facility_code", "siteCode")
 _CARD_KEYS = ("card_number", "cardNumber", "number")
 
@@ -37,10 +45,12 @@ def _attr(obj: Any, keys: tuple[str, ...]) -> str:
 
 
 def identities_from_card(card: Any) -> list[CredentialIdentity]:
-    """Every credential AccessGrid has allocated for one card.
+    """Every credential AccessGrid has allocated for one pass.
 
-    A card installed on two devices carries two; one that has only been
-    issued carries the card's own single identity.
+    A pass issued against a card template pair carries one per platform; a
+    single-template issue carries the card's own identity. Both end up as a
+    credential the PACS has to hold, which is why a cardholder needs two
+    free slots before Seos will provision.
     """
     activate = getattr(card, "start_date", None)
     expire = getattr(card, "expiration_date", None)
@@ -52,7 +62,15 @@ def identities_from_card(card: Any) -> list[CredentialIdentity]:
             site, number = _attr(entry, _SITE_KEYS), _attr(entry, _CARD_KEYS)
             if number and (site, number) not in seen:
                 seen.add((site, number))
-                out.append(CredentialIdentity(site, number, activate, expire))
+                out.append(
+                    CredentialIdentity(
+                        site,
+                        number,
+                        activate,
+                        # Each half of a pair carries its own dates.
+                        _attr(entry, ("expiration_date",)) or expire,
+                    )
+                )
 
     site, number = _attr(card, _SITE_KEYS), _attr(card, _CARD_KEYS)
     if number and (site, number) not in seen:
