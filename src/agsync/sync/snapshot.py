@@ -22,7 +22,11 @@ class Snapshot:
     people: dict[str, Person] = field(default_factory=dict)
     credentials_by_person: dict[str, list[Credential]] = field(default_factory=dict)
     ag_cards_by_employee: dict[str, list[Any]] = field(default_factory=dict)
-    ag_cards_by_token: dict[tuple[str, str], Any] = field(default_factory=dict)
+    # (employee_id, pacs_credential_id) -> every card carrying that pair.
+    # A list because one issue can produce more than one card: a card
+    # template pair yields one per platform, and keeping a single card here
+    # meant a pass resolved to half of itself.
+    ag_cards_by_token: dict[tuple[str, str], list[Any]] = field(default_factory=dict)
     ag_card_by_id: dict[str, Any] = field(default_factory=dict)
     # Our own reference, stamped into card metadata at issue time. The exact
     # join: every card one issue produced shares it, so a card template pair
@@ -63,9 +67,9 @@ class Snapshot:
             if card is not None:
                 return [card]
         if person_id and credential_id:
-            card = self.ag_cards_by_token.get((person_id, credential_id))
-            if card is not None:
-                return [card]
+            cards = self.ag_cards_by_token.get((person_id, credential_id))
+            if cards:
+                return list(cards)
         return []
 
     def resolve_ag_card(
@@ -138,7 +142,7 @@ def build_snapshot(
             snap.ag_cards_by_employee.setdefault(emp, []).append(card)
             token_id = metadata.get("pacs_credential_id") or metadata.get("avigilon_token_id")
             if token_id:
-                snap.ag_cards_by_token[(emp, token_id)] = card
+                snap.ag_cards_by_token.setdefault((emp, token_id), []).append(card)
 
         site = metadata.get("site_code")
         card_no = metadata.get("card_number")

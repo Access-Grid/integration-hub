@@ -21,12 +21,22 @@ Endpoints, all verified against a live install (hosted8.mgiaccess.com):
         Removes a card from a slot. Used only to roll back a half-written
         provision; normal suspension unchecks Card_N_Active instead.
 
-Session expiry is the failure mode that matters. A dead cookie makes the
-HTML screens 302 to /Account/LogIn and makes the JSON endpoints return an
-empty 200 — neither looks like an error, so both are detected explicitly
-and raised as MillenniumAuthError. The engine turns that into a
-"reconnect" notification rather than mistaking an expired session for a
-cardholder roster that suddenly went empty.
+Session expiry is the failure mode that matters, and it does not announce
+itself. A dead cookie has been observed producing three different shapes,
+none of which looks like an error:
+
+  * the HTML screens 302 to /Account/LogIn
+  * the JSON endpoints return an empty 200 body
+  * the JSON endpoints return a valid, empty ``[]`` while the HTML screens
+    answer 500
+
+The third is the dangerous one: a well-formed empty roster is
+indistinguishable from a PACS with no cardholders, and reads downstream as
+"every cardholder was deleted". All three are detected and raised as
+MillenniumAuthError so the engine asks for a reconnect instead. An install
+that genuinely has no cardholders would be misreported by the last rule —
+that is the intended trade, because being wrong in that direction prompts a
+human, and being wrong in the other direction silently stops the sync.
 """
 
 from __future__ import annotations
@@ -130,7 +140,13 @@ class MillenniumUltraClient:
                 "Millennium session expired — reconnect via AG Connect"
             )
 
-    def _get(self, path: str, params: dict[str, Any] | None = None, ajax: bool = False) -> httpx.Response:
+    def _get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        ajax: bool = False,
+        server_error_means_expired: bool = False,
+    ) -> httpx.Response:
         headers = {"Accept": "text/html"}
         if ajax:
             headers = {
@@ -139,6 +155,15 @@ class MillenniumUltraClient:
             }
         response = self._http.get(self._url(path), params=params, headers=headers)
         self._check_auth(response)
+        if response.status_code >= 500 and server_error_means_expired:
+            # A dead session makes the cardholder screens throw rather than
+            # redirect. A genuine server fault looks the same from here, so
+            # this can cry wolf — but the cost is a reconnect prompt, against
+            # a sync that otherwise stops without saying anything.
+            raise MillenniumAuthError(
+                f"Millennium returned HTTP {response.status_code} for a cardholder "
+                "screen — the session has probably expired"
+            )
         if response.status_code >= 400:
             raise MillenniumError(f"GET {path} -> HTTP {response.status_code}")
         return response
@@ -146,13 +171,14 @@ class MillenniumUltraClient:
     # -- reads -----------------------------------------------------------
 
     def test_connection(self) -> tuple[bool, str]:
+        """Prove the session can actually read, not merely that it exists."""
         try:
-            rows = self._list_letter(LETTER_CODES[0])
+            cardholder_id = self.first_cardholder_id()
         except MillenniumAuthError as e:
             return False, str(e)
         except Exception as e:  # noqa: BLE001
             return False, f"{type(e).__name__}: {e}"
-        return True, f"Connected — {len(rows)} cardholder(s) under 'A'"
+        return True, f"Connected — cardholders are readable (e.g. {cardholder_id})"
 
     def _list_letter(self, letter_code: int) -> list[dict[str, Any]]:
         response = self._get(
@@ -179,22 +205,38 @@ class MillenniumUltraClient:
 
         Card formats are only readable off a card slot's <select>, and that
         lookup should not pay for a full A-Z roster sweep, so stop at the
-        first letter that returns anybody.
+        first letter that returns anybody. Finding nobody at all means the
+        same thing here as it does for a full sweep.
         """
         for code in LETTER_CODES:
             rows = self._list_letter(code)
             if rows:
                 return str(rows[0].get("ID"))
-        return ""
+        raise MillenniumAuthError(
+            "Millennium returned no cardholders under any letter — the "
+            "session has probably expired"
+        )
 
     def list_cardholders(self) -> list[dict[str, Any]]:
-        """Every cardholder, swept A–Z and de-duplicated by ID."""
+        """Every cardholder, swept A–Z and de-duplicated by ID.
+
+        An entirely empty sweep is treated as an expired session rather than
+        as a PACS with no cardholders. Every letter answering "[]" is what a
+        dead cookie looks like here, and the alternative reading stops the
+        sync silently — phase 3 declines to delete anything, so nothing moves
+        and nothing is reported.
+        """
         seen: dict[int, dict[str, Any]] = {}
         for code in LETTER_CODES:
             for row in self._list_letter(code):
                 cid = row.get("ID")
                 if cid is not None:
                     seen[cid] = row
+        if not seen:
+            raise MillenniumAuthError(
+                "Millennium returned no cardholders under any letter — the "
+                "session has probably expired"
+            )
         logger.info("Millennium: %d cardholder(s) across A-Z", len(seen))
         return list(seen.values())
 
@@ -205,7 +247,9 @@ class MillenniumUltraClient:
         both the current state and the body of the next save.
         """
         response = self._get(
-            f"/Cardholders/Cardholders/Index/{cardholder_id}", params={"pw": "200"}
+            f"/Cardholders/Cardholders/Index/{cardholder_id}",
+            params={"pw": "200"},
+            server_error_means_expired=True,
         )
         return CardholderForm.parse(response.text)
 

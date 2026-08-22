@@ -16,7 +16,12 @@
       <a href="/connect">{{ t('connect.action') }}</a>
     </div>
   {% elif not engine_status.pacs_reachable %}
-    <div class="banner err">{{ t('alert.pacs_unreachable') }}</div>
+    {# The PACS answered, but with nothing. Hedged wording on purpose: an
+       empty answer and a disconnected session look identical from here. #}
+    <div class="banner err">
+      {{ t('alert.pacs_probably_disconnected') }}
+      <a href="/connect">{{ t('connect.action') }}</a>
+    </div>
   {% endif %}
   {% if not engine_status.ag_reachable %}
     <div class="banner err">{{ t('alert.ag_unreachable') }}</div>

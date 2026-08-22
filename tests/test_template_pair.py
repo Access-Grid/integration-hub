@@ -108,7 +108,7 @@ def test_a_paired_pass_is_found_by_its_tag_not_its_id():
     """
     snap = Snapshot()
     half = SimpleNamespace(id="ewXEpYZyG2Fimj4", state="created")
-    snap.ag_cards_by_token[("11587", "seos-slot1")] = half
+    snap.ag_cards_by_token[("11587", "seos-slot1")] = [half]
 
     assert snap.resolve_ag_card("I_UgcwkCz7nO01s", "11587", "seos-slot1") is half
 
@@ -118,7 +118,7 @@ def test_the_id_is_preferred_when_it_is_present():
     by_id = SimpleNamespace(id="card-1", state="created")
     by_token = SimpleNamespace(id="other", state="suspended")
     snap.ag_card_by_id["card-1"] = by_id
-    snap.ag_cards_by_token[("p1", "slot1")] = by_token
+    snap.ag_cards_by_token[("p1", "slot1")] = [by_token]
 
     assert snap.resolve_ag_card("card-1", "p1", "slot1") is by_id
 
@@ -167,7 +167,7 @@ def test_the_reference_beats_the_ambiguous_token():
     snap = Snapshot()
     stale = SimpleNamespace(id="old", state="suspended")
     current = SimpleNamespace(id="new", state="created")
-    snap.ag_cards_by_token[("11587", "seos-slot1")] = stale
+    snap.ag_cards_by_token[("11587", "seos-slot1")] = [stale]
     snap.ag_cards_by_sync_ref["abc123"] = [current]
 
     assert snap.resolve_ag_card("missing", "11587", "seos-slot1", "abc123") is current
@@ -177,7 +177,7 @@ def test_cards_issued_before_references_still_resolve():
     # Upgrading must not orphan passes already out in the world.
     snap = Snapshot()
     legacy = SimpleNamespace(id="legacy", state="created")
-    snap.ag_cards_by_token[("11587", "seos-slot1")] = legacy
+    snap.ag_cards_by_token[("11587", "seos-slot1")] = [legacy]
 
     assert snap.resolve_ag_card(None, "11587", "seos-slot1", "") is legacy
 
@@ -196,3 +196,26 @@ def test_identities_are_unioned_without_duplicates():
 def test_a_single_pass_object_is_accepted_too():
     # Phase 1 hands over the provision response directly, not a list.
     assert len(identities_from_cards(_pair())) == 2
+
+
+def test_a_legacy_pair_resolves_to_both_halves_without_a_reference():
+    """Passes issued before references existed still have two halves.
+
+    The token index used to keep one card per key, so such a pass resolved
+    to half of itself and only one platform's card reached the PACS.
+    """
+    snap = Snapshot()
+    apple = SimpleNamespace(
+        id="ewXEpYZyG2Fimj4", site_code="2", card_number="1216",
+        expiration_date=EXPIRES, details=[],
+    )
+    android = SimpleNamespace(
+        id="h_6ue16ECOc8N2M", site_code="2", card_number="1217",
+        expiration_date=EXPIRES, details=[],
+    )
+    snap.ag_cards_by_token[("11587", "seos-slot1")] = [apple, android]
+
+    found = snap.resolve_ag_cards("I_UgcwkCz7nO01s", "11587", "seos-slot1", "")
+    assert [(i.site_code, i.card_number) for i in identities_from_cards(found)] == [
+        ("2", "1216"), ("2", "1217"),
+    ]

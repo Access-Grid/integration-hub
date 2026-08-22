@@ -146,5 +146,6 @@
   "settings.email_domain.subtitle": "Este PACS no guarda direcciones de correo, así que se deriva una por titular con el formato nombre.apellido.<id>@<dominio>. Cambiar el dominio cambia todas las direcciones, y las nuevas se envían a AccessGrid en el siguiente ciclo, incluidos los pases ya emitidos.",
   "settings.email_domain.label": "Dominio",
   "settings.email_domain.saved": "Dominio de correo guardado. Se ha puesto en cola una sincronización.",
-  "settings.email_domain.invalid": "Eso no parece un nombre de dominio."
+  "settings.email_domain.invalid": "Eso no parece un nombre de dominio.",
+  "alert.pacs_probably_disconnected": "EL PACS PROBABLEMENTE ESTÁ DESCONECTADO: no devolvió ningún titular, así que no se está sincronizando nada."
 }

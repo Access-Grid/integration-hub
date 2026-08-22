@@ -70,10 +70,18 @@ an argument, so there it compiles a small AppleScript applet into
 `~/Applications/AG Connect.app` — a bundle wrapping a plain executable would
 be launched with no arguments and the URL would be lost.
 
-Sessions expire. When one does, syncing pauses, a banner appears in the web
-UI, and — if SMTP is configured under Settings → Notifications — a message
-goes to the notification address asking someone to reconnect. An expired
-session is never mistaken for an empty cardholder list.
+Sessions expire, roughly hourly, and they do not say so. A dead cookie has
+been seen producing three different shapes, none of which looks like an
+error: a redirect to the login page, an empty 200 body, and a valid empty
+`[]` alongside HTTP 500 on the cardholder screens. The last is the dangerous
+one — a well-formed empty roster is indistinguishable from a PACS with no
+cardholders, and reads downstream as "everyone was deleted". All three raise
+`PacsAuthExpired`, so syncing pauses, a banner appears, and — if SMTP is
+configured under Settings → Notifications — a message asks someone to
+reconnect. An install that genuinely has zero cardholders would be
+misreported by the empty-roster rule; that is the intended trade, since
+being wrong that way prompts a human and being wrong the other way stops the
+sync in silence.
 
 **Enrollment trigger (card format).** At setup you choose one card format,
 read live from the install. Any cardholder holding a card in that format is
