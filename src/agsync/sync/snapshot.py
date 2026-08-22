@@ -24,31 +24,60 @@ class Snapshot:
     ag_cards_by_employee: dict[str, list[Any]] = field(default_factory=dict)
     ag_cards_by_token: dict[tuple[str, str], Any] = field(default_factory=dict)
     ag_card_by_id: dict[str, Any] = field(default_factory=dict)
+    # Our own reference, stamped into card metadata at issue time. The exact
+    # join: every card one issue produced shares it, so a card template pair
+    # resolves to both of its halves. A list, because that is the point.
+    ag_cards_by_sync_ref: dict[str, list[Any]] = field(default_factory=dict)
     # Indexed by (site_code, card_number) — both stored as strings so callers
     # don't have to worry about int-vs-str coercion at lookup time. Populated
     # from card metadata so dedupe sees only cards we (or sister instances)
     # have tagged with this convention.
     ag_cards_by_site_card: dict[tuple[str, str], Any] = field(default_factory=dict)
 
-    def resolve_ag_card(
-        self, ag_card_id: str | None, person_id: str = "", credential_id: str = "",
-    ) -> Any | None:
-        """Find a tracked pass in this snapshot.
+    def resolve_ag_cards(
+        self,
+        ag_card_id: str | None,
+        person_id: str = "",
+        credential_id: str = "",
+        sync_ref: str = "",
+    ) -> list[Any]:
+        """Every card belonging to one tracked issue, best index first.
 
-        By id where possible. But a pass issued against a card template
-        *pair* is tracked by its unified id, and listing a template returns
-        the individual cards rather than that pass — so the id is simply not
-        in the index. Those cards do carry the employee id and the
-        pacs_credential_id we stamped, which is what the token index is for,
-        so fall back to it rather than concluding the pass is gone.
+        The sync reference is preferred because we chose it: it is stamped
+        into the metadata of every card an issue produced, so it survives the
+        one case ids do not — a card template pair is tracked by a unified id
+        that never appears in the template's own listing, while both of its
+        halves carry the reference.
+
+        The id comes next, then employee id + pacs_credential_id for cards
+        issued before references existed. That last one is a weak key: it
+        repeats if a credential was ever issued twice, so it is a fallback
+        rather than the plan.
         """
+        if sync_ref:
+            cards = self.ag_cards_by_sync_ref.get(sync_ref)
+            if cards:
+                return list(cards)
         if ag_card_id:
             card = self.ag_card_by_id.get(ag_card_id)
             if card is not None:
-                return card
+                return [card]
         if person_id and credential_id:
-            return self.ag_cards_by_token.get((person_id, credential_id))
-        return None
+            card = self.ag_cards_by_token.get((person_id, credential_id))
+            if card is not None:
+                return [card]
+        return []
+
+    def resolve_ag_card(
+        self,
+        ag_card_id: str | None,
+        person_id: str = "",
+        credential_id: str = "",
+        sync_ref: str = "",
+    ) -> Any | None:
+        """One card for a tracked issue, for callers that need a single state."""
+        cards = self.resolve_ag_cards(ag_card_id, person_id, credential_id, sync_ref)
+        return cards[0] if cards else None
 
     @property
     def total_credentials(self) -> int:
@@ -101,6 +130,9 @@ def build_snapshot(
     for card in cards:
         snap.ag_card_by_id[card.id] = card
         metadata = getattr(card, "metadata", None) or {}
+        ref = metadata.get("sync_ref")
+        if ref:
+            snap.ag_cards_by_sync_ref.setdefault(str(ref), []).append(card)
         emp = getattr(card, "employee_id", None)
         if emp:
             snap.ag_cards_by_employee.setdefault(emp, []).append(card)
@@ -115,8 +147,9 @@ def build_snapshot(
 
     logger.info(
         "Snapshot complete: %d people, %d credentials, %d AG cards "
-        "(%d token-matched, %d site+card-matched)",
+        "(%d ref-matched, %d token-matched, %d site+card-matched)",
         len(snap.people), snap.total_credentials, len(snap.ag_card_by_id),
-        len(snap.ag_cards_by_token), len(snap.ag_cards_by_site_card),
+        len(snap.ag_cards_by_sync_ref), len(snap.ag_cards_by_token),
+        len(snap.ag_cards_by_site_card),
     )
     return snap

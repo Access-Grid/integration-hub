@@ -57,6 +57,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         # Compare PACS status to AG-tracked status.
         ag_card = snapshot.resolve_ag_card(
             tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+            tracked.sync_ref,
         )
         ag_state = (getattr(ag_card, "state", "") or "").lower() if ag_card else ""
 

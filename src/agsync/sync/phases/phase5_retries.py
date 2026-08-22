@@ -92,6 +92,11 @@ def run(
 
         now = datetime.now(UTC)
         metadata: dict = dict(extra_metadata or {})
+        # Our own handle on this issue, echoed back on every card the
+        # call produces — including both halves of a template pair, which
+        # is what makes them findable in a later listing.
+        sync_ref = tracking.new_sync_ref()
+        metadata["sync_ref"] = sync_ref
         metadata["pacs_credential_id"] = cred.id
         if not cred.allocate_identity:
             if eff_site_code:
@@ -152,6 +157,7 @@ def run(
                 last_synced_full_name=person.full_name,
                 last_synced_title=person.title,
                 last_known_ag_state=ag_state,
+                sync_ref=sync_ref,
             )
             succeeded += 1
             logger.info("  Retry succeeded for %s", person.full_name)

@@ -47,6 +47,7 @@ def run(snapshot: Snapshot, pacs: PacsAdapter) -> int:
 
         ag_card = snapshot.resolve_ag_card(
             tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+            tracked.sync_ref,
         )
         if ag_card is None:
             continue
@@ -117,13 +118,17 @@ def _push_new_credentials(snapshot: Snapshot, pacs: PacsAdapter) -> int:
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
         if cred is None or not cred.allocate_identity:
             continue
-        card = snapshot.resolve_ag_card(
+        # All of them: a card template pair lists as two cards, and writing
+        # back only one half would leave the other platform without a card
+        # in the PACS.
+        cards = snapshot.resolve_ag_cards(
             tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+            tracked.sync_ref,
         )
-        if card is None:
+        if not cards:
             continue
         if push_allocated_identities(
-            pacs, tracked.pacs_person_id, tracked.pacs_credential_id, card,
+            pacs, tracked.pacs_person_id, tracked.pacs_credential_id, cards,
         ):
             pushed += 1
     if pushed:

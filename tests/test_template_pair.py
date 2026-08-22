@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agsync.sync.phases.writeback import identities_from_card, push_allocated_identities
+from agsync.sync.phases.writeback import (
+    identities_from_card,
+    identities_from_cards,
+    push_allocated_identities,
+)
 from agsync.sync.snapshot import Snapshot
 
 EXPIRES = "2027-08-22T05:07:55.521Z"
@@ -123,3 +127,72 @@ def test_a_genuinely_missing_pass_still_reads_as_missing():
     # The fallback must not paper over a real deletion, which is what
     # phase 3 exists to notice.
     assert Snapshot().resolve_ag_card("gone", "p1", "slot1") is None
+
+
+# --- the sync reference --------------------------------------------------
+
+
+def test_a_reference_finds_both_halves_of_a_pair():
+    """The exact join, and the reason for stamping metadata at issue time.
+
+    Every card one issue produced carries the same reference, so a pair
+    resolves to both halves — where the unified id resolves to neither.
+    """
+    snap = Snapshot()
+    first = SimpleNamespace(
+        id="ewXEpYZyG2Fimj4", site_code="2", card_number="1216",
+        metadata={"sync_ref": "abc123", "pacs_credential_id": "seos-slot1"},
+        employee_id="11587", state="created", expiration_date=EXPIRES,
+    )
+    second = SimpleNamespace(
+        id="h_6ue16ECOc8N2M", site_code="2", card_number="1217",
+        metadata={"sync_ref": "abc123", "pacs_credential_id": "seos-slot1"},
+        employee_id="11587", state="created", expiration_date=EXPIRES,
+    )
+    snap.ag_cards_by_sync_ref["abc123"] = [first, second]
+
+    found = snap.resolve_ag_cards("I_UgcwkCz7nO01s", "11587", "seos-slot1", "abc123")
+    assert found == [first, second]
+    assert [(i.site_code, i.card_number) for i in identities_from_cards(found)] == [
+        ("2", "1216"), ("2", "1217"),
+    ]
+
+
+def test_the_reference_beats_the_ambiguous_token():
+    """Several cards can share (employee, credential) after re-issues.
+
+    The token index keeps only the last one seen, so without a reference a
+    tracked pass can resolve to an unrelated card from an earlier attempt.
+    """
+    snap = Snapshot()
+    stale = SimpleNamespace(id="old", state="suspended")
+    current = SimpleNamespace(id="new", state="created")
+    snap.ag_cards_by_token[("11587", "seos-slot1")] = stale
+    snap.ag_cards_by_sync_ref["abc123"] = [current]
+
+    assert snap.resolve_ag_card("missing", "11587", "seos-slot1", "abc123") is current
+
+
+def test_cards_issued_before_references_still_resolve():
+    # Upgrading must not orphan passes already out in the world.
+    snap = Snapshot()
+    legacy = SimpleNamespace(id="legacy", state="created")
+    snap.ag_cards_by_token[("11587", "seos-slot1")] = legacy
+
+    assert snap.resolve_ag_card(None, "11587", "seos-slot1", "") is legacy
+
+
+def test_an_unknown_reference_does_not_invent_a_card():
+    assert Snapshot().resolve_ag_cards("x", "p", "c", "nope") == []
+
+
+def test_identities_are_unioned_without_duplicates():
+    half = SimpleNamespace(
+        id="a", site_code="2", card_number="1216", expiration_date=EXPIRES, details=[],
+    )
+    assert len(identities_from_cards([half, half])) == 1
+
+
+def test_a_single_pass_object_is_accepted_too():
+    # Phase 1 hands over the provision response directly, not a list.
+    assert len(identities_from_cards(_pair())) == 2

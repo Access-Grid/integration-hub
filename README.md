@@ -106,10 +106,17 @@ unreadable template falls back to DESFire, the direction that never writes.
   A pair is worth calling out: issuing against one returns a *unified pass*
   rather than a card. Its credentials are in `details`, one per platform,
   each with its own card number, and the pass itself has none — so both
-  halves are read from there. Listing the template returns those individual
-  cards and not the unified id we track, so passes are resolved by the
-  employee id plus the `pacs_credential_id` we stamp when an id lookup
-  misses (`Snapshot.resolve_ag_card`).
+  halves are read from there.
+
+  Finding that pass again needs care, because listing the template returns
+  the individual cards and *not* the unified id. Rather than depend on which
+  id comes back, every issue mints a `sync_ref`, stamps it into the card
+  metadata before the call, and records it in `ag_credentials`. Each card an
+  issue produced carries it, so a pair resolves to both halves. Lookups try
+  the reference first, then the id, then employee id +
+  `pacs_credential_id` for cards issued before references existed — a weak
+  key, since it repeats if a credential was ever issued twice. See
+  `Snapshot.resolve_ag_cards`.
 
 **Write safety.** Millennium's save replaces the entire cardholder record:
 any field not echoed back is wiped. Rather than maintain a field list, the

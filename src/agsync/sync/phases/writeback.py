@@ -78,16 +78,40 @@ def identities_from_card(card: Any) -> list[CredentialIdentity]:
     return out
 
 
+def identities_from_cards(cards: Any) -> list[CredentialIdentity]:
+    """Union the identities across every card belonging to one issue.
+
+    Provisioning hands back a single object, but a later listing returns a
+    card template pair as two separate cards. Both shapes have to produce
+    the same set, or a re-offer would look like a credential went missing.
+    """
+    if not isinstance(cards, list | tuple):
+        cards = [cards]
+    out: list[CredentialIdentity] = []
+    seen: set[tuple[str, str]] = set()
+    for card in cards:
+        for identity in identities_from_card(card):
+            key = (str(identity.site_code), str(identity.card_number))
+            if key not in seen:
+                seen.add(key)
+                out.append(identity)
+    return out
+
+
 def push_allocated_identities(
     pacs: PacsAdapter, person_id: str, credential_id: str, card: Any
 ) -> bool:
-    """Write a card's AccessGrid-allocated identities into the PACS."""
+    """Write an issue's AccessGrid-allocated identities into the PACS.
+
+    `card` may be one pass or the list of cards a later listing returned for
+    it; both describe the same issue.
+    """
     if not getattr(pacs, "supports_credential_writeback", False):
         return False
-    identities = identities_from_card(card)
+    identities = identities_from_cards(card)
     if not identities:
         logger.warning(
-            "  AG card for %s/%s exposes no credential yet — nothing to write back",
+            "  AG pass for %s/%s exposes no credential yet — nothing to write back",
             person_id, credential_id,
         )
         return False

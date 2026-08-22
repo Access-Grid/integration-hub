@@ -70,7 +70,7 @@ class AccessGridConfig:
     # user-supplied extras anyway, but we reject them at save time so the
     # operator gets immediate feedback instead of a silent override.
     RESERVED_METADATA_KEYS = frozenset(
-        {"pacs_credential_id", "site_code", "card_number"}
+        {"pacs_credential_id", "site_code", "card_number", "sync_ref"}
     )
 
     # Sent on every pass this install issues. They describe the deployment

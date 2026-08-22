@@ -86,6 +86,18 @@ MIGRATIONS: list[tuple[str, str]] = [
         ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0;
         """,
     ),
+    (
+        "004_ag_credentials_sync_ref",
+        """
+        -- Unique per issue, minted before the API call and stamped into the
+        -- card's metadata, so a pass can be found again by something we
+        -- chose rather than by whatever id the response happened to return.
+        ALTER TABLE ag_credentials ADD COLUMN sync_ref TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_ag_credentials_sync_ref
+            ON ag_credentials(sync_ref);
+        """,
+    ),
 ]
 
 
