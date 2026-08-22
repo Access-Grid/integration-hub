@@ -148,6 +148,14 @@ badge for looking up a pass that is not working. Read from the ledger, not
 from the cardholder pages: rendering one line per pass should not cost a
 90 KB fetch each.
 
+**Changing a person's details.** Phase 6 pushes name, phone and title
+changes to AccessGrid. It does **not** push email: AccessGrid rejects it on
+an issued pass, since the address is what the pass was delivered to rather
+than an attribute of it. A changed address is logged once — the pass keeps
+the old one, so re-issue it if that matters — rather than retried forever.
+This is worth knowing for Millennium, where the address is synthesized:
+renaming a cardholder or changing the email domain changes it.
+
 **Pass details.** A pass carries the card's own validity from Millennium as
 its start and expiration dates, rather than "whenever the sync noticed it"
 — the stored text is local to the install, so it is converted using the
