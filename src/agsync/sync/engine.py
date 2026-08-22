@@ -64,6 +64,11 @@ class CycleResult:
     retried: int = 0
     field_updates: int = 0
     error: str | None = None
+    # False for failures that retrying cannot fix and that a human is
+    # already being asked about, or for a cycle deliberately abandoned.
+    # Counting those toward the circuit breaker pauses the engine for a
+    # reason nobody can act on from here.
+    counts_as_failure: bool = True
 
 
 @dataclass
@@ -122,6 +127,23 @@ class SyncEngine:
 
     def trigger_now(self) -> None:
         """Run a cycle ASAP (will wait for the current cycle if one is running)."""
+        self._trigger.set()
+
+    def session_restored(self) -> None:
+        """A new PACS session has been captured and proven to read.
+
+        Clears the reconnect flag immediately. Otherwise the banner survives
+        until the next cycle *finishes*, and a first cold sweep of a large
+        install takes minutes — so the operator sits looking at a demand to
+        do the thing they just did.
+        """
+        with self._status_lock:
+            self._status.reconnect_required = False
+            self._status.pacs_reachable = True
+            self._status.consecutive_errors = 0
+            self._status.paused = False
+            self._status.pause_reason = ""
+        self.invalidate_pacs_adapter()
         self._trigger.set()
 
     def invalidate_pacs_adapter(self) -> None:
@@ -191,7 +213,7 @@ class SyncEngine:
             result = self._run_one_cycle()
             with self._status_lock:
                 self._status.last_cycle = result
-                if result.error:
+                if result.error and result.counts_as_failure:
                     self._status.consecutive_errors += 1
                     self._status.last_error = result.error
                     sleep_s = ERROR_BACKOFF_S
@@ -368,6 +390,7 @@ class SyncEngine:
             "Configuration changed mid-cycle — abandoning it and starting over"
         )
         result.error = "superseded"
+        result.counts_as_failure = False
         result.duration_ms = int((time.time() - start_ms) * 1000)
         self._trigger.set()
         return result
@@ -410,6 +433,10 @@ class SyncEngine:
             self._status.reconnect_required = True
             self._status.pacs_reachable = False
         result.error = f"pacs_auth_expired: {error}"
+        # Retrying cannot fix a captcha-gated login, and the operator has
+        # already been told. Pausing the engine on top of that would mean a
+        # restart was needed after reconnecting.
+        result.counts_as_failure = False
         result.duration_ms = int((time.time() - start_ms) * 1000)
         try:
             notify_reconnect_required(name, str(error))

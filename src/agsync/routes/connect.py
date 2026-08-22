@@ -359,10 +359,10 @@ async def connect_callback(request: Request):
     # previous send window.
     reset_throttle("reconnect")
     # The adapter reads the session at construction, so the cached one is
-    # still holding the dead cookie.
-    engine = get_engine()
-    engine.invalidate_pacs_adapter()
-    engine.trigger_now()
+    # still holding the dead cookie. The session was proven to read before
+    # it was stored, so the reconnect banner can go now rather than
+    # surviving until a cycle finishes.
+    get_engine().session_restored()
     logger.info("AG Connect: session captured for launch %s", launch.launch_id)
     return {"ok": True}
 
