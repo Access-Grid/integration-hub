@@ -1,4 +1,11 @@
-"""Issued credentials view — list provisioned cards with install URL + QR."""
+"""Issued credentials view — list provisioned cards with install URL + QR.
+
+For a PACS that receives credentials rather than supplying them, each row
+also reports what actually reached it. That is the half of a Seos sync
+nobody can otherwise see: the AccessGrid pass exists either way, and whether
+its card numbers made it into the PACS is the difference between a pass that
+opens doors and one that does not.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +17,8 @@ from fastapi import APIRouter, Depends, Request
 
 from ..ag import AccessGridError, build_client
 from ..auth import require_admin
-from ..settings_store import AccessGridConfig
+from ..lib.pacs import build_adapter, get_descriptor
+from ..settings_store import AccessGridConfig, PacsConfig
 from ..sync import tracking
 
 logger = logging.getLogger(__name__)
@@ -24,9 +32,33 @@ def credentials_page(request: Request, _user=Depends(require_admin)):
         c for c in tracking.all_tracked()
         if c.ag_card_id and c.status != "deduped"
     ]
+    written, pacs_name = _written_credentials()
     return request.app.state.template_response(
-        request, "credentials.html", {"credentials": rows},
+        request, "credentials.html",
+        {
+            "credentials": rows,
+            # (person_id, credential_id) -> card numbers in the PACS.
+            "written": written,
+            "pacs_name": pacs_name,
+        },
     )
+
+
+def _written_credentials() -> tuple[dict[tuple[str, str], list[str]], str]:
+    """What has reached the PACS, and what to call it. ({}, "") if not applicable."""
+    pacs = PacsConfig.load() or {}
+    vendor = pacs.get("vendor", "")
+    descriptor = get_descriptor(vendor) if vendor else None
+    if descriptor is None:
+        return {}, ""
+    try:
+        adapter = build_adapter(vendor, dict(pacs.get("params") or {}))
+        if not getattr(adapter, "supports_credential_writeback", False):
+            return {}, descriptor.display_name
+        return adapter.written_credentials(), descriptor.display_name
+    except Exception as e:  # noqa: BLE001 — a listing page must still render
+        logger.warning("credentials: could not read PACS writeback state: %s", e)
+        return {}, descriptor.display_name
 
 
 @router.get("/credentials/{card_id}/install")

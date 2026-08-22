@@ -148,5 +148,8 @@
   "settings.email_domain.saved": "Email domain saved. A sync has been queued.",
   "settings.email_domain.invalid": "That does not look like a domain name.",
   "alert.pacs_probably_disconnected": "PACS PROBABLY DISCONNECTED — it returned no cardholders, so nothing is syncing.",
-  "alert.reauthenticate": "PLEASE RE-AUTHENTICATE {pacs} — CLICK HERE"
+  "alert.reauthenticate": "PLEASE RE-AUTHENTICATE {pacs} — CLICK HERE",
+  "credentials.in_pacs": "In the PACS",
+  "credentials.saved_to_pacs": "{count} card number(s) saved to {pacs}",
+  "credentials.not_in_pacs": "Not yet saved to {pacs}"
 }

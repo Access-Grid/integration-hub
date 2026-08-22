@@ -183,3 +183,11 @@ class PacsAdapter(Protocol):
         Must be idempotent: it is re-offered every cycle with the full list,
         and identities already present are expected to be skipped.
         """
+
+    def written_credentials(self) -> dict[tuple[str, str], list[str]]:
+        """What this adapter has written into the PACS, for display.
+
+        Maps (person_id, credential_id) to the card numbers written. Returned
+        whole rather than queried per credential so a page listing many of
+        them costs one read. Adapters that never write return {}.
+        """

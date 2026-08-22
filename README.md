@@ -140,6 +140,14 @@ byte-identical to a captured browser POST for the same page. Access levels,
 photos, user fields and vehicle details are replayed untouched; this adapter
 never edits a cardholder's access levels.
 
+**Seeing what reached the PACS.** For Seos the AccessGrid pass existing is
+only half the story — the pass opens doors when its card numbers are in
+Millennium, and not before. The Credentials page reports that per row ("2
+card numbers saved to Millennium Ultra"), with the numbers themselves on the
+badge for looking up a pass that is not working. Read from the ledger, not
+from the cardholder pages: rendering one line per pass should not cost a
+90 KB fetch each.
+
 **Pass details.** A pass carries the card's own validity from Millennium as
 its start and expiration dates, rather than "whenever the sync noticed it"
 — the stored text is local to the install, so it is converted using the

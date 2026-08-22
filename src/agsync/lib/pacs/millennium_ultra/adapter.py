@@ -195,6 +195,11 @@ class SeosLedger:
         return f"{person_id}:{credential_id}"
 
     @staticmethod
+    def all() -> dict[str, list[dict]]:
+        """The whole ledger, keyed "person_id:credential_id"."""
+        return SeosLedger._load_all()
+
+    @staticmethod
     def get(person_id: str, credential_id: str) -> list[dict]:
         return SeosLedger._load_all().get(SeosLedger._key(person_id, credential_id), [])
 
@@ -418,6 +423,21 @@ class MillenniumUltraAdapter:
     def supports_credential_writeback(self) -> bool:
         """Seos mints credentials in AccessGrid and writes them into the PACS."""
         return self.mode == MODE_SEOS
+
+    def written_credentials(self) -> dict[tuple[str, str], list[str]]:
+        """Card numbers this integration has written into Millennium.
+
+        Read from the ledger rather than from the cardholder pages: this is
+        for a page listing every issued pass, and fetching ~90 KB per holder
+        to render a one-line summary would be absurd.
+        """
+        out: dict[tuple[str, str], list[str]] = {}
+        for key, entries in SeosLedger.all().items():
+            person_id, _, credential_id = key.partition(":")
+            numbers = [str(e.get("card_number")) for e in entries if e.get("card_number")]
+            if numbers:
+                out[(person_id, credential_id)] = numbers
+        return out
 
     def write_back_credentials(
         self,

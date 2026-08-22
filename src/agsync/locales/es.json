@@ -148,5 +148,8 @@
   "settings.email_domain.saved": "Dominio de correo guardado. Se ha puesto en cola una sincronización.",
   "settings.email_domain.invalid": "Eso no parece un nombre de dominio.",
   "alert.pacs_probably_disconnected": "EL PACS PROBABLEMENTE ESTÁ DESCONECTADO: no devolvió ningún titular, así que no se está sincronizando nada.",
-  "alert.reauthenticate": "VUELVA A AUTENTICARSE EN {pacs}: HAGA CLIC AQUÍ"
+  "alert.reauthenticate": "VUELVA A AUTENTICARSE EN {pacs}: HAGA CLIC AQUÍ",
+  "credentials.in_pacs": "En el PACS",
+  "credentials.saved_to_pacs": "{count} número(s) de tarjeta guardado(s) en {pacs}",
+  "credentials.not_in_pacs": "Todavía no se ha guardado en {pacs}"
 }
