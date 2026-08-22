@@ -11,10 +11,13 @@
     <div class="err">{{ t('wizard.connect.not_registered') }}</div>
   {% endif %}
 
+  {# outerHTML so that once /connect/status returns the finished panel, the
+     polling element is replaced rather than filled — otherwise it keeps
+     asking every 2s, and each ask is a live read against the PACS. #}
   <div id="connect-panel"
        hx-get="/connect/status?launch={{ launch_id }}&amp;pick=1"
        hx-trigger="load, every 2s"
-       hx-swap="innerHTML">
+       hx-swap="outerHTML">
     <p class="muted">{{ t('common.loading') }}</p>
   </div>
 </div>

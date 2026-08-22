@@ -95,6 +95,10 @@ class SyncEngine:
         # reads ~1800 detail pages to prime one) and an HTTP connection pool
         # that would otherwise leak a little on every cycle.
         self._pacs: tuple[str, Any] | None = None
+        # Bumped whenever configuration changes. The running cycle checks it
+        # between phases and bails out: it is holding an adapter built from
+        # the old settings, and finishing the cycle would act on them.
+        self._generation = 0
 
     # ----- public API --------------------------------------------------
 
@@ -121,12 +125,16 @@ class SyncEngine:
         self._trigger.set()
 
     def invalidate_pacs_adapter(self) -> None:
-        """Drop the cached adapter so the next cycle rebuilds it.
+        """Drop the cached adapter and abandon any cycle still using it.
 
         Needed when something the adapter read at construction changed
-        without the connection settings changing — a recaptured PACS session
-        being the case that matters.
+        without the connection settings changing — a recaptured PACS session,
+        or a new enrollment trigger. The in-flight cycle matters as much as
+        the next one: it holds an adapter built from the old settings, so
+        left alone it would keep provisioning against the old trigger.
         """
+        with self._status_lock:
+            self._generation += 1
         self._retire_pacs_adapter()
 
     def get_status(self) -> dict[str, Any]:
@@ -261,6 +269,13 @@ class SyncEngine:
             result.duration_ms = int((time.time() - start_ms) * 1000)
             return result
 
+        with self._status_lock:
+            generation = self._generation
+
+        def superseded() -> bool:
+            with self._status_lock:
+                return self._generation != generation
+
         site_code = (ag_cfg.get("site_code") or "").strip()
         dedupe = bool(ag_cfg.get("dedupe_by_site_card", False))
         extra_metadata = dict(ag_cfg.get("extra_metadata") or {})
@@ -275,9 +290,14 @@ class SyncEngine:
                 extra_metadata=extra_metadata,
                 use_file_data=use_file_data,
                 pacs=pacs,
+                should_stop=superseded,
             )
+            if superseded():
+                return self._abandon(result, start_ms)
             result.status_changes = phase2_local_to_ag.run(snapshot, ag)
             result.deleted = phase3_deletions.run(snapshot, ag)
+            if superseded():
+                return self._abandon(result, start_ms)
             result.ag_to_pacs = phase4_ag_to_local.run(snapshot, pacs)
             result.retried = phase5_retries.run(
                 snapshot, ag, ag_cfg["template_id"], site_code,
@@ -330,6 +350,16 @@ class SyncEngine:
             logger.info("Card template protocol %r — running in %s mode", protocol, mode)
         params["mode"] = mode
         return {**pacs_cfg, "params": params}
+
+    def _abandon(self, result: CycleResult, start_ms: float) -> CycleResult:
+        """Stop a cycle whose configuration changed underneath it."""
+        logger.warning(
+            "Configuration changed mid-cycle — abandoning it and starting over"
+        )
+        result.error = "superseded"
+        result.duration_ms = int((time.time() - start_ms) * 1000)
+        self._trigger.set()
+        return result
 
     def _pacs_adapter(self, pacs_cfg: dict[str, Any]):
         """The adapter for this config, built once and reused."""

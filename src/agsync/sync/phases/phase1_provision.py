@@ -21,6 +21,7 @@ to collide with.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from ...ag import AccessGrid, AccessGridError
@@ -30,6 +31,14 @@ from ..snapshot import Snapshot
 from .writeback import push_allocated_identities
 
 logger = logging.getLogger(__name__)
+
+# Most cycles provision a handful of people. A number far above that means
+# something changed that shouldn't have — a mistyped trigger, a trigger that
+# suddenly matches a common card format — and on a site with thousands of
+# cardholders that runs away fast. Capping it turns a runaway into something
+# slow and visible: the rest are picked up on later cycles, and the operator
+# gets a warning naming the number while there is still time to stop it.
+MAX_PROVISIONS_PER_CYCLE = 25
 
 
 def run(
@@ -41,10 +50,13 @@ def run(
     extra_metadata: dict | None = None,
     use_file_data: bool = False,
     pacs: PacsAdapter | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    max_per_cycle: int = MAX_PROVISIONS_PER_CYCLE,
 ) -> int:
     provisioned = 0
     skipped = 0
     deduped = 0
+    eligible = 0
     logger.info(
         "Phase 1: Checking for new credentials to provision (dedupe=%s)",
         "on" if dedupe_by_site_card else "off",
@@ -54,6 +66,9 @@ def run(
         person = snapshot.people.get(pid)
         if person is None or not person.active:
             continue
+        if should_stop is not None and should_stop():
+            logger.warning("Phase 1: configuration changed — stopping early")
+            break
         for cred in creds:
             if not cred.trigger_active:
                 skipped += 1
@@ -109,6 +124,13 @@ def run(
                     )
                     deduped += 1
                     continue
+
+            eligible += 1
+            if provisioned >= max_per_cycle:
+                # Deliberately after the tracking row would have been written
+                # so nothing is half-recorded; these are simply retried next
+                # cycle, by which time an operator has had a chance to look.
+                continue
 
             now = datetime.now(UTC)
             start_date = (cred.activate_date or now).isoformat()
@@ -200,6 +222,13 @@ def run(
                 logger.error("  Unexpected error provisioning %s: %s", person.full_name, e)
                 tracking.record_error(pid, cred.id, f"{type(e).__name__}: {e}")
 
+    if eligible > max_per_cycle:
+        logger.warning(
+            "Phase 1: %d credentials are eligible but this cycle provisions at "
+            "most %d. If that number is unexpected, check the enrollment "
+            "trigger before the remaining %d are provisioned on later cycles.",
+            eligible, max_per_cycle, eligible - provisioned,
+        )
     logger.info(
         "Phase 1 done: %d provisioned, %d skipped, %d deduped",
         provisioned, skipped, deduped,

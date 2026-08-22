@@ -13,7 +13,7 @@
     <div id="connect-panel"
          hx-get="/connect/status?launch={{ launch_id }}"
          hx-trigger="load, every 2s"
-         hx-swap="innerHTML">
+         hx-swap="outerHTML">
       <p class="muted">{{ t('common.loading') }}</p>
     </div>
   {% endif %}

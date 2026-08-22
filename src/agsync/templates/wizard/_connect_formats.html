@@ -1,5 +1,6 @@
 {# Swapped in once AG Connect has handed back a session. The card formats
    below are read live from the PACS — there is no static list. #}
+<div id="connect-panel">
 <div class="test-result ok">{{ t('wizard.connect.connected') }}</div>
 
 {% if error %}
@@ -33,3 +34,4 @@
     <button type="submit">{{ t('common.finish') }}</button>
   </form>
 {% endif %}
+</div>
