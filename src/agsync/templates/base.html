@@ -12,10 +12,9 @@
   {% if engine_status.reconnect_required %}
     {# The session is gone, or the PACS answered with nothing — which looks
        the same and needs the same thing done. Only a human can do it: the
-       login is captcha-gated. The link goes straight at the side-car so it
-       is one click, and the whole banner is the target. #}
+       login is captcha-gated. The whole banner is the target. #}
     <div class="banner err">
-      <a href="{{ reconnect_link or '/connect' }}">
+      <a href="/connect">
         {{ t('alert.reauthenticate', pacs=pacs_display_name) }}
       </a>
     </div>

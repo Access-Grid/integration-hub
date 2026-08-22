@@ -99,8 +99,6 @@ def create_app() -> FastAPI:
             # discoverable only by visiting one particular page.
             merged["engine_status"] = get_engine().get_status()
             merged["pacs_display_name"] = _pacs_display_name()
-            if merged["engine_status"].get("reconnect_required"):
-                merged["reconnect_link"] = connect_route.reconnect_link(request)
         if ctx:
             merged.update(ctx)
         return templates.TemplateResponse(name, merged)
