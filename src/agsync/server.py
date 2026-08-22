@@ -46,6 +46,15 @@ logger = logging.getLogger(__name__)
 LANG_COOKIE = "agsync_lang"
 
 
+def _pacs_display_name() -> str:
+    from .lib.pacs import get_descriptor
+    from .settings_store import PacsConfig
+
+    vendor = (PacsConfig.load() or {}).get("vendor", "")
+    descriptor = get_descriptor(vendor) if vendor else None
+    return descriptor.display_name if descriptor else "the PACS"
+
+
 def _templates_dir() -> str:
     return str(files("agsync") / "templates")
 
@@ -73,14 +82,25 @@ def create_app() -> FastAPI:
     def template_response(request: Request, name: str, ctx: dict | None = None):
         locale = request.cookies.get(LANG_COOKIE) or default_locale()
         translator = get_translator(locale)
+        configured = is_configured()
         merged = {
             "request": request,
             "t": translator.t,
             "locale": locale,
             "available_locales": ["en", "es"],
-            "configured": is_configured(),
+            "configured": configured,
             "admin_exists": admin_exists(),
         }
+        # Behind the session: the banner reveals that syncing is down and
+        # carries a launch id, neither of which belongs on the login page.
+        if configured and current_user(request) is not None:
+            # Every page, not just the status screen: a PACS that has stopped
+            # answering means nothing is syncing, and that should not be
+            # discoverable only by visiting one particular page.
+            merged["engine_status"] = get_engine().get_status()
+            merged["pacs_display_name"] = _pacs_display_name()
+            if merged["engine_status"].get("reconnect_required"):
+                merged["reconnect_link"] = connect_route.reconnect_link(request)
         if ctx:
             merged.update(ctx)
         return templates.TemplateResponse(name, merged)

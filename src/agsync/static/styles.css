@@ -183,3 +183,8 @@ table.creds td { padding: 0.75rem 0.6rem; border-bottom: 1px solid var(--border)
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
 .small { font-size: 0.85rem; }
 .banner a { color: inherit; font-weight: 600; }
+
+/* The re-authenticate banner is the whole clickable target: when nothing is
+   syncing, the fix should be one obvious click from any page. */
+.banner.err a { display: block; text-decoration: none; font-weight: 600; }
+.banner.err a:hover { text-decoration: underline; }

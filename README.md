@@ -78,7 +78,11 @@ one — a well-formed empty roster is indistinguishable from a PACS with no
 cardholders, and reads downstream as "everyone was deleted". All three raise
 `PacsAuthExpired`, so syncing pauses, a banner appears, and — if SMTP is
 configured under Settings → Notifications — a message asks someone to
-reconnect. An install that genuinely has zero cardholders would be
+reconnect. The banner appears on every page, not just the status screen, and
+is itself the link: it points straight at the `agconnect://` side-car, so
+re-authenticating is one click from wherever the operator happens to be. A
+PACS that does not answer at all gets a different banner, since
+re-authenticating would not help. An install that genuinely has zero cardholders would be
 misreported by the empty-roster rule; that is the intended trade, since
 being wrong that way prompts a human and being wrong the other way stops the
 sync in silence.

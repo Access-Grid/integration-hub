@@ -18,7 +18,7 @@
   "common.error": "Error",
   "common.warning": "Warning",
   "common.success": "Success",
-  "alert.pacs_unreachable": "PACS is unreachable",
+  "alert.pacs_unreachable": "PACS is not responding — nothing is syncing.",
   "alert.ag_unreachable": "AccessGrid is unreachable",
   "login.title": "Sign in",
   "login.invalid": "Incorrect username or password",
@@ -147,5 +147,6 @@
   "settings.email_domain.label": "Domain",
   "settings.email_domain.saved": "Email domain saved. A sync has been queued.",
   "settings.email_domain.invalid": "That does not look like a domain name.",
-  "alert.pacs_probably_disconnected": "PACS PROBABLY DISCONNECTED — it returned no cardholders, so nothing is syncing."
+  "alert.pacs_probably_disconnected": "PACS PROBABLY DISCONNECTED — it returned no cardholders, so nothing is syncing.",
+  "alert.reauthenticate": "PLEASE RE-AUTHENTICATE {pacs} — CLICK HERE"
 }

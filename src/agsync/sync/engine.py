@@ -267,6 +267,11 @@ class SyncEngine:
         except Exception as e:  # noqa: BLE001
             result.error = f"snapshot: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
+            with self._status_lock:
+                # Not an expired session — the PACS did not answer at all —
+                # so this is a different banner and re-authenticating would
+                # not help.
+                self._status.pacs_reachable = False
             return result
 
         with self._status_lock:

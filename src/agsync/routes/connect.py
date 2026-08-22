@@ -91,6 +91,20 @@ class _LaunchRegistry:
                 return None
             return launch
 
+    def waiting(self, login_url: str) -> Launch:
+        """An unclaimed launch to hand out, reusing one where possible.
+
+        The reconnect banner renders on every page, and minting a launch per
+        page view would pile up ids nobody clicked. One live launch is all a
+        person can act on at a time.
+        """
+        with self._lock:
+            self._prune()
+            for launch in self._launches.values():
+                if not launch.claimed and launch.state == "waiting":
+                    return launch
+        return self.create(login_url)
+
     def claim(self, launch_id: str) -> Launch | None:
         """Hand out the key exactly once."""
         with self._lock:
@@ -125,6 +139,21 @@ def _login_url() -> str:
     if not base:
         base = normalize_base_url((MillenniumSession.load() or {}).get("base_url") or "")
     return f"{base}/Account/LogIn" if base else ""
+
+
+def reconnect_link(request: Request) -> str:
+    """Where the banner's "click here" should point.
+
+    Straight at the side-car when it can be launched, so one click puts the
+    login window on screen. Falls back to the connect page when the handler
+    is not registered on this machine, since an agconnect:// link would
+    otherwise do nothing at all.
+    """
+    login_url = _login_url()
+    if not login_url or not uri_register.is_registered():
+        return "/connect"
+    launch = _registry.waiting(login_url)
+    return build_launch_uri(launch.launch_id, _server_url(request))
 
 
 def _server_url(request: Request) -> str:
