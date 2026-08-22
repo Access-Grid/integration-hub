@@ -29,6 +29,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from ..ag import PROTOCOL_SEOS, template_protocol
 from ..ag import build_client as build_ag_client
 from ..lib.pacs import PacsAuthExpired, get_descriptor
 from ..lib.pacs import build_adapter as build_pacs_adapter
@@ -237,6 +238,7 @@ class SyncEngine:
                 self._status.ag_reachable = False
             return result
 
+        pacs_cfg = self._with_derived_mode(ag, ag_cfg, pacs_cfg)
         try:
             pacs = self._pacs_adapter(pacs_cfg)
         except Exception as e:  # noqa: BLE001
@@ -300,6 +302,34 @@ class SyncEngine:
         )
         return result
 
+
+    def _with_derived_mode(
+        self, ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fill in `mode` from the AccessGrid template, for adapters that ask.
+
+        Resolved every cycle rather than stored at setup, so swapping the
+        card template for one of a different technology takes effect on its
+        own. The adapter cache is keyed on the config, so a change here
+        rebuilds the adapter automatically.
+        """
+        descriptor = get_descriptor(pacs_cfg.get("vendor", ""))
+        if descriptor is None or not descriptor.derives_mode_from_template:
+            return pacs_cfg
+
+        protocol = template_protocol(ag, ag_cfg["template_id"])
+        # An unreadable template must not silently flip a read-only
+        # integration into one that writes cards into the PACS.
+        mode = "seos" if protocol == PROTOCOL_SEOS else "desfire"
+        if not protocol:
+            logger.warning(
+                "Could not read the card template's protocol — assuming %s", mode,
+            )
+        params = dict(pacs_cfg.get("params") or {})
+        if params.get("mode") != mode:
+            logger.info("Card template protocol %r — running in %s mode", protocol, mode)
+        params["mode"] = mode
+        return {**pacs_cfg, "params": params}
 
     def _pacs_adapter(self, pacs_cfg: dict[str, Any]):
         """The adapter for this config, built once and reused."""

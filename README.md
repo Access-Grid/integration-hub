@@ -81,7 +81,11 @@ enrolled. There is no sentinel field to type. An *empty* card slot cannot
 carry a format — Millennium discards one posted for a slot with no card — so
 the trigger is always a slot holding a real card.
 
-**Two directions**, chosen at setup:
+**Two directions**, read from the AccessGrid card template's `protocol`
+rather than asked for. The operator is never in a position to make the two
+systems disagree, and the engine re-reads it every cycle, so swapping the
+template for one of a different technology takes effect on its own. An
+unreadable template falls back to DESFire, the direction that never writes.
 
 - **DESFire** — the card already exists in Millennium; its facility code and
   card number are copied out to AccessGrid. Millennium is the source of
@@ -92,7 +96,8 @@ the trigger is always a slot holding a real card.
   into the cardholder's empty card slots. A cardholder needs **two** free
   slots before Seos will provision, because a holder who installs on both a
   phone and a watch needs one slot each — running out halfway would strand
-  the second device.
+  the second device. (The template's own `allowed_device_counts` agrees:
+  one iPhone plus one watch.)
 
 **Write safety.** Millennium's save replaces the entire cardholder record:
 any field not echoed back is wiped. Rather than maintain a field list, the

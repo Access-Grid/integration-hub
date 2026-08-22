@@ -129,6 +129,11 @@ class PacsDescriptor:
     # captcha-gated). The wizard then runs the AG Connect step, and only
     # afterwards can it read live values such as the card-format list.
     requires_connect: bool = False
+    # True if the adapter's direction of travel is a property of the
+    # AccessGrid card template rather than something to ask the operator.
+    # The engine then resolves the template's protocol each cycle and passes
+    # it in as `mode`, so the two systems cannot drift apart.
+    derives_mode_from_template: bool = False
 
 
 @dataclass(frozen=True)

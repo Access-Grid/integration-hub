@@ -217,16 +217,18 @@ def wizard_connect(request: Request):
 def wizard_pacs_trigger(
     request: Request,
     trigger_card_format: str = Form(...),
-    mode: str = Form("desfire"),
 ):
-    """Record the enrollment trigger, completing a connect-gated setup."""
+    """Record the enrollment trigger, completing a connect-gated setup.
+
+    The direction of travel is not asked for: the engine reads it from the
+    AccessGrid card template's protocol on every cycle.
+    """
     _require_admin_if_bootstrapped(request)
     pacs = PacsConfig.load()
     if not pacs:
         return RedirectResponse(url="/wizard", status_code=303)
     params = dict(pacs.get("params") or {})
     params["trigger_card_format"] = trigger_card_format.strip()
-    params["mode"] = "seos" if mode == "seos" else "desfire"
     PacsConfig.save(pacs["vendor"], params, pacs.get("options") or {})
     engine = get_engine()
     engine.invalidate_pacs_adapter()

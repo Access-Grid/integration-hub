@@ -627,9 +627,8 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "pacs.millennium_ultra.base_url": "Millennium Ultra login URL (e.g. https://hosted8.mgiaccess.com)",
         "pacs.millennium_ultra.email_domain": "Domain for synthesized email addresses (e.g. cards.example.com)",
         "pacs.millennium_ultra.notify_email": "Notification email (used when the Millennium session expires)",
-        "pacs.millennium_ultra.mode_label": "Which credential technology is this install issuing?",
-        "pacs.millennium_ultra.mode_desfire": "DESFire — the card already exists in Millennium; copy its facility code and card number to AccessGrid",
-        "pacs.millennium_ultra.mode_seos": "HID Seos — AccessGrid allocates the facility code and card number and writes them into Millennium",
+        "pacs.millennium_ultra.mode_desfire": "Your AccessGrid card template issues DESFire, so cards read from Millennium: the facility code and card number on each trigger card are copied out to AccessGrid. Nothing is written back.",
+        "pacs.millennium_ultra.mode_seos": "Your AccessGrid card template issues HID Seos, so cards are written into Millennium: AccessGrid allocates the facility code and card number, and the sync engine writes them into each trigger cardholder's empty card slots.",
         "pacs.millennium_ultra.trigger_help": (
             "Millennium Ultra has no API and its login is protected by a "
             "captcha, so this integration works through a session you open "
@@ -653,9 +652,8 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "pacs.millennium_ultra.base_url": "URL de inicio de sesión de Millennium Ultra (p. ej. https://hosted8.mgiaccess.com)",
         "pacs.millennium_ultra.email_domain": "Dominio para las direcciones de correo sintetizadas (p. ej. cards.example.com)",
         "pacs.millennium_ultra.notify_email": "Correo de notificación (se usa cuando caduca la sesión de Millennium)",
-        "pacs.millennium_ultra.mode_label": "¿Qué tecnología de credencial emite esta instalación?",
-        "pacs.millennium_ultra.mode_desfire": "DESFire — la tarjeta ya existe en Millennium; copiar su código de instalación y número de tarjeta a AccessGrid",
-        "pacs.millennium_ultra.mode_seos": "HID Seos — AccessGrid asigna el código de instalación y el número de tarjeta y los escribe en Millennium",
+        "pacs.millennium_ultra.mode_desfire": "Su plantilla de AccessGrid emite DESFire, así que las tarjetas se leen desde Millennium: el código de instalación y el número de cada tarjeta disparadora se copian a AccessGrid. No se escribe nada de vuelta.",
+        "pacs.millennium_ultra.mode_seos": "Su plantilla de AccessGrid emite HID Seos, así que las tarjetas se escriben en Millennium: AccessGrid asigna el código de instalación y el número de tarjeta, y el motor de sincronización los escribe en las ranuras libres de cada titular disparador.",
         "pacs.millennium_ultra.trigger_help": (
             "Millennium Ultra no tiene API y su inicio de sesión está "
             "protegido por un captcha, por lo que esta integración funciona "

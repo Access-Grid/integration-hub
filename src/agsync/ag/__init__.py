@@ -9,13 +9,49 @@ helper that tries a cheap, idempotent call and returns a tuple
 
 from __future__ import annotations
 
+import logging
+
 from accessgrid import AccessGrid, AccessGridError
 
-__all__ = ["AccessGrid", "AccessGridError", "build_client", "test_connection"]
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "AccessGrid",
+    "AccessGridError",
+    "build_client",
+    "template_protocol",
+    "test_connection",
+]
+
+# Credential technology of a card template, as AccessGrid reports it. Seos
+# is the one that changes behaviour: AccessGrid mints the credential and the
+# PACS receives it, rather than the other way round.
+PROTOCOL_SEOS = "seos"
 
 
 def build_client(account_id: str, secret_key: str) -> AccessGrid:
     return AccessGrid(account_id=account_id, secret_key=secret_key)
+
+
+def template_protocol(client: AccessGrid, template_id: str) -> str:
+    """The credential technology a card template issues, e.g. "seos".
+
+    A template id can name a pair (one Apple template, one Android), in
+    which case both halves carry the same protocol and either will do.
+    Returns "" when it cannot be determined, which callers should treat as
+    "assume the read-only direction" rather than guessing.
+    """
+    try:
+        result = client.console.read_template(template_id)
+    except Exception as e:  # noqa: BLE001 — never let this break a sync cycle
+        logger.warning("Could not read card template %s: %s", template_id, e)
+        return ""
+    templates = result if isinstance(result, list) else [result]
+    for template in templates:
+        protocol = (getattr(template, "protocol", "") or "").strip().lower()
+        if protocol:
+            return protocol
+    return ""
 
 
 def test_connection(account_id: str, secret_key: str, template_id: str) -> tuple[bool, str]:

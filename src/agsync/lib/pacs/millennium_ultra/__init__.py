@@ -30,6 +30,11 @@ DESCRIPTOR = PacsDescriptor(
     # session through the AG Connect side-car before anything else works —
     # including reading the card-format list the trigger is chosen from.
     requires_connect=True,
+    # DESFire vs Seos is decided by the AccessGrid template's protocol, not
+    # by the operator — asking would let the two disagree, and a wrong
+    # answer either writes cards into the PACS that should not exist or
+    # never provisions at all.
+    derives_mode_from_template=True,
 )
 
 register("millennium_ultra", DESCRIPTOR, lambda params: MillenniumUltraAdapter(**params))

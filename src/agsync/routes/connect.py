@@ -28,6 +28,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from ..ag import PROTOCOL_SEOS, template_protocol
+from ..ag import build_client as build_ag_client
 from ..auth import require_admin
 from ..connect import register as uri_register
 from ..connect.protocol import (
@@ -39,7 +41,7 @@ from ..connect.protocol import (
 from ..lib.pacs import build_adapter, get_descriptor
 from ..lib.pacs.millennium_ultra.client import normalize_base_url
 from ..notifications import reset_throttle
-from ..settings_store import MillenniumSession, PacsConfig
+from ..settings_store import AccessGridConfig, MillenniumSession, PacsConfig
 from ..sync import get_engine
 
 logger = logging.getLogger(__name__)
@@ -196,7 +198,12 @@ def connect_status(
         return request.app.state.template_response(
             request,
             "wizard/_connect_formats.html",
-            {"formats": formats, "error": error, "vendor": "millennium_ultra"},
+            {
+                "formats": formats,
+                "error": error,
+                "vendor": "millennium_ultra",
+                "mode": _detected_mode(),
+            },
         )
 
     state = record.state if record else ("expired" if launch else "waiting")
@@ -212,6 +219,20 @@ def connect_status(
             "pick": pick,
         },
     )
+
+
+def _detected_mode() -> str:
+    """Which direction this install runs in, per the AccessGrid template."""
+    ag_cfg = AccessGridConfig.load() or {}
+    if not ag_cfg:
+        return "desfire"
+    try:
+        client = build_ag_client(ag_cfg["account_id"], ag_cfg["api_secret"])
+        protocol = template_protocol(client, ag_cfg["template_id"])
+    except Exception as e:  # noqa: BLE001 — display only; never block setup
+        logger.warning("Could not read the card template protocol: %s", e)
+        return "desfire"
+    return "seos" if protocol == PROTOCOL_SEOS else "desfire"
 
 
 def _read_card_formats() -> tuple[list[dict], str]:

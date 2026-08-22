@@ -130,5 +130,7 @@
   "settings.pacs_session.title": "Millennium Ultra session",
   "settings.pacs_session.connected": "Connected — captured {when}",
   "settings.pacs_session.disconnected": "Not connected",
-  "settings.ok.notifications": "Notification settings saved."
+  "settings.ok.notifications": "Notification settings saved.",
+  "wizard.connect.trigger_label": "Card format",
+  "wizard.connect.trigger_placeholder": "Select a card format…"
 }
