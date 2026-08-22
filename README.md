@@ -133,6 +133,17 @@ decision stands. Nothing in any phase creates a credential in the PACS to
 match one that exists only in AccessGrid — the only card this integration
 creates is the first write for a newly-issued pass.
 
+That removal is a revocation, and it travels back out through the ordinary
+route: the credential reports itself suspended, and phase 2 suspends the
+AccessGrid pass off the `ag_credentials` tracking table on the next cycle.
+Written cards are matched by facility code + card number, not by slot, so
+moving one between slots is not mistaken for a deletion and a *different*
+card appearing in the old slot is not mistaken for ours. Every written
+credential must be present and active for the pass to stay active:
+AccessGrid can suspend a pass but not one device on it, so a holder whose
+watch credential was deleted cannot be half-revoked, and access control
+fails closed.
+
 **Cardholders.** This install stores no email addresses or phone numbers, so
 an address is synthesized per cardholder as
 `first.last.<record id>@<configured domain>`. The record id is part of it

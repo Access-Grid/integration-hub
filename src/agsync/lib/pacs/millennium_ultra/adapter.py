@@ -370,16 +370,17 @@ class MillenniumUltraAdapter:
             return False
         want_active = status == CredentialStatus.ACTIVE
         pid = str(person_id)
-        slots = self._slots_for_credential(pid, credential_id)
+        form = self._client.get_cardholder_form(pid)
+        current = _read_slots(form, self._offset_seconds)
+        slots = self._slots_for_credential(pid, credential_id, current)
         if not slots:
             logger.warning(
-                "Millennium: no slot backs credential %s/%s — not writing",
+                "Millennium: no card backs credential %s/%s — not writing",
                 pid, credential_id,
             )
             return False
 
-        form = self._client.get_cardholder_form(pid)
-        by_index = {s.index: s for s in _read_slots(form, self._offset_seconds)}
+        by_index = {s.index: s for s in current}
         writable = 0
         changed = False
         for index in slots:
@@ -544,15 +545,42 @@ class MillenniumUltraAdapter:
             )
             return []
 
-        # Once written, the AccessGrid cards' own State drives status; before
-        # that there is nothing in Millennium yet, so the pass starts active.
-        written = {str(e.get("slot")) for e in ledger}
-        backing = [s for s in slots if str(s.index) in written]
-        status = (
-            CredentialStatus.ACTIVE
-            if not backing or any(s.active for s in backing)
-            else CredentialStatus.SUSPENDED
-        )
+        # Once written, the state of the cards we wrote drives the pass.
+        #
+        # Matched by card identity rather than slot: a slot is just a
+        # position, and if our card were replaced by a different one, reading
+        # that slot's Active box would report on somebody else's card.
+        #
+        # And every written credential has to be present and active, not just
+        # one of them. AccessGrid can suspend a pass but not a single device
+        # on it, so a holder whose watch credential was deleted cannot be
+        # half-revoked; the honest options are "leave it fully working" or
+        # "suspend it". Access control fails closed, so a credential removed
+        # or deactivated in Millennium suspends the pass, and the log says
+        # which one caused it.
+        live = {
+            (s.facility_code, s.card_number): s for s in slots if not s.empty
+        }
+        status = CredentialStatus.ACTIVE
+        for entry in ledger:
+            key = (str(entry.get("facility_code")), str(entry.get("card_number")))
+            slot = live.get(key)
+            if slot is None:
+                logger.info(
+                    "Millennium: card %s/%s is gone from cardholder %s — "
+                    "suspending the pass",
+                    key[0], key[1], pid,
+                )
+                status = CredentialStatus.SUSPENDED
+                break
+            if not slot.active:
+                logger.info(
+                    "Millennium: card %s/%s is inactive on cardholder %s — "
+                    "suspending the pass",
+                    key[0], key[1], pid,
+                )
+                status = CredentialStatus.SUSPENDED
+                break
         return [
             Credential(
                 id=credential_id,
@@ -564,14 +592,39 @@ class MillenniumUltraAdapter:
                 status=status,
                 trigger_active=True,
                 allocate_identity=True,
-                raw={"trigger_slot": trigger.index, "written_slots": sorted(written)},
+                raw={
+                "trigger_slot": trigger.index,
+                "written": [
+                    f"{e.get('facility_code')}/{e.get('card_number')}" for e in ledger
+                ],
+            },
             )
         ]
 
-    def _slots_for_credential(self, pid: str, credential_id: str) -> list[int]:
-        """Which Millennium slot(s) a tracked credential maps to."""
+    def _slots_for_credential(
+        self, pid: str, credential_id: str, slots: list[Slot] | None = None
+    ) -> list[int]:
+        """Which Millennium slot(s) a tracked credential currently occupies.
+
+        For a Seos credential the ledger's slot number is only where the card
+        was first written; operators move cards between slots. Resolve by
+        card identity against the current cardholder when we have it, so a
+        suspend never lands on whatever happens to sit in the old position.
+        """
         if credential_id.startswith("seos-"):
-            return [int(e["slot"]) for e in SeosLedger.get(pid, credential_id)]
+            ledger = SeosLedger.get(pid, credential_id)
+            if slots is None:
+                return [int(e["slot"]) for e in ledger]
+            by_identity = {
+                (s.facility_code, s.card_number): s.index
+                for s in slots if not s.empty
+            }
+            found = []
+            for entry in ledger:
+                key = (str(entry.get("facility_code")), str(entry.get("card_number")))
+                if key in by_identity:
+                    found.append(by_identity[key])
+            return found
         match = re.fullmatch(r"slot(\d+)", credential_id)
         return [int(match.group(1))] if match else []
 
