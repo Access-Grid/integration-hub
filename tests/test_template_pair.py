@@ -8,6 +8,7 @@ pass could not be found again on later cycles.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from agsync.sync.phases.writeback import (
@@ -54,8 +55,34 @@ def test_both_halves_of_a_pair_become_credentials():
     ]
 
 
-def test_each_half_keeps_its_own_expiry():
-    assert all(i.deactivate_date == EXPIRES for i in identities_from_card(_pair()))
+def test_each_half_keeps_its_own_expiry_as_a_datetime():
+    """AccessGrid sends ISO strings and the SDK does not parse them.
+
+    Passing one through as-is gives a CredentialIdentity whose annotation
+    promises a datetime but holds a str, and the PACS adapter does date
+    arithmetic on it: "'str' object has no attribute 'tzinfo'", which failed
+    the whole writeback for that cardholder.
+    """
+    expected = datetime(2027, 8, 22, 5, 7, 55, 521000, tzinfo=UTC)
+    for identity in identities_from_card(_pair()):
+        assert identity.deactivate_date == expected
+
+
+def test_dates_already_parsed_are_left_alone():
+    when = datetime(2027, 1, 1, tzinfo=UTC)
+    card = SimpleNamespace(
+        id="x", site_code="66", card_number="5001", expiration_date=when, details=[],
+    )
+    assert identities_from_card(card)[0].deactivate_date == when
+
+
+def test_an_unparseable_date_does_not_break_the_writeback():
+    # Better a pass with default validity than no card in the PACS at all.
+    card = SimpleNamespace(
+        id="x", site_code="66", card_number="5001",
+        expiration_date="whenever", details=[],
+    )
+    assert identities_from_card(card)[0].deactivate_date is None
 
 
 def test_a_single_template_issue_still_works():

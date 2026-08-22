@@ -14,6 +14,7 @@ list every cycle is the intended usage rather than a wasteful one.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from ...lib.pacs import CredentialIdentity, PacsAdapter
@@ -36,6 +37,24 @@ _SITE_KEYS = ("site_code", "facility_code", "siteCode")
 _CARD_KEYS = ("card_number", "cardNumber", "number")
 
 
+def _as_datetime(value: Any) -> datetime | None:
+    """Coerce whatever AccessGrid returned for a date into a datetime.
+
+    The API sends ISO strings ("2027-08-22T05:07:55.521Z"), but the SDK does
+    not parse them, so a CredentialIdentity built straight from a card would
+    carry a str where its annotation promises a datetime — and the PACS
+    adapter, reasonably, does date arithmetic on it.
+    """
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            logger.debug("Unparseable AccessGrid date %r", value)
+    return None
+
+
 def _attr(obj: Any, keys: tuple[str, ...]) -> str:
     for key in keys:
         value = obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
@@ -52,8 +71,8 @@ def identities_from_card(card: Any) -> list[CredentialIdentity]:
     credential the PACS has to hold, which is why a cardholder needs two
     free slots before Seos will provision.
     """
-    activate = getattr(card, "start_date", None)
-    expire = getattr(card, "expiration_date", None)
+    activate = _as_datetime(getattr(card, "start_date", None))
+    expire = _as_datetime(getattr(card, "expiration_date", None))
 
     out: list[CredentialIdentity] = []
     seen: set[tuple[str, str]] = set()
@@ -68,7 +87,7 @@ def identities_from_card(card: Any) -> list[CredentialIdentity]:
                         number,
                         activate,
                         # Each half of a pair carries its own dates.
-                        _attr(entry, ("expiration_date",)) or expire,
+                        _as_datetime(_attr(entry, ("expiration_date",))) or expire,
                     )
                 )
 
