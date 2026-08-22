@@ -289,9 +289,11 @@ def test_seos_write_is_idempotent(
     )
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+    # Returns False because nothing was written — the invariant that matters
+    # is that the cardholder was not touched.
     assert adapter.write_back_credentials(
         "11587", "seos-slot1", [CredentialIdentity("66", "5001")],
-    ) is True
+    ) is False
     assert client.saved == []
 
 
@@ -440,3 +442,53 @@ def test_ledger_keeps_one_entry_per_physical_card(seos_ledger):
     assert SeosLedger.get("11587", "seos-slot1") == [
         {"slot": 3, "card_number": "5001", "facility_code": "66"},
     ]
+
+
+def test_a_credential_removed_in_the_pacs_is_never_recreated(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """An operator's deletion in Millennium is final.
+
+    Phase 4 re-offers every tracked card's identities on every cycle. Without
+    this, a card somebody deliberately deleted in Millennium would be written
+    straight back on the next sync — this integration overruling a person
+    working in their own system, forever.
+    """
+    page = _seos_page(millennium_page, set_slot)          # slots 2 and 3 empty
+    SeosLedger.record(
+        "11587", "seos-slot1",
+        [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
+    )
+    client = _client({"11587": page})
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+
+    assert adapter.write_back_credentials(
+        "11587", "seos-slot1", [CredentialIdentity("66", "5001")],
+    ) is False
+    assert client.saved == []
+    # And it stays remembered, so a later cycle does not rediscover it.
+    assert SeosLedger.get("11587", "seos-slot1") == [
+        {"slot": 2, "card_number": "5001", "facility_code": "66"},
+    ]
+
+
+def test_a_genuinely_new_device_is_still_written_alongside_a_removed_one(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    # Refusing to resurrect must not block the second device a holder
+    # installs later, which is the whole point of re-offering.
+    page = _seos_page(millennium_page, set_slot)
+    SeosLedger.record(
+        "11587", "seos-slot1",
+        [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
+    )
+    client = _client({"11587": page})
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+
+    assert adapter.write_back_credentials(
+        "11587", "seos-slot1",
+        [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
+    ) is True
+    _, body = client.saved[0][1].to_multipart()
+    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5002\r\n' in body   # the new one
+    assert b"5001" not in body                                          # not the deleted one

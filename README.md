@@ -125,6 +125,14 @@ card keeps its number, dates and access levels. In Seos mode the slots
 holding AccessGrid-allocated cards are recorded on our side rather than
 stamped into a customer-visible field.
 
+A Seos credential is written into Millennium **once**. Phase 4 re-offers
+each tracked card's identities every cycle so a second device is picked up,
+but an identity the ledger says we already wrote is never written again: if
+it is gone from the cardholder, somebody removed it in Millennium, and that
+decision stands. Nothing in any phase creates a credential in the PACS to
+match one that exists only in AccessGrid — the only card this integration
+creates is the first write for a newly-issued pass.
+
 **Cardholders.** This install stores no email addresses or phone numbers, so
 an address is synthesized per cardholder as
 `first.last.<record id>@<configured domain>`. The record id is part of it

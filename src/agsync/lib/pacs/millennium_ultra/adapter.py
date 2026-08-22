@@ -428,8 +428,15 @@ class MillenniumUltraAdapter:
 
         Called once per newly-issued identity — a pass installed on both a
         phone and a watch yields two, which is why provisioning demands two
-        free slots up front. Identities already present (matched by facility
-        code + card number) are skipped, so this is safe to re-run.
+        free slots up front.
+
+        A credential is written **once and only once**. If it is later gone
+        from the cardholder, somebody removed it in Millennium, and that
+        decision is theirs: re-creating it would mean this integration
+        overruling an operator working in their own system, and a card they
+        deliberately revoked would come back by itself. So the ledger of what
+        we have already written is authoritative, and only identities missing
+        from *both* the cardholder and the ledger are ever written.
         """
         if self.mode != MODE_SEOS or not identities:
             return False
@@ -440,12 +447,24 @@ class MillenniumUltraAdapter:
         free = [s.index for s in slots if s.empty]
 
         written = list(SeosLedger.get(pid, credential_id))
-        pending = [
-            i for i in identities
-            if (str(i.site_code), str(i.card_number)) not in existing
-        ]
+        already_written = {
+            (str(e.get("facility_code")), str(e.get("card_number"))) for e in written
+        }
+        pending = []
+        for identity in identities:
+            key = (str(identity.site_code), str(identity.card_number))
+            if key in existing:
+                continue
+            if key in already_written:
+                logger.warning(
+                    "Millennium: card %s/%s was written for cardholder %s and has "
+                    "since been removed there — leaving it removed",
+                    identity.site_code, identity.card_number, pid,
+                )
+                continue
+            pending.append(identity)
         if not pending:
-            return True
+            return False
 
         if len(pending) > len(free):
             logger.error(
