@@ -492,3 +492,28 @@ def test_a_genuinely_new_device_is_still_written_alongside_a_removed_one(
     _, body = client.saved[0][1].to_multipart()
     assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5002\r\n' in body   # the new one
     assert b"5001" not in body                                          # not the deleted one
+
+
+def test_a_long_sweep_reports_progress(
+    make_millennium_adapter, millennium_page, caplog, monkeypatch
+):
+    """Five silent minutes is indistinguishable from a hang.
+
+    The first sweep of a large install reads every cardholder page and used
+    to log nothing between starting and finishing, which reads as a stopped
+    sync rather than a working one.
+    """
+    from agsync.lib.pacs.millennium_ultra import adapter as module
+
+    monkeypatch.setattr(module, "PROGRESS_EVERY", 2)
+    roster = [{"ID": i, "IsActive": False, "Name": f"Person{i}, A"} for i in range(5)]
+    pages = {str(i): millennium_page for i in range(5)}
+    adapter = make_millennium_adapter(FakeMillenniumClient(roster=roster, pages=pages))
+
+    with caplog.at_level("INFO"):
+        for person in adapter.list_people():
+            list(adapter.list_credentials(person.id))
+
+    progress = [m for m in (r.getMessage() for r in caplog.records) if "read" in m and "of" in m]
+    assert progress, "a long sweep must say something while it runs"
+    assert "of 5 cardholder pages" in progress[0]

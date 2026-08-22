@@ -82,6 +82,13 @@ REQUIRED_EMPTY_SLOTS = 2
 # discovers newly-enrolled cards, so it trades discovery latency for load.
 DEFAULT_SWEEP_BUDGET = 400
 
+# How often to say something while sweeping. A first sweep of a large
+# install reads for five minutes and used to emit nothing at all between
+# "reading all N pages" and the finished snapshot, which is indistinguishable
+# from a hang — long enough that an operator reasonably concludes the sync
+# has stopped and starts looking for what broke.
+PROGRESS_EVERY = 200
+
 # Millennium's date/time fields, e.g. "08/17/2028 12:00 AM".
 DATE_FORMAT = "%m/%d/%Y %I:%M %p"
 
@@ -262,6 +269,9 @@ class MillenniumUltraAdapter:
         self._roster: dict[str, dict] = {}
         # Un-enrolled cardholders whose detail page this cycle will re-read.
         self._sweep: set[str] = set()
+        # Detail pages read this cycle, for progress reporting.
+        self._read_this_cycle = 0
+        self._reading_total = 0
         # Where the next cycle's slice starts, so coverage rotates rather
         # than re-reading the same head of the roster forever.
         self._sweep_cursor = 0
@@ -289,8 +299,10 @@ class MillenniumUltraAdapter:
 
     def list_people(self) -> Iterable[Person]:
         self._roster = {}
+        self._read_this_cycle = 0
         roster = self._client.list_cardholders()
         self._plan_sweep([str(r.get("ID")) for r in roster])
+        self._reading_total = len(self._sweep)
 
         for row in roster:
             pid = str(row.get("ID"))
@@ -692,6 +704,13 @@ class MillenniumUltraAdapter:
         except Exception as e:  # noqa: BLE001
             logger.warning("Millennium: failed to read cardholder %s: %s", pid, e)
             return cached
+
+        self._read_this_cycle += 1
+        if self._read_this_cycle % PROGRESS_EVERY == 0:
+            logger.info(
+                "Millennium: read %d of %d cardholder pages",
+                self._read_this_cycle, max(self._reading_total, self._read_this_cycle),
+            )
 
         slots = _read_slots(form, self._offset_seconds)
         profile = {
