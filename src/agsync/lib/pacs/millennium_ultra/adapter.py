@@ -256,10 +256,10 @@ class MillenniumUltraAdapter:
         Millennium has no endpoint that lists formats, so we read the
         <select> off the first cardholder in the roster.
         """
-        roster = self._client.list_cardholders()
-        if not roster:
+        cardholder_id = self._client.first_cardholder_id()
+        if not cardholder_id:
             return []
-        return self._client.card_formats(roster[0]["ID"])
+        return self._client.card_formats(cardholder_id)
 
     def list_people(self) -> Iterable[Person]:
         self._roster = {}

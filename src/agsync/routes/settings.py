@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import socket
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -7,13 +8,14 @@ from fastapi.responses import RedirectResponse
 
 from ..auth import require_admin
 from ..config import get_settings
-from ..lib.pacs import get_descriptor
+from ..lib.pacs import build_adapter, get_descriptor
 from ..settings_store import (
     AccessGridConfig,
     MillenniumSession,
     NotificationConfig,
     PacsConfig,
 )
+from ..sync import get_engine
 
 # Match what AccessGrid accepts for metadata keys: keep it conservative —
 # letters, digits, underscore, hyphen — to avoid surprises in their API
@@ -21,6 +23,8 @@ from ..settings_store import (
 _VALID_KEY_CHARS = set(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -54,6 +58,7 @@ def settings_page(
     extras: dict[str, str] = ag.get("extra_metadata") or {}
     vendor_id = pacs.get("vendor", "")
     descriptor = get_descriptor(vendor_id) if vendor_id else None
+    params = pacs.get("params") or {}
     smtp = NotificationConfig.load() or {}
     session = MillenniumSession.load() or {}
     return request.app.state.template_response(
@@ -68,6 +73,9 @@ def settings_page(
             "pacs_vendor": descriptor.display_name if descriptor else vendor_id,
             "pacs_params_keys": list((pacs.get("params") or {}).keys()),
             "pacs_requires_connect": bool(descriptor and descriptor.requires_connect),
+            # The trigger is a live value read from the PACS, so the section
+            # only appears for adapters that can enumerate one.
+            "pacs_has_trigger_formats": "trigger_card_format" in params,
             "pacs_session_at": session.get("captured_at", "") if session.get("auth_cookie") else "",
             "smtp_host": smtp.get("smtp_host", ""),
             "smtp_port": smtp.get("smtp_port", 587),
@@ -109,6 +117,64 @@ def update_dedupe(
     if not AccessGridConfig.update_dedupe(flag):
         return RedirectResponse(url="/settings?err=not_configured", status_code=303)
     return RedirectResponse(url="/settings?ok=dedupe", status_code=303)
+
+
+@router.get("/settings/trigger-format")
+def trigger_format_partial(request: Request, _user=Depends(require_admin)):
+    """The enrollment-trigger picker, refreshed from the PACS on each load.
+
+    Formats are read live rather than remembered, so a format added or
+    renamed in the PACS shows up here without re-running setup.
+    """
+    pacs = PacsConfig.load() or {}
+    params = pacs.get("params") or {}
+    current = str(params.get("trigger_card_format") or "")
+    formats: list[dict] = []
+    error = ""
+    try:
+        adapter = build_adapter(pacs["vendor"], params)
+        formats = [{"id": fid, "label": label} for fid, label in adapter.card_formats()]
+    except Exception as e:  # noqa: BLE001 — surfaced to the operator verbatim
+        logger.warning("settings: could not read card formats: %s", e)
+        error = f"{type(e).__name__}: {e}"
+    return request.app.state.template_response(
+        request, "_settings_trigger.html",
+        {
+            "formats": formats,
+            "format_ids": [f["id"] for f in formats],
+            "current": current,
+            "error": error,
+        },
+    )
+
+
+@router.post("/settings/trigger-format")
+def update_trigger_format(
+    request: Request,
+    trigger_card_format: str = Form(...),
+    _user=Depends(require_admin),
+):
+    """Change which card format enrolls cardholders.
+
+    Narrowing the trigger un-enrolls everyone holding the old format, and
+    phase 2 will terminate their passes on the next cycle — that is the
+    intended way to stop provisioning, but it is not a small change.
+    """
+    pacs = PacsConfig.load()
+    if not pacs:
+        return RedirectResponse(url="/settings?err=not_configured", status_code=303)
+    params = dict(pacs.get("params") or {})
+    previous = params.get("trigger_card_format")
+    params["trigger_card_format"] = trigger_card_format.strip()
+    PacsConfig.save(pacs["vendor"], params, pacs.get("options") or {})
+    logger.info(
+        "Enrollment trigger changed from card format %r to %r",
+        previous, params["trigger_card_format"],
+    )
+    engine = get_engine()
+    engine.invalidate_pacs_adapter()
+    engine.trigger_now()
+    return RedirectResponse(url="/settings?ok=trigger", status_code=303)
 
 
 @router.post("/settings/notifications")

@@ -132,5 +132,9 @@
   "settings.pacs_session.disconnected": "Not connected",
   "settings.ok.notifications": "Notification settings saved.",
   "wizard.connect.trigger_label": "Card format",
-  "wizard.connect.trigger_placeholder": "Select a card format…"
+  "wizard.connect.trigger_placeholder": "Select a card format…",
+  "settings.trigger.title": "Enrollment trigger",
+  "settings.trigger.subtitle": "Cardholders holding a card in this format get an AccessGrid pass. Changing it re-decides who is enrolled: anyone holding only the old format is un-enrolled, and their pass is terminated on the next cycle.",
+  "settings.trigger.missing": "The saved trigger (format {id}) no longer exists on this install — nothing is enrolled until you pick another.",
+  "settings.ok.trigger": "Enrollment trigger saved. A sync has been queued."
 }

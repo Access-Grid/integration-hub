@@ -78,6 +78,9 @@ class FakeMillenniumClient:
     def list_cardholders(self):
         return self._roster
 
+    def first_cardholder_id(self):
+        return str(self._roster[0]["ID"]) if self._roster else ""
+
     def get_cardholder_form(self, cardholder_id):
         from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 

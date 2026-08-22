@@ -132,5 +132,9 @@
   "settings.pacs_session.disconnected": "Sin conexión",
   "settings.ok.notifications": "Configuración de notificaciones guardada.",
   "wizard.connect.trigger_label": "Formato de tarjeta",
-  "wizard.connect.trigger_placeholder": "Seleccione un formato de tarjeta…"
+  "wizard.connect.trigger_placeholder": "Seleccione un formato de tarjeta…",
+  "settings.trigger.title": "Disparador de inscripción",
+  "settings.trigger.subtitle": "Los titulares con una tarjeta de este formato reciben un pase de AccessGrid. Cambiarlo redefine quién está inscrito: quien solo tenga el formato anterior queda fuera y su pase se cancela en el siguiente ciclo.",
+  "settings.trigger.missing": "El disparador guardado (formato {id}) ya no existe en esta instalación; no hay nadie inscrito hasta que elija otro.",
+  "settings.ok.trigger": "Disparador de inscripción guardado. Se ha puesto en cola una sincronización."
 }

@@ -174,6 +174,19 @@ class MillenniumUltraClient:
             raise MillenniumError(f"Roster for letter {letter_code} was not JSON") from e
         return rows if isinstance(rows, list) else []
 
+    def first_cardholder_id(self) -> str:
+        """Any cardholder's id, for reads that just need a detail page.
+
+        Card formats are only readable off a card slot's <select>, and that
+        lookup should not pay for a full A-Z roster sweep, so stop at the
+        first letter that returns anybody.
+        """
+        for code in LETTER_CODES:
+            rows = self._list_letter(code)
+            if rows:
+                return str(rows[0].get("ID"))
+        return ""
+
     def list_cardholders(self) -> list[dict[str, Any]]:
         """Every cardholder, swept A–Z and de-duplicated by ID."""
         seen: dict[int, dict[str, Any]] = {}

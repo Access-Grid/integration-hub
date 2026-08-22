@@ -79,7 +79,11 @@ session is never mistaken for an empty cardholder list.
 read live from the install. Any cardholder holding a card in that format is
 enrolled. There is no sentinel field to type. An *empty* card slot cannot
 carry a format — Millennium discards one posted for a slot with no card — so
-the trigger is always a slot holding a real card.
+the trigger is always a slot holding a real card. It can be changed later
+under Settings → Enrollment trigger; the format list is re-read from the
+PACS each time, so one added or renamed there shows up without re-running
+setup. Narrowing the trigger un-enrolls everyone holding only the old
+format, and phase 2 terminates their passes on the next cycle.
 
 **Two directions**, read from the AccessGrid card template's `protocol`
 rather than asked for. The operator is never in a position to make the two
