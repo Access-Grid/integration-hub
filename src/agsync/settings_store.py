@@ -73,6 +73,12 @@ class AccessGridConfig:
         {"pacs_credential_id", "site_code", "card_number"}
     )
 
+    # Sent on every pass this install issues. They describe the deployment
+    # rather than the person — a PACS that has no job titles still wants its
+    # passes labelled consistently — so they are configured once here instead
+    # of being read per-cardholder.
+    DEFAULT_CARD_CLASSIFICATION = "Resident"
+
     @staticmethod
     def save(
         account_id: str,
@@ -81,6 +87,8 @@ class AccessGridConfig:
         site_code: str = "",
         dedupe_by_site_card: bool = False,
         extra_metadata: dict[str, str] | None = None,
+        card_title: str = "",
+        card_classification: str = DEFAULT_CARD_CLASSIFICATION,
     ) -> None:
         _set_encrypted_json(
             AccessGridConfig.KEY,
@@ -91,6 +99,8 @@ class AccessGridConfig:
                 "site_code": site_code,
                 "dedupe_by_site_card": bool(dedupe_by_site_card),
                 "extra_metadata": dict(extra_metadata or {}),
+                "card_title": card_title,
+                "card_classification": card_classification,
             },
         )
 
@@ -115,6 +125,17 @@ class AccessGridConfig:
         if not existing:
             return False
         existing["dedupe_by_site_card"] = bool(enabled)
+        _set_encrypted_json(AccessGridConfig.KEY, existing)
+        return True
+
+    @staticmethod
+    def update_card_fields(card_title: str, card_classification: str) -> bool:
+        """Update the title and classification stamped on every pass."""
+        existing = _get_encrypted_json(AccessGridConfig.KEY)
+        if not existing:
+            return False
+        existing["card_title"] = card_title
+        existing["card_classification"] = card_classification
         _set_encrypted_json(AccessGridConfig.KEY, existing)
         return True
 
@@ -146,6 +167,23 @@ class PacsConfig:
     @staticmethod
     def load() -> dict[str, Any] | None:
         return _get_encrypted_json(PacsConfig.KEY)
+
+    @staticmethod
+    def update_params(**changes: Any) -> bool:
+        """Merge changes into the saved connection params.
+
+        Merge rather than replace: the params dict also holds values the
+        connect flow wrote (the enrollment trigger), and a settings form that
+        only knows about two fields must not drop the rest.
+        """
+        existing = _get_encrypted_json(PacsConfig.KEY)
+        if not existing:
+            return False
+        params = dict(existing.get("params") or {})
+        params.update(changes)
+        existing["params"] = params
+        _set_encrypted_json(PacsConfig.KEY, existing)
+        return True
 
     @staticmethod
     def credential_encoding() -> str:

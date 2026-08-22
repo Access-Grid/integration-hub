@@ -136,5 +136,15 @@
   "settings.trigger.title": "Disparador de inscripción",
   "settings.trigger.subtitle": "Los titulares con una tarjeta de este formato reciben un pase de AccessGrid. Cambiarlo redefine quién está inscrito: quien solo tenga el formato anterior queda fuera y su pase se cancela en el siguiente ciclo.",
   "settings.trigger.missing": "El disparador guardado (formato {id}) ya no existe en esta instalación; no hay nadie inscrito hasta que elija otro.",
-  "settings.ok.trigger": "Disparador de inscripción guardado. Se ha puesto en cola una sincronización."
+  "settings.ok.trigger": "Disparador de inscripción guardado. Se ha puesto en cola una sincronización.",
+  "settings.card_fields.title": "Datos del pase",
+  "settings.card_fields.subtitle": "Se aplican a cada pase que emite esta instalación. El cargo solo se usa cuando el PACS no tiene uno propio para la persona. Los cambios afectan a los pases emitidos a partir de ahora, no a los ya entregados.",
+  "settings.card_fields.card_title": "Cargo",
+  "settings.card_fields.classification": "Clasificación",
+  "settings.ok.card_fields": "Datos del pase guardados.",
+  "settings.email_domain.title": "Direcciones de correo sintetizadas",
+  "settings.email_domain.subtitle": "Este PACS no guarda direcciones de correo, así que se deriva una por titular con el formato nombre.apellido.<id>@<dominio>. Cambiar el dominio cambia todas las direcciones, y las nuevas se envían a AccessGrid en el siguiente ciclo, incluidos los pases ya emitidos.",
+  "settings.email_domain.label": "Dominio",
+  "settings.email_domain.saved": "Dominio de correo guardado. Se ha puesto en cola una sincronización.",
+  "settings.email_domain.invalid": "Eso no parece un nombre de dominio."
 }

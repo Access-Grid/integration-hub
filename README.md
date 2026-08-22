@@ -113,6 +113,13 @@ byte-identical to a captured browser POST for the same page. Access levels,
 photos, user fields and vehicle details are replayed untouched; this adapter
 never edits a cardholder's access levels.
 
+**Pass details.** A pass carries the card's own validity from Millennium as
+its start and expiration dates, rather than "whenever the sync noticed it"
+— the stored text is local to the install, so it is converted using the
+`timeoffset` captured at sign-in. Title and classification describe the
+deployment rather than the person, so they are set once under Settings →
+Pass details; a PACS that does carry a per-person title still wins.
+
 **Writeback.** Suspend and resume toggle the card's `Active` checkbox; the
 card keeps its number, dates and access levels. In Seos mode the slots
 holding AccessGrid-allocated cards are recorded on our side rather than
@@ -122,7 +129,10 @@ stamped into a customer-visible field.
 an address is synthesized per cardholder as
 `first.last.<record id>@<configured domain>`. The record id is part of it
 because the same human appears once per card technology, and each is a
-separate pass. Hand passes out with the QR code on the Credentials page.
+separate pass. The domain is editable under Settings → Synthesized email
+addresses; changing it changes every address, and phase 6 pushes the new
+ones to AccessGrid on the next cycle, including for passes already issued.
+Hand passes out with the QR code on the Credentials page.
 Names come from the roster (`Last, Middle. First`, where this install
 repurposes the middle-name field as a card-type label) and are replaced by
 the authoritative first/last once a detail page is read.

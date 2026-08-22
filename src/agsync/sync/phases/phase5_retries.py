@@ -35,6 +35,8 @@ def run(
     dedupe_by_site_card: bool = False,
     extra_metadata: dict | None = None,
     use_file_data: bool = False,
+    card_title: str = "",
+    card_classification: str = "",
     pacs: PacsAdapter | None = None,
 ) -> int:
     failed = tracking.failed_records(MAX_RETRIES)
@@ -121,8 +123,13 @@ def run(
             params["email"] = person.email
         if person.phone:
             params["phone_number"] = person.phone
-        if person.title:
-            params["title"] = person.title
+        # A per-person title from the PACS wins; the configured one fills in
+        # for systems that have no such field, which is most of them.
+        title = person.title or card_title
+        if title:
+            params["title"] = title
+        if card_classification:
+            params["classification"] = card_classification
 
         try:
             logger.info(

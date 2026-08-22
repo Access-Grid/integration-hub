@@ -136,5 +136,15 @@
   "settings.trigger.title": "Enrollment trigger",
   "settings.trigger.subtitle": "Cardholders holding a card in this format get an AccessGrid pass. Changing it re-decides who is enrolled: anyone holding only the old format is un-enrolled, and their pass is terminated on the next cycle.",
   "settings.trigger.missing": "The saved trigger (format {id}) no longer exists on this install — nothing is enrolled until you pick another.",
-  "settings.ok.trigger": "Enrollment trigger saved. A sync has been queued."
+  "settings.ok.trigger": "Enrollment trigger saved. A sync has been queued.",
+  "settings.card_fields.title": "Pass details",
+  "settings.card_fields.subtitle": "Stamped on every pass this install issues. The title is used only where the PACS has no title of its own for the person. Changes apply to passes issued from now on, not to ones already out.",
+  "settings.card_fields.card_title": "Title",
+  "settings.card_fields.classification": "Classification",
+  "settings.ok.card_fields": "Pass details saved.",
+  "settings.email_domain.title": "Synthesized email addresses",
+  "settings.email_domain.subtitle": "This PACS stores no email addresses, so one is derived per cardholder as first.last.<record id>@<domain>. Changing the domain changes every address, and the new ones are pushed to AccessGrid on the next cycle — including for passes already issued.",
+  "settings.email_domain.label": "Domain",
+  "settings.email_domain.saved": "Email domain saved. A sync has been queued.",
+  "settings.email_domain.invalid": "That does not look like a domain name."
 }

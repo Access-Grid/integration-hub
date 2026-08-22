@@ -279,6 +279,8 @@ class SyncEngine:
         site_code = (ag_cfg.get("site_code") or "").strip()
         dedupe = bool(ag_cfg.get("dedupe_by_site_card", False))
         extra_metadata = dict(ag_cfg.get("extra_metadata") or {})
+        card_title = (ag_cfg.get("card_title") or "").strip()
+        card_classification = (ag_cfg.get("card_classification") or "").strip()
         use_file_data = (
             (pacs_cfg.get("options") or {}).get("credential_encoding")
             == PacsConfig.ENCODING_FILE_DATA
@@ -289,6 +291,8 @@ class SyncEngine:
                 dedupe_by_site_card=dedupe,
                 extra_metadata=extra_metadata,
                 use_file_data=use_file_data,
+                card_title=card_title,
+                card_classification=card_classification,
                 pacs=pacs,
                 should_stop=superseded,
             )
@@ -304,6 +308,8 @@ class SyncEngine:
                 dedupe_by_site_card=dedupe,
                 extra_metadata=extra_metadata,
                 use_file_data=use_file_data,
+                card_title=card_title,
+                card_classification=card_classification,
                 pacs=pacs,
             )
             result.field_updates = phase6_field_changes.run(snapshot, ag)

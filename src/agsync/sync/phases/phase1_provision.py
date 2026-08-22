@@ -49,6 +49,8 @@ def run(
     dedupe_by_site_card: bool = False,
     extra_metadata: dict | None = None,
     use_file_data: bool = False,
+    card_title: str = "",
+    card_classification: str = "",
     pacs: PacsAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
     max_per_cycle: int = MAX_PROVISIONS_PER_CYCLE,
@@ -173,8 +175,13 @@ def run(
                 params["email"] = person.email
             if person.phone:
                 params["phone_number"] = person.phone
-            if person.title:
-                params["title"] = person.title
+            # A per-person title from the PACS wins; the configured one
+            # fills in for systems that have no such field, which is most.
+            title = person.title or card_title
+            if title:
+                params["title"] = title
+            if card_classification:
+                params["classification"] = card_classification
 
             # Insert tracking row in 'pending' state before the API call so a
             # failed provision still leaves a row for phase 5 to retry.

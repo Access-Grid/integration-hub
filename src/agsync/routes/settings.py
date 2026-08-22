@@ -69,6 +69,10 @@ def settings_page(
             "ag_site_code": ag.get("site_code", ""),
             "ag_dedupe": bool(ag.get("dedupe_by_site_card", False)),
             "ag_extra_metadata": list(extras.items()),
+            "ag_card_title": ag.get("card_title", ""),
+            "ag_card_classification": ag.get(
+                "card_classification", AccessGridConfig.DEFAULT_CARD_CLASSIFICATION,
+            ),
             "ag_reserved_keys": sorted(AccessGridConfig.RESERVED_METADATA_KEYS),
             "pacs_vendor": descriptor.display_name if descriptor else vendor_id,
             "pacs_params_keys": list((pacs.get("params") or {}).keys()),
@@ -76,6 +80,10 @@ def settings_page(
             # The trigger is a live value read from the PACS, so the section
             # only appears for adapters that can enumerate one.
             "pacs_has_trigger_formats": "trigger_card_format" in params,
+            # Only shown for a PACS that synthesizes addresses because it
+            # stores none of its own.
+            "pacs_email_domain": params.get("email_domain"),
+            "pacs_notify_email": params.get("notify_email", ""),
             "pacs_session_at": session.get("captured_at", "") if session.get("auth_cookie") else "",
             "smtp_host": smtp.get("smtp_host", ""),
             "smtp_port": smtp.get("smtp_port", 587),
@@ -117,6 +125,45 @@ def update_dedupe(
     if not AccessGridConfig.update_dedupe(flag):
         return RedirectResponse(url="/settings?err=not_configured", status_code=303)
     return RedirectResponse(url="/settings?ok=dedupe", status_code=303)
+
+
+@router.post("/settings/email-domain")
+def update_email_domain(
+    request: Request,
+    email_domain: str = Form(...),
+    _user=Depends(require_admin),
+):
+    """Change the domain used for synthesized cardholder addresses.
+
+    This rewrites every address the PACS side derives, so phase 6 will push
+    the new ones to AccessGrid on the next cycle. That is the intended
+    behaviour, but it touches every pass already issued.
+    """
+    domain = email_domain.strip().lstrip("@")
+    if not domain or " " in domain or "." not in domain:
+        return RedirectResponse(url="/settings?err=email_domain", status_code=303)
+    if not PacsConfig.update_params(email_domain=domain):
+        return RedirectResponse(url="/settings?err=not_configured", status_code=303)
+    logger.info("Synthesized email domain changed to %r", domain)
+    engine = get_engine()
+    engine.invalidate_pacs_adapter()
+    engine.trigger_now()
+    return RedirectResponse(url="/settings?ok=email_domain", status_code=303)
+
+
+@router.post("/settings/card-fields")
+def update_card_fields(
+    request: Request,
+    card_title: str = Form(""),
+    card_classification: str = Form(""),
+    _user=Depends(require_admin),
+):
+    """Set the title and classification stamped on every pass issued."""
+    if not AccessGridConfig.update_card_fields(
+        card_title.strip(), card_classification.strip(),
+    ):
+        return RedirectResponse(url="/settings?err=not_configured", status_code=303)
+    return RedirectResponse(url="/settings?ok=card_fields", status_code=303)
 
 
 @router.get("/settings/trigger-format")

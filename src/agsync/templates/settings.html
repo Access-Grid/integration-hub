@@ -9,6 +9,15 @@
   {% if ok == 'dedupe' %}
     <div class="test-result ok">{{ t('settings.dedupe.saved') }}</div>
   {% endif %}
+  {% if ok == 'email_domain' %}
+    <div class="test-result ok">{{ t('settings.email_domain.saved') }}</div>
+  {% endif %}
+  {% if err == 'email_domain' %}
+    <div class="err">{{ t('settings.email_domain.invalid') }}</div>
+  {% endif %}
+  {% if ok == 'card_fields' %}
+    <div class="test-result ok">{{ t('settings.ok.card_fields') }}</div>
+  {% endif %}
   {% if ok == 'trigger' %}
     <div class="test-result ok">{{ t('settings.ok.trigger') }}</div>
   {% endif %}
@@ -121,6 +130,30 @@
       });
     })();
   </script>
+
+  {% if pacs_email_domain is not none %}
+  <h2>{{ t('settings.email_domain.title') }}</h2>
+  <p class="muted">{{ t('settings.email_domain.subtitle') }}</p>
+  <form action="/settings/email-domain" method="post">
+    <label>{{ t('settings.email_domain.label') }}
+      <input name="email_domain" value="{{ pacs_email_domain }}"
+             placeholder="cards.example.com" required>
+    </label>
+    <button type="submit">{{ t('common.save') }}</button>
+  </form>
+  {% endif %}
+
+  <h2>{{ t('settings.card_fields.title') }}</h2>
+  <p class="muted">{{ t('settings.card_fields.subtitle') }}</p>
+  <form action="/settings/card-fields" method="post">
+    <label>{{ t('settings.card_fields.card_title') }}
+      <input name="card_title" value="{{ ag_card_title }}" maxlength="120">
+    </label>
+    <label>{{ t('settings.card_fields.classification') }}
+      <input name="card_classification" value="{{ ag_card_classification }}" maxlength="60">
+    </label>
+    <button type="submit">{{ t('common.save') }}</button>
+  </form>
 
   {% if pacs_has_trigger_formats %}
   <h2>{{ t('settings.trigger.title') }}</h2>

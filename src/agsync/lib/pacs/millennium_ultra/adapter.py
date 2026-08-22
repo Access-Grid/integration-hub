@@ -101,6 +101,8 @@ class Slot:
     facility_code: str
     card_format: str
     active: bool
+    activation: datetime | None = None
+    expiration: datetime | None = None
 
     @property
     def empty(self) -> bool:
@@ -132,6 +134,25 @@ def synthesize_email(first: str, last: str, cardholder_id: str, domain: str) -> 
     parts = [re.sub(r"[^a-z0-9]", "", (p or "").lower()) for p in (first, last)]
     local = ".".join([p for p in parts if p] + [str(cardholder_id)])
     return f"{local}@{domain}"
+
+
+def parse_datetime(value: str, offset_seconds: int) -> datetime | None:
+    """Read one of Millennium's date fields back into a UTC instant.
+
+    The stored text is local to the install, per the `timeoffset` the browser
+    reported at sign-in, so the offset has to come back off. Unparseable or
+    empty values give None, and the caller falls back to its own default
+    rather than provisioning a card with a date that means nothing.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        naive = datetime.strptime(value, DATE_FORMAT)
+    except ValueError:
+        logger.debug("Millennium: unparseable date %r", value)
+        return None
+    return (naive - timedelta(seconds=offset_seconds)).replace(tzinfo=UTC)
 
 
 def format_datetime(value: datetime, offset_seconds: int) -> str:
@@ -358,7 +379,7 @@ class MillenniumUltraAdapter:
             return False
 
         form = self._client.get_cardholder_form(pid)
-        by_index = {s.index: s for s in _read_slots(form)}
+        by_index = {s.index: s for s in _read_slots(form, self._offset_seconds)}
         writable = 0
         changed = False
         for index in slots:
@@ -414,7 +435,7 @@ class MillenniumUltraAdapter:
             return False
         pid = str(person_id)
         form = self._client.get_cardholder_form(pid)
-        slots = _read_slots(form)
+        slots = _read_slots(form, self._offset_seconds)
         existing = {(s.facility_code, s.card_number) for s in slots if not s.empty}
         free = [s.index for s in slots if s.empty]
 
@@ -481,6 +502,10 @@ class MillenniumUltraAdapter:
             status=(
                 CredentialStatus.ACTIVE if slot.active else CredentialStatus.SUSPENDED
             ),
+            # The card's own validity, so the pass matches the badge rather
+            # than starting whenever the sync happened to notice it.
+            activate_date=slot.activation,
+            deactivate_date=slot.expiration,
             trigger_active=True,
             raw={"slot": slot.index, "card_id": slot.card_id},
         )
@@ -576,7 +601,7 @@ class MillenniumUltraAdapter:
             logger.warning("Millennium: failed to read cardholder %s: %s", pid, e)
             return cached
 
-        slots = _read_slots(form)
+        slots = _read_slots(form, self._offset_seconds)
         profile = {
             "slots": slots,
             "first": form.value("FirstName"),
@@ -587,7 +612,7 @@ class MillenniumUltraAdapter:
         return profile
 
 
-def _read_slots(form: CardholderForm) -> list[Slot]:
+def _read_slots(form: CardholderForm, offset_seconds: int = 0) -> list[Slot]:
     slots: list[Slot] = []
     for index in CARD_SLOTS:
         prefix = f"Card_{index}_"
@@ -607,6 +632,12 @@ def _read_slots(form: CardholderForm) -> list[Slot]:
                 facility_code=form.value(f"{prefix}FaciltyCode"),
                 card_format=selected,
                 active=form.is_checked(f"{prefix}Active"),
+                activation=parse_datetime(
+                    form.value(f"{prefix}ActivationDate"), offset_seconds
+                ),
+                expiration=parse_datetime(
+                    form.value(f"{prefix}ExpirationDate"), offset_seconds
+                ),
             )
         )
     return slots
