@@ -297,9 +297,27 @@ async def connect_callback(request: Request):
         return JSONResponse({"ok": False}, status_code=400)
 
     params = _millennium_params()
+    base_url = normalize_base_url(params.get("base_url") or "")
+
+    # Prove the session actually reads data before storing it. A cookie can
+    # authenticate and still return nothing — a sign-in captured mid-flow
+    # does exactly that — and the failure is silent downstream: an empty
+    # roster looks like a PACS with no cardholders, which shows up as
+    # "unreachable" long after the operator has walked away. Better to fail
+    # here, where there is a human standing in front of a Try again button.
+    ok, detail = _session_reads_cardholders(base_url, auth_cookie, cookies)
+    if not ok:
+        launch.state = "error"
+        launch.message = (
+            "That sign-in did not produce a working session. Please try "
+            f"again and complete the login fully. ({detail})"
+        )
+        logger.warning("AG Connect: rejected an unusable session — %s", detail)
+        return JSONResponse({"ok": False, "message": launch.message}, status_code=400)
+
     MillenniumSession.save(
         auth_cookie=auth_cookie,
-        base_url=normalize_base_url(params.get("base_url") or ""),
+        base_url=base_url,
         company_name=cookies.get("UltraCompanyName", ""),
         time_offset=cookies.get("timeoffset", ""),
         captured_at=datetime.now(UTC).isoformat(timespec="seconds"),
@@ -318,6 +336,30 @@ async def connect_callback(request: Request):
     engine.trigger_now()
     logger.info("AG Connect: session captured for launch %s", launch.launch_id)
     return {"ok": True}
+
+
+def _session_reads_cardholders(
+    base_url: str, auth_cookie: str, cookies: dict[str, str]
+) -> tuple[bool, str]:
+    """Can this session actually list cardholders? (ok, detail)."""
+    from ..lib.pacs.millennium_ultra.client import MillenniumUltraClient
+
+    client = None
+    try:
+        client = MillenniumUltraClient(
+            base_url=base_url,
+            auth_cookie=auth_cookie,
+            company_name=cookies.get("UltraCompanyName", ""),
+            time_offset=cookies.get("timeoffset", ""),
+        )
+        if not client.first_cardholder_id():
+            return False, "signed in, but no cardholders were readable"
+    except Exception as e:  # noqa: BLE001 — reported to the operator verbatim
+        return False, f"{type(e).__name__}: {e}"
+    finally:
+        if client is not None:
+            client.close()
+    return True, ""
 
 
 @router.post("/cancel")

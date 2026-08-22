@@ -104,3 +104,68 @@ def test_each_launch_gets_its_own_key():
     assert first.key != second.key
     assert first.launch_id != second.launch_id
     assert len(first.key) == 32  # AES-256
+
+
+# --- refusing a session that does not work ------------------------------
+
+
+def test_a_session_that_reads_nothing_is_rejected(monkeypatch):
+    """A cookie can authenticate and still return no data.
+
+    That is what a sign-in captured mid-flow produces, and storing it fails
+    silently downstream: an empty roster is indistinguishable from a PACS
+    with no cardholders, so it surfaces hours later as "unreachable". The
+    check belongs here, while a human is still watching.
+    """
+    from agsync.routes.connect import _session_reads_cardholders
+
+    class Blank:
+        def __init__(self, **kwargs):
+            pass
+
+        def first_cardholder_id(self):
+            return ""
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "agsync.lib.pacs.millennium_ultra.client.MillenniumUltraClient", Blank,
+    )
+    ok, detail = _session_reads_cardholders("https://pacs.test", "cookie", {})
+    assert ok is False
+    assert "no cardholders" in detail
+
+
+def test_a_working_session_is_accepted(monkeypatch):
+    from agsync.routes.connect import _session_reads_cardholders
+
+    class Working:
+        def __init__(self, **kwargs):
+            pass
+
+        def first_cardholder_id(self):
+            return "11587"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "agsync.lib.pacs.millennium_ultra.client.MillenniumUltraClient", Working,
+    )
+    assert _session_reads_cardholders("https://pacs.test", "cookie", {}) == (True, "")
+
+
+def test_an_unreachable_pacs_is_reported_not_stored(monkeypatch):
+    from agsync.routes.connect import _session_reads_cardholders
+
+    class Broken:
+        def __init__(self, **kwargs):
+            raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(
+        "agsync.lib.pacs.millennium_ultra.client.MillenniumUltraClient", Broken,
+    )
+    ok, detail = _session_reads_cardholders("https://pacs.test", "cookie", {})
+    assert ok is False
+    assert "connection refused" in detail

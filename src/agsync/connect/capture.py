@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_S = 1.0
 LAUNCH_TIMEOUT_S = 30
 LOGIN_TIMEOUT_S = 600
+# The auth cookie is set on the login POST's redirect, before the browser has
+# followed it, and the app can re-issue it as the landing page loads. Taking
+# the first value seen can therefore capture a session that authenticates but
+# reads nothing, so let the login settle and use whatever it ends on.
+SETTLE_S = 4.0
 
 BROWSER_CANDIDATES = (
     # Windows — the operator's machine in practice.
@@ -182,6 +187,17 @@ def capture_session(
         if not found:
             status("timed out waiting for sign-in")
             return None
+
+        time.sleep(SETTLE_S)
+        settled = cdp.call("Network.getAllCookies").get("cookies", [])
+        final = next(
+            (c for c in settled if c.get("name") == cookie_name and c.get("value")),
+            None,
+        )
+        if final is not None:
+            if final["value"] != found["value"]:
+                logger.info("AG Connect: session was re-issued while settling")
+            jar, found = settled, final
 
         wanted = (cookie_name, *also)
         cookies = [c for c in jar if c["name"] in wanted and c.get("value")]

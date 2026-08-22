@@ -68,7 +68,12 @@ def run_from_uri(uri: str, on_status=None) -> int:
                 "/connect/callback", json={"launch_id": launch_id, "payload": sealed},
             )
             if done.status_code != 200:
-                status(f"AccessGrid Sync rejected the session ({done.status_code})")
+                reason = ""
+                try:
+                    reason = (done.json() or {}).get("message", "")
+                except Exception:  # noqa: BLE001 — body may not be JSON
+                    pass
+                status(reason or f"AccessGrid Sync rejected the session ({done.status_code})")
                 return 4
     except ConnectError as e:
         status(str(e))
