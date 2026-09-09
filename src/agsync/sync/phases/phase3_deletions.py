@@ -55,6 +55,9 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
 
+        if tracked.pacs_person_id not in snapshot.credentials_by_person:
+            continue  # their page could not be read this cycle — no evidence
+
         reason: str | None = None
         if person is None:
             reason = f"person {tracked.pacs_person_id} no longer in PACS"

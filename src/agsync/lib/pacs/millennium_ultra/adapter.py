@@ -66,7 +66,12 @@ from ..base import (
     PacsDescriptor,
     Person,
 )
-from .client import CARD_SLOTS, MillenniumAuthError, MillenniumUltraClient
+from .client import (
+    CARD_SLOTS,
+    MillenniumAuthError,
+    MillenniumError,
+    MillenniumUltraClient,
+)
 from .html_form import CardholderForm
 
 logger = logging.getLogger(__name__)
@@ -376,7 +381,9 @@ class MillenniumUltraAdapter:
         pid = str(person_id)
         profile = self._profile_for(pid)
         if profile is None:
-            return []
+            # Unreadable is not the same as empty: answering [] here would
+            # let phase 3 read a dropped connection as a deleted credential.
+            raise MillenniumError(f"cardholder {pid} could not be read this cycle")
         slots: list[Slot] = profile["slots"]
         triggers = [s for s in slots if self._is_trigger(s)]
         if not triggers:

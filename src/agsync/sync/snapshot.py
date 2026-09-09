@@ -116,7 +116,7 @@ def build_snapshot(
             creds = list(pacs.list_credentials(pid))
         except Exception as e:  # noqa: BLE001
             logger.warning("Failed to fetch credentials for %s (%s): %s", pid, person.full_name, e)
-            creds = []
+            continue  # no entry at all — see phase 3
         snap.credentials_by_person[pid] = creds
 
     logger.info(

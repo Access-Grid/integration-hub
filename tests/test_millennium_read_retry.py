@@ -121,3 +121,32 @@ def test_an_enrolled_cardholder_is_never_held_back(
     clock["t"] = 1                      # nowhere near due
     _profiles(adapter, client)
     assert client.reads > reads         # read anyway
+
+
+def test_an_unreadable_cardholder_is_not_a_deletion(monkeypatch):
+    """The reason the adapter raises instead of answering [].
+
+    Phase 3 revokes the AccessGrid pass when a tracked credential is gone
+    from its person. A dropped connection must not look like that.
+    """
+    from types import SimpleNamespace
+
+    from agsync.sync.phases import phase3_deletions
+    from agsync.sync.snapshot import Snapshot
+
+    snap = Snapshot()
+    snap.people["11587"] = SimpleNamespace(id="11587", full_name="A G", active=True)
+    # No credentials_by_person entry: the page could not be read this cycle.
+
+    row = SimpleNamespace(
+        pacs_person_id="11587", pacs_credential_id="seos-slot1",
+        ag_card_id="agcard-1", status="active",
+    )
+    monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [row])
+
+    deleted = []
+    ag = SimpleNamespace(
+        access_cards=SimpleNamespace(delete=lambda card_id: deleted.append(card_id))
+    )
+    assert phase3_deletions.run(snap, ag) == 0
+    assert deleted == []
