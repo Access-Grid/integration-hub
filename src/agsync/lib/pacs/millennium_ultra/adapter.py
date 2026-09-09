@@ -500,9 +500,12 @@ class MillenniumUltraAdapter:
             return False
 
         if len(pending) > len(free):
-            logger.error(
+            # Recoverable rather than broken: the abandoned half of a pair
+            # may still be occupying a slot, and phase 3 releases it once
+            # AccessGrid reports it deleted. Written next cycle, then.
+            logger.warning(
                 "Millennium: cardholder %s has %d free slot(s) but %d credential(s) "
-                "to write — writing none",
+                "to write — writing none this cycle",
                 pid, len(free), len(pending),
             )
             return False
@@ -533,6 +536,116 @@ class MillenniumUltraAdapter:
             "Millennium: wrote %d credential(s) into cardholder %s", len(pending), pid,
         )
         return True
+
+    @property
+    def supports_credential_retirement(self) -> bool:
+        """Only Seos cards are ours to remove; DESFire cards are the customer's."""
+        return self.mode == MODE_SEOS
+
+    def retire_credentials(
+        self,
+        person_id: str,
+        credential_id: str,
+        identities: list[CredentialIdentity],
+    ) -> int:
+        """Release the slots holding credentials AccessGrid has deleted.
+
+        Issuing against a card template pair allocates one credential per
+        platform and the holder installs exactly one; AccessGrid deletes the
+        other. Without this the abandoned card occupies a slot forever, and
+        Millennium gives each cardholder only three — so the holder's watch
+        would later have nowhere to go.
+
+        The ledger entry is dropped in the same operation as the card. Those
+        two facts are read together by `_seos_credentials`, which suspends a
+        pass when a card it recorded is missing from the cardholder: leaving
+        the entry behind would suspend a working pass on the next cycle,
+        because nothing downstream can tell our deletion from an operator's.
+        """
+        if self.mode != MODE_SEOS or not identities:
+            return 0
+        pid = str(person_id)
+        written = list(SeosLedger.get(pid, credential_id))
+        if not written:
+            return 0
+
+        recorded = {
+            (str(e.get("facility_code")), str(e.get("card_number"))): e for e in written
+        }
+        wanted = [
+            recorded[key]
+            for key in (
+                (str(i.site_code), str(i.card_number)) for i in identities
+            )
+            if key in recorded
+        ]
+        if not wanted:
+            return 0
+
+        form = self._client.get_cardholder_form(pid)
+        slots = {
+            (s.facility_code, s.card_number): s
+            for s in _read_slots(form, self._offset_seconds)
+            if not s.empty
+        }
+        token = form.value("__RequestVerificationToken")
+        trigger_slot = _trigger_slot_index(credential_id)
+
+        retired = 0
+        for entry in wanted:
+            key = (str(entry.get("facility_code")), str(entry.get("card_number")))
+            slot = slots.get(key)
+            if slot is None:
+                # Already gone from Millennium. Still drop the ledger entry:
+                # the card is not coming back, and leaving it recorded would
+                # suspend the pass for a card AccessGrid deleted anyway.
+                logger.info(
+                    "Millennium: card %s/%s already absent from cardholder %s — "
+                    "dropping it from the ledger",
+                    key[0], key[1], pid,
+                )
+                written.remove(entry)
+                retired += 1
+                continue
+            if slot.index == trigger_slot:
+                # Cannot happen — the trigger card is the customer's own and
+                # is never recorded — but this is a destructive operation.
+                #
+                # Note the test is the slot, not the format: cards we write
+                # carry the trigger format themselves, so `_is_trigger` is
+                # true of our own cards and would refuse every retirement.
+                logger.error(
+                    "Millennium: refusing to delete the trigger card in slot %d "
+                    "of cardholder %s",
+                    slot.index, pid,
+                )
+                continue
+            if not slot.card_id:
+                logger.warning(
+                    "Millennium: slot %d of cardholder %s has no CardID — "
+                    "not deleting card %s/%s",
+                    slot.index, pid, key[0], key[1],
+                )
+                continue
+
+            logger.info(
+                "Millennium: deleting card %s/%s from slot %d of cardholder %s — "
+                "AccessGrid deleted it",
+                key[0], key[1], slot.index, pid,
+            )
+            if not self._client.delete_card(pid, slot.card_id, token):
+                logger.error(
+                    "Millennium: delete refused for card %s/%s on cardholder %s",
+                    key[0], key[1], pid,
+                )
+                continue
+            written.remove(entry)
+            retired += 1
+
+        if retired:
+            SeosLedger.record(pid, credential_id, written)
+            self._profiles.pop(pid, None)
+        return retired
 
     # -- internals -------------------------------------------------------
 
@@ -721,6 +834,13 @@ class MillenniumUltraAdapter:
         }
         self._profiles[pid] = profile
         return profile
+
+
+def _trigger_slot_index(credential_id: str) -> int | None:
+    """The slot a Seos credential id was minted from ("seos-slot1" -> 1)."""
+    prefix, cid = "seos-slot", str(credential_id)
+    suffix = cid[len(prefix):] if cid.startswith(prefix) else ""
+    return int(suffix) if suffix.isdigit() else None
 
 
 def _read_slots(form: CardholderForm, offset_seconds: int = 0) -> list[Slot]:

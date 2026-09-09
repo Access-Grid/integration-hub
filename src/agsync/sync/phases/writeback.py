@@ -36,6 +36,24 @@ _DEVICE_COLLECTIONS = ("details", "device_credentials", "devices", "credentials"
 _SITE_KEYS = ("site_code", "facility_code", "siteCode")
 _CARD_KEYS = ("card_number", "cardNumber", "number")
 
+# States meaning AccessGrid no longer backs this credential.
+#
+# Load-bearing rather than cosmetic. A deleted credential stays in the
+# pass's `details` — that is how phase 3 detects it — so without this filter
+# phase 3 would release the card and phase 4 would write it straight back
+# on the same cycle, forever.
+_DEAD_STATES = frozenset({"deleted"})
+
+
+def state_of(entry: Any) -> str:
+    """The lifecycle state of a pass or one of its per-platform cards."""
+    value = entry.get("state") if isinstance(entry, dict) else getattr(entry, "state", "")
+    return str(value or "").strip().lower()
+
+
+def is_dead(entry: Any) -> bool:
+    return state_of(entry) in _DEAD_STATES
+
 
 def _as_datetime(value: Any) -> datetime | None:
     """Coerce whatever AccessGrid returned for a date into a datetime.
@@ -79,21 +97,54 @@ def identities_from_card(card: Any) -> list[CredentialIdentity]:
     for collection in _DEVICE_COLLECTIONS:
         for entry in getattr(card, collection, None) or []:
             site, number = _attr(entry, _SITE_KEYS), _attr(entry, _CARD_KEYS)
-            if number and (site, number) not in seen:
-                seen.add((site, number))
-                out.append(
-                    CredentialIdentity(
-                        site,
-                        number,
-                        activate,
-                        # Each half of a pair carries its own dates.
-                        _as_datetime(_attr(entry, ("expiration_date",))) or expire,
-                    )
+            if not number or (site, number) in seen:
+                continue
+            if is_dead(entry):
+                continue
+            seen.add((site, number))
+            out.append(
+                CredentialIdentity(
+                    site,
+                    number,
+                    activate,
+                    # Each half of a pair carries its own dates.
+                    _as_datetime(_attr(entry, ("expiration_date",))) or expire,
                 )
+            )
 
     site, number = _attr(card, _SITE_KEYS), _attr(card, _CARD_KEYS)
-    if number and (site, number) not in seen:
+    if number and (site, number) not in seen and not is_dead(card):
         out.append(CredentialIdentity(site, number, activate, expire))
+    return out
+
+
+def deleted_identities_from_cards(cards: Any) -> list[CredentialIdentity]:
+    """The credentials on this issue that AccessGrid has deleted.
+
+    The mirror of `identities_from_cards`: same traversal, opposite filter.
+    Phase 3 uses it to find what the PACS may release.
+    """
+    if not isinstance(cards, list | tuple):
+        cards = [cards]
+    out: list[CredentialIdentity] = []
+    seen: set[tuple[str, str]] = set()
+    for card in cards:
+        entries: list[Any] = [
+            entry
+            for collection in _DEVICE_COLLECTIONS
+            for entry in getattr(card, collection, None) or []
+        ]
+        # A pass deleted whole takes its per-platform cards with it, whatever
+        # their own states say.
+        parent_dead = is_dead(card)
+        for entry in [*entries, card]:
+            site, number = _attr(entry, _SITE_KEYS), _attr(entry, _CARD_KEYS)
+            if not number or (site, number) in seen:
+                continue
+            if not (parent_dead or is_dead(entry)):
+                continue
+            seen.add((site, number))
+            out.append(CredentialIdentity(site, number, None, None))
     return out
 
 

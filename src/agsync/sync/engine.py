@@ -365,7 +365,7 @@ class SyncEngine:
             if superseded():
                 return self._abandon(result, start_ms)
             result.status_changes = phase2_local_to_ag.run(snapshot, ag)
-            result.deleted = phase3_deletions.run(snapshot, ag)
+            result.deleted = phase3_deletions.run(snapshot, ag, pacs)
             if superseded():
                 return self._abandon(result, start_ms)
             result.ag_to_pacs = phase4_ag_to_local.run(snapshot, pacs)

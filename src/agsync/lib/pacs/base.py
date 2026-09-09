@@ -191,3 +191,24 @@ class PacsAdapter(Protocol):
         whole rather than queried per credential so a page listing many of
         them costs one read. Adapters that never write return {}.
         """
+
+    # Optional, and deliberately separate from writeback: being able to add
+    # a credential does not imply being allowed to remove one. When True,
+    # phase 3 tells the adapter which credentials AccessGrid has deleted so
+    # the PACS can release whatever they occupy.
+    @property
+    def supports_credential_retirement(self) -> bool: ...
+
+    def retire_credentials(
+        self,
+        person_id: str,
+        credential_id: str,
+        identities: list[CredentialIdentity],
+    ) -> int:
+        """Remove credentials AccessGrid has deleted. Returns how many went.
+
+        Only ever called with identities AccessGrid positively reported as
+        deleted, so the adapter may treat them as authoritative. It must
+        still verify that what it is about to remove is the credential it
+        wrote, and leave anything else alone.
+        """

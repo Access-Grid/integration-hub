@@ -10,6 +10,15 @@ guarantee). A row should be deleted if any of these are true:
 
 Safety: if the snapshot has zero people, abort the phase. That's almost
 certainly a transient PACS error and we don't want to nuke every card.
+
+The phase then runs a second pass in the opposite direction. Where the
+first treats the PACS as the truth and removes what it no longer holds,
+`_retire_deleted_credentials` treats AccessGrid as the truth about the
+credentials AccessGrid itself minted, and releases what it has deleted —
+the abandoned half of a card template pair, most often. That inversion is
+safe only because it acts on positive evidence: a successful read whose
+card says `state: "deleted"`. Absence is never evidence, and an error is
+never evidence.
 """
 
 from __future__ import annotations
@@ -17,13 +26,20 @@ from __future__ import annotations
 import logging
 
 from ...ag import AccessGrid, AccessGridError
+from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
+from .writeback import deleted_identities_from_cards
 
 logger = logging.getLogger(__name__)
 
+# A destructive operation on the customer's own records, so it is rationed
+# the way provisioning is. A cycle that wants to remove more than this has
+# almost certainly misread something.
+MAX_RETIREMENTS_PER_CYCLE = 25
 
-def run(snapshot: Snapshot, ag: AccessGrid) -> int:
+
+def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> int:
     logger.info("Phase 3: Checking for deletions")
 
     if not snapshot.people:
@@ -66,5 +82,76 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             else:
                 logger.error("  Failed to delete AG card %s: %s", tracked.ag_card_id, e)
 
+    if pacs is not None:
+        _retire_deleted_credentials(ag, pacs)
+
     logger.info("Phase 3 done: %d deletion(s)", deleted)
     return deleted
+
+
+def _retire_deleted_credentials(ag: AccessGrid, pacs: PacsAdapter) -> int:
+    """Release PACS slots holding credentials AccessGrid has deleted.
+
+    Only for adapters whose PACS receives credentials. The pass is read one
+    at a time by id rather than from a listing: a listing can omit a card
+    for reasons that have nothing to do with deletion — a paired pass's
+    unified id never appears in one at all — and inferring deletion from
+    absence would delete live cards out of the customer's PACS.
+    """
+    if not getattr(pacs, "supports_credential_retirement", False):
+        return 0
+
+    # Only cardholders we have actually written to can have anything to
+    # release, which keeps this to one AG read per enrolled cardholder.
+    try:
+        written = pacs.written_credentials()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Phase 3: could not read what the PACS holds: %s", e)
+        return 0
+    if not written:
+        return 0
+
+    retired = 0
+    for tracked in tracking.all_tracked():
+        if retired >= MAX_RETIREMENTS_PER_CYCLE:
+            logger.warning(
+                "Phase 3: reached the retirement cap (%d) — the rest wait for "
+                "the next cycle", MAX_RETIREMENTS_PER_CYCLE,
+            )
+            break
+        if tracked.status == "deduped" or not tracked.ag_card_id:
+            continue
+        if (tracked.pacs_person_id, tracked.pacs_credential_id) not in written:
+            continue
+
+        try:
+            card = ag.access_cards.get(tracked.ag_card_id)
+        except AccessGridError as e:
+            # No information. A deleted pass answers 200 with a deleted
+            # state, so an error here means the request failed, not that
+            # anything is gone.
+            logger.debug(
+                "  Could not read AG card %s: %s — leaving the PACS alone",
+                tracked.ag_card_id, e,
+            )
+            continue
+
+        gone = deleted_identities_from_cards(card)
+        if not gone:
+            continue
+
+        try:
+            count = pacs.retire_credentials(
+                tracked.pacs_person_id, tracked.pacs_credential_id, gone,
+            )
+        except Exception as e:  # noqa: BLE001 — one cardholder must not stop the cycle
+            logger.error(
+                "  Failed to retire credentials for %s/%s: %s",
+                tracked.pacs_person_id, tracked.pacs_credential_id, e,
+            )
+            continue
+        retired += count
+
+    if retired:
+        logger.info("Phase 3: released %d PACS credential(s) deleted in AccessGrid", retired)
+    return retired

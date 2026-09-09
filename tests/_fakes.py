@@ -74,6 +74,8 @@ class FakeMillenniumClient:
         self.validated: list[dict] = []
         self.save_result = True
         self.number_free = True
+        self.deleted: list[tuple[str, str]] = []
+        self.delete_result = True
 
     def list_cardholders(self):
         return self._roster
@@ -99,6 +101,10 @@ class FakeMillenniumClient:
     def save_cardholder(self, cardholder_id, form):
         self.saved.append((str(cardholder_id), form))
         return self.save_result
+
+    def delete_card(self, cardholder_id, card_id, token):
+        self.deleted.append((str(cardholder_id), str(card_id)))
+        return self.delete_result
 
     def test_connection(self):
         return True, "ok"

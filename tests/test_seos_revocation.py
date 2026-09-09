@@ -159,3 +159,91 @@ def test_before_anything_is_written_the_pass_is_active(
     page = _page(millennium_page, set_slot)
     adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
     assert _status(adapter) is CredentialStatus.ACTIVE
+
+
+# --- retiring what AccessGrid deleted ------------------------------------
+#
+# The abandoned half of a card template pair. Releasing its slot is what
+# lets the holder's watch be provisioned later, but the delete and the
+# ledger have to move together: `_seos_credentials` suspends a pass when a
+# recorded card is missing, and it cannot tell our deletion from an
+# operator's.
+
+
+def _identity(number, site="66"):
+    from agsync.lib.pacs.base import CredentialIdentity
+
+    return CredentialIdentity(site, number, None, None)
+
+
+def test_retiring_a_card_deletes_it_and_forgets_it(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    _ledger("5001", "5002")
+    page = _page(millennium_page, set_slot, slot2=("5001", True), slot3=("5002", True))
+    client = _client({"11587": page})
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+
+    assert adapter.retire_credentials("11587", "seos-slot1", [_identity("5002")]) == 1
+    assert client.deleted == [("11587", "7930")]
+    assert [e["card_number"] for e in SeosLedger.get("11587", "seos-slot1")] == ["5001"]
+
+
+def test_the_surviving_pass_stays_active_after_a_retirement(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """The regression this whole design exists to avoid.
+
+    Delete the card but leave the ledger entry and the next cycle reads a
+    recorded card that is missing — which is the revocation signal — and
+    suspends a pass the holder is using.
+    """
+    _ledger("5001", "5002")
+    page = _page(millennium_page, set_slot, slot2=("5001", True), slot3=("5002", True))
+    adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
+    adapter.retire_credentials("11587", "seos-slot1", [_identity("5002")])
+
+    # Slot 3 is now empty, as Millennium would serve it after the delete.
+    after = _page(millennium_page, set_slot, slot2=("5001", True))
+    adapter = make_millennium_adapter(_client({"11587": after}), mode=MODE_SEOS)
+    assert _status(adapter) is CredentialStatus.ACTIVE
+
+
+def test_a_refused_delete_keeps_the_ledger_entry(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    # The card is still there, so the ledger must still describe it.
+    _ledger("5001", "5002")
+    page = _page(millennium_page, set_slot, slot2=("5001", True), slot3=("5002", True))
+    client = _client({"11587": page})
+    client.delete_result = False
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+
+    assert adapter.retire_credentials("11587", "seos-slot1", [_identity("5002")]) == 0
+    assert len(SeosLedger.get("11587", "seos-slot1")) == 2
+
+
+def test_a_card_we_never_wrote_is_never_deleted(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Only the ledger authorises a deletion, never AccessGrid alone."""
+    _ledger("5001")
+    page = _page(millennium_page, set_slot, slot2=("5001", True), slot3=("9999", True))
+    client = _client({"11587": page})
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+
+    assert adapter.retire_credentials("11587", "seos-slot1", [_identity("9999")]) == 0
+    assert client.deleted == []
+
+
+def test_desfire_never_retires_anything(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    _ledger("5001")
+    page = _page(millennium_page, set_slot, slot2=("5001", True))
+    client = _client({"11587": page})
+    adapter = make_millennium_adapter(client)  # DESFire: the cards are theirs
+
+    assert adapter.supports_credential_retirement is False
+    assert adapter.retire_credentials("11587", "seos-slot1", [_identity("5001")]) == 0
+    assert client.deleted == []
