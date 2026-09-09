@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -81,6 +82,14 @@ REQUIRED_EMPTY_SLOTS = 2
 # ones. Enrolled cardholders are always refreshed; this budget is what
 # discovers newly-enrolled cards, so it trades discovery latency for load.
 DEFAULT_SWEEP_BUDGET = 400
+
+# A cardholder page that fails to load is retried on its own schedule rather
+# than waiting for the sweep cursor to come round again, which with a large
+# roster can be many cycles. The backoff is what keeps a cardholder that
+# always fails — a corrupt record, say — from being read every cycle
+# forever, while a one-off timeout is retried almost immediately.
+RETRY_BASE_SECONDS = 60
+RETRY_MAX_SECONDS = 3600
 
 # How often to say something while sweeping. A first sweep of a large
 # install reads for five minutes and used to emit nothing at all between
@@ -276,6 +285,8 @@ class MillenniumUltraAdapter:
         # than re-reading the same head of the roster forever.
         self._sweep_cursor = 0
         self._cold = True
+        # Cardholders whose page failed to load: id -> (attempts, next try).
+        self._retry: dict[str, tuple[int, float]] = {}
 
     # -- contract --------------------------------------------------------
 
@@ -797,6 +808,21 @@ class MillenniumUltraAdapter:
             )
         form.set_checked(f"Card_{slot}_Active", True)
 
+    def _backing_off(self, pid: str) -> bool:
+        """Has this cardholder failed recently, with its retry not yet due?"""
+        pending = self._retry.get(pid)
+        return pending is not None and time.monotonic() < pending[1]
+
+    def _record_failure(self, pid: str, error: Exception) -> None:
+        attempts = self._retry.get(pid, (0, 0.0))[0] + 1
+        delay = min(RETRY_BASE_SECONDS * 2 ** (attempts - 1), RETRY_MAX_SECONDS)
+        self._retry[pid] = (attempts, time.monotonic() + delay)
+        logger.warning(
+            "Millennium: failed to read cardholder %s: %s — retrying in %ds "
+            "(attempt %d)",
+            pid, error, delay, attempts,
+        )
+
     def _profile_for(self, pid: str) -> dict | None:
         """Current slot state for a cardholder, refetched when it matters.
 
@@ -807,16 +833,24 @@ class MillenniumUltraAdapter:
         """
         cached = self._profiles.get(pid)
         enrolled = bool(cached and cached.get("enrolled"))
-        if cached is not None and not enrolled and pid not in self._sweep:
-            return cached
+        # Enrolled cardholders are never held back: their slots drive phases
+        # 2 through 6, and a stale reading there is worse than a wasted read.
+        if not enrolled:
+            if self._backing_off(pid):
+                return cached
+            retrying = pid in self._retry
+            if not retrying and cached is not None and pid not in self._sweep:
+                return cached
 
         try:
             form = self._client.get_cardholder_form(pid)
         except MillenniumAuthError:
             raise
         except Exception as e:  # noqa: BLE001
-            logger.warning("Millennium: failed to read cardholder %s: %s", pid, e)
+            self._record_failure(pid, e)
             return cached
+
+        self._retry.pop(pid, None)
 
         self._read_this_cycle += 1
         if self._read_this_cycle % PROGRESS_EVERY == 0:
