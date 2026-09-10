@@ -91,74 +91,84 @@ class _Pacs:
         return len(identities)
 
 
-class _Ag:
-    def __init__(self, card=None, error=None):
-        self.card, self.error = card, error
-        self.calls = 0
+def _snapshot(*cards, sync_ref="ref-1"):
+    """A snapshot resolving the tracked pass to every card of its issue."""
+    from agsync.sync.snapshot import Snapshot
 
-    @property
-    def access_cards(self):
-        return self
-
-    def get(self, card_id):
-        self.calls += 1
-        if self.error:
-            raise self.error
-        return self.card
+    snap = Snapshot()
+    if cards:
+        snap.ag_cards_by_sync_ref[sync_ref] = list(cards)
+    return snap
 
 
 @pytest.fixture
 def tracked(monkeypatch):
     row = SimpleNamespace(
         pacs_person_id="11587", pacs_credential_id="seos-slot1",
-        ag_card_id="I_UgcwkCz7nO01s", status="active",
+        ag_card_id="I_UgcwkCz7nO01s", status="active", sync_ref="ref-1",
     )
     monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [row])
     return row
 
 
+def _card(number, state, site="2", cid=None):
+    return SimpleNamespace(
+        id=cid or f"card-{number}", site_code=site, card_number=number,
+        state=state, details=None, expiration_date=None,
+    )
+
+
 def test_a_deleted_half_is_handed_to_the_adapter(tracked):
     pacs = _Pacs()
-    assert phase3_deletions._retire_deleted_credentials(_Ag(_pair()), pacs) == 1
+    snap = _snapshot(_pair())
+    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 1
     assert pacs.retired == [("11587", "seos-slot1", [ANDROID])]
 
 
-def test_an_accessgrid_error_retires_nothing(tracked):
-    """The safety property. A failed read is not evidence of deletion."""
-    from agsync.ag import AccessGridError
+def test_a_re_issue_leaves_two_cards_and_the_deleted_one_is_found(tracked):
+    """The shape that slipped through: two cards, one sync_ref, no details.
 
+    Reading only the tracked id reported the survivor and never mentioned
+    the deleted card, so its Millennium slot was never released.
+    """
     pacs = _Pacs()
-    ag = _Ag(error=AccessGridError("API request failed: boom"))
-    assert phase3_deletions._retire_deleted_credentials(ag, pacs) == 0
+    snap = _snapshot(_card("1238", "active"), _card("1237", "deleted"))
+    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 1
+    assert pacs.retired == [("11587", "seos-slot1", [("2", "1237")])]
+
+
+def test_an_unresolvable_pass_retires_nothing(tracked):
+    """The safety property. No information is not evidence of deletion."""
+    pacs = _Pacs()
+    assert phase3_deletions._retire_deleted_credentials(_snapshot(), pacs) == 0
     assert pacs.retired == []
 
 
 def test_a_pass_with_no_deletions_is_left_alone(tracked):
     pacs = _Pacs()
-    ag = _Ag(_pair(android_state="created"))
-    assert phase3_deletions._retire_deleted_credentials(ag, pacs) == 0
+    snap = _snapshot(_pair(android_state="created"))
+    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 0
     assert pacs.retired == []
 
 
 def test_an_empty_details_list_retires_nothing(tracked):
     """A shape we did not expect must do nothing, not delete everything."""
     pacs = _Pacs()
-    ag = _Ag(SimpleNamespace(id="I_UgcwkCz7nO01s", state="active", details=[]))
-    assert phase3_deletions._retire_deleted_credentials(ag, pacs) == 0
+    snap = _snapshot(SimpleNamespace(id="x", state="active", details=[]))
+    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 0
     assert pacs.retired == []
 
 
-def test_cardholders_we_never_wrote_to_are_not_even_read(tracked):
+def test_cardholders_we_never_wrote_to_are_skipped(tracked):
     pacs = _Pacs(written={})
-    ag = _Ag(_pair())
-    assert phase3_deletions._retire_deleted_credentials(ag, pacs) == 0
-    assert ag.calls == 0
+    snap = _snapshot(_pair())
+    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 0
+    assert pacs.retired == []
 
 
 def test_an_adapter_without_the_capability_is_skipped(tracked):
     class ReadOnly:
         supports_credential_retirement = False
 
-    ag = _Ag(_pair())
-    assert phase3_deletions._retire_deleted_credentials(ag, ReadOnly()) == 0
-    assert ag.calls == 0
+    snap = _snapshot(_pair())
+    assert phase3_deletions._retire_deleted_credentials(snap, ReadOnly()) == 0

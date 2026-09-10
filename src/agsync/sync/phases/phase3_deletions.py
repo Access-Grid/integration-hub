@@ -86,20 +86,27 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
                 logger.error("  Failed to delete AG card %s: %s", tracked.ag_card_id, e)
 
     if pacs is not None:
-        _retire_deleted_credentials(ag, pacs)
+        _retire_deleted_credentials(snapshot, pacs)
 
     logger.info("Phase 3 done: %d deletion(s)", deleted)
     return deleted
 
 
-def _retire_deleted_credentials(ag: AccessGrid, pacs: PacsAdapter) -> int:
+def _retire_deleted_credentials(snapshot: Snapshot, pacs: PacsAdapter) -> int:
     """Release PACS slots holding credentials AccessGrid has deleted.
 
-    Only for adapters whose PACS receives credentials. The pass is read one
-    at a time by id rather than from a listing: a listing can omit a card
-    for reasons that have nothing to do with deletion — a paired pass's
-    unified id never appears in one at all — and inferring deletion from
-    absence would delete live cards out of the customer's PACS.
+    Only for adapters whose PACS receives credentials.
+
+    Resolved the same way phase 4 resolves a pass, because one issue can
+    span several cards and reading only the tracked id finds one of them:
+    a re-issue leaves two cards sharing a sync_ref, each with its own card
+    number and neither carrying the other in `details`. Fetching the tracked
+    id alone reported the survivor and never mentioned the card that had
+    been deleted, so its slot was never released.
+
+    Absence is still not evidence. Only a card that is present *and* says
+    `state: "deleted"` authorises anything; a pass that cannot be resolved,
+    or a listing that came back short, releases nothing.
     """
     if not getattr(pacs, "supports_credential_retirement", False):
         return 0
@@ -127,19 +134,14 @@ def _retire_deleted_credentials(ag: AccessGrid, pacs: PacsAdapter) -> int:
         if (tracked.pacs_person_id, tracked.pacs_credential_id) not in written:
             continue
 
-        try:
-            card = ag.access_cards.get(tracked.ag_card_id)
-        except AccessGridError as e:
-            # No information. A deleted pass answers 200 with a deleted
-            # state, so an error here means the request failed, not that
-            # anything is gone.
-            logger.debug(
-                "  Could not read AG card %s: %s — leaving the PACS alone",
-                tracked.ag_card_id, e,
-            )
+        cards = snapshot.resolve_ag_cards(
+            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+            tracked.sync_ref,
+        )
+        if not cards:
             continue
 
-        gone = deleted_identities_from_cards(card)
+        gone = deleted_identities_from_cards(cards)
         if not gone:
             continue
 
