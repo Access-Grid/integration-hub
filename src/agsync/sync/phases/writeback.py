@@ -45,16 +45,6 @@ _CARD_KEYS = ("card_number", "cardNumber", "number")
 _DEAD_STATES = frozenset({"deleted"})
 
 
-def state_of(entry: Any) -> str:
-    """The lifecycle state of a pass or one of its per-platform cards."""
-    value = entry.get("state") if isinstance(entry, dict) else getattr(entry, "state", "")
-    return str(value or "").strip().lower()
-
-
-def is_dead(entry: Any) -> bool:
-    return state_of(entry) in _DEAD_STATES
-
-
 def _as_datetime(value: Any) -> datetime | None:
     """Coerce whatever AccessGrid returned for a date into a datetime.
 
@@ -79,6 +69,20 @@ def _attr(obj: Any, keys: tuple[str, ...]) -> str:
         if value not in (None, ""):
             return str(value)
     return ""
+
+
+def state_of(entry: Any) -> str:
+    """The lifecycle state of a pass, one of its cards, or one device.
+
+    Cards call it `state`; the per-device entries call it `status`. Reading
+    only the first left a device credential — an Apple Watch has its own
+    card number — unable to ever be recognised as gone.
+    """
+    return _attr(entry, ("state", "status")).strip().lower()
+
+
+def is_dead(entry: Any) -> bool:
+    return state_of(entry) in _DEAD_STATES
 
 
 def identities_from_card(card: Any) -> list[CredentialIdentity]:

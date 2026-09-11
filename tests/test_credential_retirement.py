@@ -172,3 +172,41 @@ def test_an_adapter_without_the_capability_is_skipped(tracked):
 
     snap = _snapshot(_pair())
     assert phase3_deletions._retire_deleted_credentials(snap, ReadOnly()) == 0
+
+
+# --- per-device credentials ----------------------------------------------
+#
+# An Apple Watch gets its own card number, carried on the pass's `devices`
+# entries rather than in `details`. Those entries call the lifecycle field
+# `status`, not `state`.
+
+
+def _with_devices(*devices, card_number="1238", state="active"):
+    return SimpleNamespace(
+        id="3xOusBDrErWd004", site_code="2", card_number=card_number,
+        state=state, details=None, expiration_date=None,
+        devices=list(devices),
+    )
+
+
+def _device(number, status, device_type="apple_watch"):
+    return {
+        "id": f"dev-{number}", "platform": "apple", "device_type": device_type,
+        "status": status, "site_code": "2", "card_number": number,
+    }
+
+
+def test_a_watch_credential_is_written_alongside_the_phone():
+    card = _with_devices(
+        _device("1238", "installed", "iphone"), _device("1243", "installed"),
+    )
+    assert _ids(identities_from_cards(card)) == [("2", "1238"), ("2", "1243")]
+
+
+def test_a_removed_device_is_retired():
+    """`status`, not `state` — reading only the latter never saw this."""
+    card = _with_devices(
+        _device("1238", "installed", "iphone"), _device("1243", "deleted"),
+    )
+    assert _ids(deleted_identities_from_cards(card)) == [("2", "1243")]
+    assert _ids(identities_from_cards(card)) == [("2", "1238")]
