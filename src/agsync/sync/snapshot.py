@@ -37,6 +37,8 @@ class Snapshot:
     # from card metadata so dedupe sees only cards we (or sister instances)
     # have tagged with this convention.
     ag_cards_by_site_card: dict[tuple[str, str], Any] = field(default_factory=dict)
+    # Cards re-read individually this cycle, keyed by id. See detailed_cards.
+    ag_card_detail: dict[str, Any] = field(default_factory=dict)
 
     def resolve_ag_cards(
         self,
@@ -71,6 +73,43 @@ class Snapshot:
             if cards:
                 return list(cards)
         return []
+
+    def detailed_cards(
+        self,
+        ag: Any,
+        ag_card_id: str | None,
+        person_id: str = "",
+        credential_id: str = "",
+        sync_ref: str = "",
+    ) -> list[Any]:
+        """Every card of one issue, each re-read for its device credentials.
+
+        The listing answers `devices: []` — and a device is where a second
+        installation's own card number lives, an Apple Watch beside its
+        phone. A card taken from the listing alone therefore reports only
+        the phone's number, so the watch's never reaches the PACS and is
+        never released from it.
+
+        Cached per cycle by card id: phases 3 and 4 both ask about the same
+        cards, and a listed card is kept as the answer if the read fails —
+        stale beats absent, and absent is what would look like a deletion.
+        """
+        out: list[Any] = []
+        for card in self.resolve_ag_cards(
+            ag_card_id, person_id, credential_id, sync_ref
+        ):
+            card_id = getattr(card, "id", None)
+            if not card_id:
+                out.append(card)
+                continue
+            if card_id not in self.ag_card_detail:
+                try:
+                    self.ag_card_detail[card_id] = ag.access_cards.get(card_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("Could not re-read AG card %s: %s", card_id, e)
+                    self.ag_card_detail[card_id] = card
+            out.append(self.ag_card_detail[card_id])
+        return out
 
     def resolve_ag_card(
         self,

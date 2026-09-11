@@ -86,13 +86,15 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
                 logger.error("  Failed to delete AG card %s: %s", tracked.ag_card_id, e)
 
     if pacs is not None:
-        _retire_deleted_credentials(snapshot, pacs)
+        _retire_deleted_credentials(snapshot, ag, pacs)
 
     logger.info("Phase 3 done: %d deletion(s)", deleted)
     return deleted
 
 
-def _retire_deleted_credentials(snapshot: Snapshot, pacs: PacsAdapter) -> int:
+def _retire_deleted_credentials(
+    snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter
+) -> int:
     """Release PACS slots holding credentials AccessGrid has deleted.
 
     Only for adapters whose PACS receives credentials.
@@ -134,9 +136,9 @@ def _retire_deleted_credentials(snapshot: Snapshot, pacs: PacsAdapter) -> int:
         if (tracked.pacs_person_id, tracked.pacs_credential_id) not in written:
             continue
 
-        cards = snapshot.resolve_ag_cards(
-            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
-            tracked.sync_ref,
+        cards = snapshot.detailed_cards(
+            ag, tracked.ag_card_id, tracked.pacs_person_id,
+            tracked.pacs_credential_id, tracked.sync_ref,
         )
         if not cards:
             continue

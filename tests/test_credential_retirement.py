@@ -101,6 +101,22 @@ def _snapshot(*cards, sync_ref="ref-1"):
     return snap
 
 
+class _Ag:
+    """Re-reads answer with the listed card, as a live one would."""
+
+    def __init__(self, by_id=None):
+        self._by_id = by_id or {}
+
+    @property
+    def access_cards(self):
+        return self
+
+    def get(self, card_id):
+        if card_id in self._by_id:
+            return self._by_id[card_id]
+        raise KeyError(card_id)  # falls back to the listed card
+
+
 @pytest.fixture
 def tracked(monkeypatch):
     row = SimpleNamespace(
@@ -121,7 +137,7 @@ def _card(number, state, site="2", cid=None):
 def test_a_deleted_half_is_handed_to_the_adapter(tracked):
     pacs = _Pacs()
     snap = _snapshot(_pair())
-    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 1
+    assert phase3_deletions._retire_deleted_credentials(snap, _Ag(), pacs) == 1
     assert pacs.retired == [("11587", "seos-slot1", [ANDROID])]
 
 
@@ -133,21 +149,21 @@ def test_a_re_issue_leaves_two_cards_and_the_deleted_one_is_found(tracked):
     """
     pacs = _Pacs()
     snap = _snapshot(_card("1238", "active"), _card("1237", "deleted"))
-    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 1
+    assert phase3_deletions._retire_deleted_credentials(snap, _Ag(), pacs) == 1
     assert pacs.retired == [("11587", "seos-slot1", [("2", "1237")])]
 
 
 def test_an_unresolvable_pass_retires_nothing(tracked):
     """The safety property. No information is not evidence of deletion."""
     pacs = _Pacs()
-    assert phase3_deletions._retire_deleted_credentials(_snapshot(), pacs) == 0
+    assert phase3_deletions._retire_deleted_credentials(_snapshot(), _Ag(), pacs) == 0
     assert pacs.retired == []
 
 
 def test_a_pass_with_no_deletions_is_left_alone(tracked):
     pacs = _Pacs()
     snap = _snapshot(_pair(android_state="created"))
-    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 0
+    assert phase3_deletions._retire_deleted_credentials(snap, _Ag(), pacs) == 0
     assert pacs.retired == []
 
 
@@ -155,14 +171,14 @@ def test_an_empty_details_list_retires_nothing(tracked):
     """A shape we did not expect must do nothing, not delete everything."""
     pacs = _Pacs()
     snap = _snapshot(SimpleNamespace(id="x", state="active", details=[]))
-    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 0
+    assert phase3_deletions._retire_deleted_credentials(snap, _Ag(), pacs) == 0
     assert pacs.retired == []
 
 
 def test_cardholders_we_never_wrote_to_are_skipped(tracked):
     pacs = _Pacs(written={})
     snap = _snapshot(_pair())
-    assert phase3_deletions._retire_deleted_credentials(snap, pacs) == 0
+    assert phase3_deletions._retire_deleted_credentials(snap, _Ag(), pacs) == 0
     assert pacs.retired == []
 
 
@@ -171,7 +187,7 @@ def test_an_adapter_without_the_capability_is_skipped(tracked):
         supports_credential_retirement = False
 
     snap = _snapshot(_pair())
-    assert phase3_deletions._retire_deleted_credentials(snap, ReadOnly()) == 0
+    assert phase3_deletions._retire_deleted_credentials(snap, _Ag(), ReadOnly()) == 0
 
 
 # --- per-device credentials ----------------------------------------------
@@ -210,3 +226,37 @@ def test_a_removed_device_is_retired():
     )
     assert _ids(deleted_identities_from_cards(card)) == [("2", "1243")]
     assert _ids(identities_from_cards(card)) == [("2", "1238")]
+
+
+def test_the_listing_hides_a_device_credential_until_the_card_is_re_read():
+    """Why phases 3 and 4 re-read rather than trust the snapshot.
+
+    `list()` answers `devices: []`; only `get()` carries them. A watch's own
+    card number therefore never reached the PACS, and phase 4 logged nothing
+    at all because the one number it could see was already in the slot.
+    """
+    from agsync.sync.snapshot import Snapshot
+
+    listed = _with_devices()  # devices stripped, as a listing returns it
+    listed.devices = []
+    detailed = _with_devices(
+        _device("1238", "installed", "iphone"), _device("1243", "installed"),
+    )
+
+    snap = Snapshot()
+    snap.ag_cards_by_sync_ref["ref-1"] = [listed]
+    assert _ids(identities_from_cards([listed])) == [("2", "1238")]
+
+    cards = snap.detailed_cards(_Ag({"3xOusBDrErWd004": detailed}), None, sync_ref="ref-1")
+    assert _ids(identities_from_cards(cards)) == [("2", "1238"), ("2", "1243")]
+
+
+def test_a_failed_re_read_keeps_the_listed_card():
+    """Stale beats absent: absent is what looks like a deletion."""
+    from agsync.sync.snapshot import Snapshot
+
+    listed = _card("1238", "active")
+    snap = Snapshot()
+    snap.ag_cards_by_sync_ref["ref-1"] = [listed]
+
+    assert snap.detailed_cards(_Ag(), None, sync_ref="ref-1") == [listed]

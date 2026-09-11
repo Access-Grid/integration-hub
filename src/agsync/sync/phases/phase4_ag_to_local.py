@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 
+from ...ag import AccessGrid
 from ...lib.pacs import CredentialStatus, PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
@@ -32,8 +33,8 @@ _AG_TO_CRED_STATUS: dict[str, CredentialStatus] = {
 }
 
 
-def run(snapshot: Snapshot, pacs: PacsAdapter) -> int:
-    updated = _push_new_credentials(snapshot, pacs)
+def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> int:
+    updated = _push_new_credentials(snapshot, pacs, ag)
 
     if not pacs.supports_status_writeback:
         logger.debug("Phase 4: PACS does not support status writeback — skipping")
@@ -100,7 +101,9 @@ def run(snapshot: Snapshot, pacs: PacsAdapter) -> int:
     return updated
 
 
-def _push_new_credentials(snapshot: Snapshot, pacs: PacsAdapter) -> int:
+def _push_new_credentials(
+    snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None
+) -> int:
     """Write any AG-allocated identities the PACS has not received yet.
 
     Only meaningful for adapters that receive credentials; everyone else
@@ -118,12 +121,19 @@ def _push_new_credentials(snapshot: Snapshot, pacs: PacsAdapter) -> int:
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
         if cred is None or not cred.allocate_identity:
             continue
-        # All of them: a card template pair lists as two cards, and writing
-        # back only one half would leave the other platform without a card
-        # in the PACS.
-        cards = snapshot.resolve_ag_cards(
-            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
-            tracked.sync_ref,
+        # All of them, each re-read: one issue can span several cards, and a
+        # second device's card number lives on the pass's `devices`, which
+        # the listing does not carry.
+        cards = (
+            snapshot.detailed_cards(
+                ag, tracked.ag_card_id, tracked.pacs_person_id,
+                tracked.pacs_credential_id, tracked.sync_ref,
+            )
+            if ag is not None
+            else snapshot.resolve_ag_cards(
+                tracked.ag_card_id, tracked.pacs_person_id,
+                tracked.pacs_credential_id, tracked.sync_ref,
+            )
         )
         if not cards:
             continue

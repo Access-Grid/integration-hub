@@ -368,7 +368,7 @@ class SyncEngine:
             result.deleted = phase3_deletions.run(snapshot, ag, pacs)
             if superseded():
                 return self._abandon(result, start_ms)
-            result.ag_to_pacs = phase4_ag_to_local.run(snapshot, pacs)
+            result.ag_to_pacs = phase4_ag_to_local.run(snapshot, pacs, ag)
             result.retried = phase5_retries.run(
                 snapshot, ag, ag_cfg["template_id"], site_code,
                 dedupe_by_site_card=dedupe,
