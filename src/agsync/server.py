@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from importlib.resources import files
 
 from fastapi import FastAPI, Request, Response
@@ -27,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import __version__
 from .auth import admin_exists, current_user
 from .db import init_db
 from .i18n import default_locale, get_translator
@@ -67,6 +69,12 @@ def _static_dir() -> str:
 async def lifespan(app: FastAPI):
     init_db()
     install_log_handler()
+    # First line of the run: the log survives restarts, so without it there
+    # is no way to tell a quiet cycle from a process that went away.
+    logger.info(
+        "AccessGrid Sync v%s starting at %s",
+        __version__, datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    )
     engine = get_engine()
     if is_configured():
         engine.start()

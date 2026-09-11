@@ -57,6 +57,8 @@ def cli(ctx: click.Context) -> None:
 @click.option("--port", type=int, default=None, help="Override AG_SYNC_PORT")
 def run(host: str | None, port: int | None) -> None:
     """Run the server in the foreground."""
+    from datetime import datetime
+
     from .config import get_settings
     from .observability import init_sentry
     from .tls import ensure_cert
@@ -68,6 +70,7 @@ def run(host: str | None, port: int | None) -> None:
     cert_path, key_path = ensure_cert()
 
     print(f"AccessGrid Sync v{__version__}")
+    print(f"Started: {datetime.now().astimezone():%Y-%m-%d %H:%M:%S %Z}")
     print(f"DB: {settings.db_path}")
     print(f"TLS cert: {cert_path}")
     print("Web UI URLs:")
