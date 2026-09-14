@@ -74,6 +74,19 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         if ag_state == desired:
             continue
 
+        # A pass nobody has installed has an inactive card in the PACS
+        # because phase 4 put it that way, not because anyone revoked it.
+        # Pushing that back would suspend the pass the holder is about to
+        # install, and a suspended pass cannot be installed — so the two
+        # phases would deadlock on each other.
+        if desired == "suspended" and ag_state == "created":
+            logger.debug(
+                "  Skip %s/%s — the pass is not installed yet, so its card is "
+                "inactive by design",
+                tracked.pacs_person_id, tracked.pacs_credential_id,
+            )
+            continue
+
         try:
             if desired == "suspended" and ag_state in ("active", "created", ""):
                 logger.info(

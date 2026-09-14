@@ -85,6 +85,28 @@ def is_dead(entry: Any) -> bool:
     return state_of(entry) in _DEAD_STATES
 
 
+# A device holding the credential. Anything else — a pass sitting in
+# "created" since it was issued — means nobody has installed it yet.
+_INSTALLED_STATES = frozenset({"installed", "active"})
+
+
+def is_installed(cards: Any) -> bool:
+    """Is this issue on at least one real device?
+
+    A watch counts as much as a phone: either one means somebody went
+    through the install, which is the thing the PACS card should reflect.
+    Read from `devices`, which only a card fetch carries — a listing
+    answers `devices: []` and would report every pass as uninstalled.
+    """
+    if not isinstance(cards, list | tuple):
+        cards = [cards]
+    for card in cards:
+        for device in getattr(card, "devices", None) or []:
+            if state_of(device) in _INSTALLED_STATES:
+                return True
+    return False
+
+
 def identities_from_card(card: Any) -> list[CredentialIdentity]:
     """Every credential AccessGrid has allocated for one pass.
 

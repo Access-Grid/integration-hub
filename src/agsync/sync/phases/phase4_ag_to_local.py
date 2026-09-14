@@ -22,7 +22,7 @@ from ...ag import AccessGrid
 from ...lib.pacs import CredentialStatus, PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
-from .writeback import push_allocated_identities
+from .writeback import is_installed, push_allocated_identities
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,68 @@ _AG_TO_CRED_STATUS: dict[str, CredentialStatus] = {
 }
 
 
+def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int:
+    """Keep a PACS card inactive until its pass is on a device.
+
+    Only for adapters we write credentials into: elsewhere the card is the
+    customer's own and its Active box is none of our business.
+
+    Deliberately level-triggered, unlike the status loop below. The question
+    is not "did anything change" but "does the card match the pass right
+    now", because the operator can tick Active at any time and the answer
+    has to keep being no until an install happens.
+    """
+    if not getattr(pacs, "supports_credential_writeback", False):
+        return 0
+
+    changed = 0
+    for tracked in tracking.all_tracked():
+        if tracked.status in ("deleted", "deduped", "pending") or not tracked.ag_card_id:
+            continue
+        creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
+        cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
+        if cred is None or not cred.allocate_identity:
+            continue
+
+        cards = snapshot.detailed_cards(
+            ag, tracked.ag_card_id, tracked.pacs_person_id,
+            tracked.pacs_credential_id, tracked.sync_ref,
+        )
+        if not cards:
+            continue
+
+        desired = (
+            CredentialStatus.ACTIVE if is_installed(cards)
+            else CredentialStatus.SUSPENDED
+        )
+        if cred.status == desired:
+            continue
+
+        try:
+            logger.info(
+                "  %s card for %s/%s — the pass is %s",
+                "Activating" if desired is CredentialStatus.ACTIVE else "Deactivating",
+                tracked.pacs_person_id, tracked.pacs_credential_id,
+                "installed" if desired is CredentialStatus.ACTIVE else "not installed yet",
+            )
+            if pacs.update_credential_status(
+                tracked.pacs_person_id, tracked.pacs_credential_id, desired,
+            ):
+                changed += 1
+        except Exception as e:  # noqa: BLE001 — one cardholder must not stop the cycle
+            logger.error(
+                "  Could not set the card state for %s/%s: %s",
+                tracked.pacs_person_id, tracked.pacs_credential_id, e,
+            )
+    if changed:
+        logger.info("Phase 4: %d card(s) brought in line with their pass", changed)
+    return changed
+
+
 def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> int:
     updated = _push_new_credentials(snapshot, pacs, ag)
+    if ag is not None:
+        updated += _hold_uninstalled_inactive(snapshot, pacs, ag)
 
     if not pacs.supports_status_writeback:
         logger.debug("Phase 4: PACS does not support status writeback — skipping")
