@@ -25,9 +25,11 @@ What makes Millennium different from every other adapter here:
       Seos — AccessGrid mints the credential. The trigger card marks *who*
         should get a pass; AccessGrid allocates the facility code and card
         number, and we write them back into the cardholder's empty slots.
-        A cardholder is only eligible with **two** free slots, because a
-        person who installs on both a phone and a watch needs two — running
-        out halfway would leave the second device unprovisionable.
+        A cardholder needs two slots we can write, because a person who
+        installs on both a phone and a watch needs one each. One of them is
+        the marker's own — it holds a placeholder number that opens nothing,
+        so the first credential overwrites it — leaving one empty slot to
+        find.
 
   * **Every write is a full-form round-trip.** Millennium's save replaces
     the whole cardholder record, so html_form re-posts every field the page
@@ -86,9 +88,11 @@ MODE_SEOS = "seos"
 # credential per cardholder, so there is nothing for a position to identify.
 SEOS_CREDENTIAL_ID = "seos"
 
-# Seos needs this many free slots before we will provision. Millennium gives
-# each cardholder three; a phone and a watch install consume one each.
-REQUIRED_EMPTY_SLOTS = 2
+# Seos needs this many *empty* slots before we will provision. A phone and a
+# watch consume one each, and the marker's own slot is the other — we
+# overwrite it, since it holds a placeholder rather than a working card. Of
+# Millennium's three slots per cardholder that leaves one to find free.
+REQUIRED_EMPTY_SLOTS = 1
 
 # Cardholders whose detail page we re-read per cycle beyond the enrolled
 # ones. Enrolled cardholders are always refreshed; this budget is what
@@ -502,12 +506,21 @@ class MillenniumUltraAdapter:
         form = self._client.get_cardholder_form(pid)
         slots = _read_slots(form, self._offset_seconds)
         existing = {(s.facility_code, s.card_number) for s in slots if not s.empty}
-        free = [s.index for s in slots if s.empty]
 
         written = list(SeosLedger.get(pid, credential_id))
         already_written = {
             (str(e.get("facility_code")), str(e.get("card_number"))) for e in written
         }
+
+        # The marker goes first. It is a placeholder the operator created to
+        # ask for a pass — a trigger-format card holding a number that opens
+        # nothing — so leaving it in place would spend one of three slots on
+        # a card that will never be used, and a cardholder needs two real
+        # ones for a phone and a watch.
+        marker = self._marker_slot(slots, already_written)
+        free = [s.index for s in slots if s.empty]
+        if marker is not None:
+            free.insert(0, marker.index)
         pending = []
         for identity in identities:
             key = (str(identity.site_code), str(identity.card_number))
@@ -537,6 +550,9 @@ class MillenniumUltraAdapter:
 
         for identity in pending:
             slot = free.pop(0)
+            # Overwriting keeps the existing CardID so Millennium updates
+            # that card rather than creating a second one in the same slot.
+            replacing = marker.card_id if marker and slot == marker.index else ""
             if not self._client.card_number_is_free(
                 slot, str(identity.card_number), str(identity.site_code),
                 self.trigger_card_format,
@@ -546,7 +562,7 @@ class MillenniumUltraAdapter:
                     identity.site_code, identity.card_number, pid,
                 )
                 return False
-            self._fill_slot(form, slot, identity)
+            self._fill_slot(form, slot, identity, card_id=replacing)
             written.append({
                 "slot": slot,
                 "card_number": str(identity.card_number),
@@ -614,18 +630,12 @@ class MillenniumUltraAdapter:
             if not s.empty
         }
         token = form.value("__RequestVerificationToken")
-        # The operator's own marker: the trigger-format card we did not write.
         # Read from the cardholder rather than the credential id, which no
         # longer carries a position.
-        trigger_slot = next(
-            (
-                s.index
-                for s in _read_slots(form, self._offset_seconds)
-                if self._is_trigger(s)
-                and (str(s.facility_code), str(s.card_number)) not in recorded
-            ),
-            None,
+        marker = self._marker_slot(
+            _read_slots(form, self._offset_seconds), set(recorded)
         )
+        trigger_slot = marker.index if marker else None
 
         retired = 0
         for entry in wanted:
@@ -692,6 +702,25 @@ class MillenniumUltraAdapter:
             bool(self.trigger_card_format)
             and slot.card_format == self.trigger_card_format
             and not slot.empty
+        )
+
+    def _marker_slot(
+        self, slots: list[Slot], already_written: set[tuple[str, str]]
+    ) -> Slot | None:
+        """The placeholder an operator created to ask for a pass.
+
+        A trigger-format card that is not one of ours. Cards we write take
+        the trigger format too, so the ledger is what tells the two apart —
+        without it we would overwrite a credential we had just issued.
+        """
+        return next(
+            (
+                s
+                for s in slots
+                if self._is_trigger(s)
+                and (str(s.facility_code), str(s.card_number)) not in already_written
+            ),
+            None,
         )
 
     def _desfire_credential(self, pid: str, slot: Slot) -> Credential:
@@ -810,14 +839,20 @@ class MillenniumUltraAdapter:
         return [int(match.group(1))] if match else []
 
     def _fill_slot(
-        self, form: CardholderForm, slot: int, identity: CredentialIdentity
+        self,
+        form: CardholderForm,
+        slot: int,
+        identity: CredentialIdentity,
+        card_id: str = "",
     ) -> None:
-        """Turn an empty slot into a live card.
+        """Turn a slot into a live card.
 
         Leaving Card_N_CardID empty is what tells Millennium to create a card
-        rather than update one; it assigns the id itself on save.
+        rather than update one; it assigns the id itself on save. Pass the
+        existing id to overwrite a card in place instead — replacing the
+        marker mutates the one card rather than leaving the old one adrift.
         """
-        form.set_value(f"Card_{slot}_CardID", "")
+        form.set_value(f"Card_{slot}_CardID", card_id)
         form.set_value(f"Card_{slot}_EncodedCardNumber", str(identity.card_number))
         form.set_value(f"Card_{slot}_FaciltyCode", str(identity.site_code))
         form.set_value(f"Card_{slot}_CardFormat", self.trigger_card_format)

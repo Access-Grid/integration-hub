@@ -226,17 +226,29 @@ def test_seos_credential_asks_accessgrid_to_allocate(
     assert creds[0].site_code == ""
 
 
-def test_seos_needs_two_free_slots(
+def test_seos_needs_a_slot_besides_the_marker(
     make_millennium_adapter, millennium_page, set_slot, seos_ledger
 ):
-    # Only one slot free: a holder who installs on a phone and a watch would
-    # run out, so we decline rather than provision half a person.
-    page = _seos_page(millennium_page, set_slot, empty_slots=(3,))
+    """A phone and a watch need one slot each.
+
+    The marker's own is one of them — we overwrite it — so one more has to
+    be free. With none, a holder who installs on both would run out, and we
+    decline rather than provision half a person.
+    """
+    page = _seos_page(millennium_page, set_slot, empty_slots=())
     adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
     assert _creds(adapter) == []
 
 
-def test_seos_writes_allocated_cards_into_empty_slots(
+def test_one_free_slot_beside_the_marker_is_enough(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    page = _seos_page(millennium_page, set_slot, empty_slots=(3,))
+    adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
+    assert len(_creds(adapter)) == 1
+
+
+def test_seos_overwrites_the_marker_then_fills_an_empty_slot(
     make_millennium_adapter, millennium_page, set_slot, seos_ledger
 ):
     page = _seos_page(millennium_page, set_slot)
@@ -250,18 +262,21 @@ def test_seos_writes_allocated_cards_into_empty_slots(
 
     _, form = client.saved[0]
     _, body = form.to_multipart()
-    # A new card is created by leaving CardID empty and filling the rest.
+    # The marker's slot is reused, keeping its CardID so Millennium updates
+    # that card rather than creating a second one beside it.
+    assert b'name="Card_1_CardID"\r\n\r\n7919\r\n' in body
+    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5001\r\n' in body
+    assert b'name="Card_1_FaciltyCode"\r\n\r\n66\r\n' in body
+    assert b'name="Card_1_Active"\r\n\r\ntrue\r\n' in body
+    # The placeholder number it replaced is gone.
+    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n1234\r\n' not in body
+    # The second credential creates a card: CardID empty, rest filled.
     assert b'name="Card_2_CardID"\r\n\r\n\r\n' in body
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5001\r\n' in body
-    assert b'name="Card_3_EncodedCardNumber"\r\n\r\n5002\r\n' in body
-    assert b'name="Card_2_FaciltyCode"\r\n\r\n66\r\n' in body
-    assert b'name="Card_2_Active"\r\n\r\ntrue\r\n' in body
+    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5002\r\n' in body
     # Written with the trigger format, so the next cycle recognises them.
     written = CardholderForm.parse(page)
     assert form.value("Card_2_CardFormat") == TRIGGER
     assert written.value("Card_2_CardFormat") != TRIGGER  # unchanged in the source
-    # The existing card is untouched.
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n1234\r\n' in body
 
 
 def test_seos_write_records_the_slots_it_used(
@@ -273,7 +288,7 @@ def test_seos_write_records_the_slots_it_used(
         "11587", "seos", [CredentialIdentity("66", "5001")],
     )
     assert SeosLedger.get("11587", "seos") == [
-        {"slot": 2, "card_number": "5001", "facility_code": "66"},
+        {"slot": 1, "card_number": "5001", "facility_code": "66"},
     ]
 
 
@@ -313,7 +328,7 @@ def test_seos_refuses_a_card_number_already_in_use(
 def test_seos_writes_nothing_when_slots_run_short(
     make_millennium_adapter, millennium_page, set_slot, seos_ledger
 ):
-    page = _seos_page(millennium_page, set_slot, empty_slots=(3,))
+    page = _seos_page(millennium_page, set_slot, empty_slots=())
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
     assert adapter.write_back_credentials(
@@ -490,7 +505,7 @@ def test_a_genuinely_new_device_is_still_written_alongside_a_removed_one(
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is True
     _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5002\r\n' in body   # the new one
+    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5002\r\n' in body   # the new one
     assert b"5001" not in body                                          # not the deleted one
 
 
@@ -517,3 +532,60 @@ def test_a_long_sweep_reports_progress(
     progress = [m for m in (r.getMessage() for r in caplog.records) if "read" in m and "of" in m]
     assert progress, "a long sweep must say something while it runs"
     assert "of 5 cardholder pages" in progress[0]
+
+
+def test_the_marker_is_told_apart_from_our_own_cards(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """The ledger is the only thing that distinguishes them.
+
+    Cards we write carry the trigger format, so `_is_trigger` is true of
+    ours too. Without the ledger, a second credential would overwrite the
+    first one we had just issued instead of the operator's placeholder.
+    """
+    page = _seos_page(millennium_page, set_slot)
+    page = set_slot(
+        page, 2, card_id="7930", card_number="5001", facility_code="66",
+        card_format=TRIGGER, active=True,
+    )
+    SeosLedger.record(
+        "11587", "seos",
+        [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
+    )
+    client = _client({"11587": page})
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+
+    assert adapter.write_back_credentials(
+        "11587", "seos",
+        [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
+    ) is True
+    _, body = client.saved[0][1].to_multipart()
+    # Slot 1 is the marker, so 5002 lands there.
+    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5002\r\n' in body
+    # Slot 2 holds a card we issued, and keeps it.
+    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5001\r\n' in body
+
+
+def test_a_cardholder_with_no_marker_left_writes_into_empty_slots(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Every trigger-format card is ours, so there is nothing to overwrite."""
+    page = _seos_page(millennium_page, set_slot)
+    page = set_slot(
+        page, 1, card_id="7919", card_number="5001", facility_code="66",
+        card_format=TRIGGER, active=True,
+    )
+    SeosLedger.record(
+        "11587", "seos",
+        [{"slot": 1, "card_number": "5001", "facility_code": "66"}],
+    )
+    client = _client({"11587": page})
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+
+    assert adapter.write_back_credentials(
+        "11587", "seos",
+        [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
+    ) is True
+    _, body = client.saved[0][1].to_multipart()
+    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5002\r\n' in body
+    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5001\r\n' in body
