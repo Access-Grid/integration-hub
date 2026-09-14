@@ -68,7 +68,7 @@ def _snapshot(cred: Credential) -> Snapshot:
 
 def _allocating_cred() -> Credential:
     return Credential(
-        id="seos-slot1",
+        id="seos",
         person_id="p1",
         card_number="",
         site_code="",
@@ -98,7 +98,7 @@ def test_allocated_credentials_carry_no_stale_identity_metadata(stub_tracking):
     phase1_provision.run(_snapshot(_allocating_cred()), ag, "tpl", site_code="999")
 
     metadata = ag.access_cards.calls[0]["metadata"]
-    assert metadata["pacs_credential_id"] == "seos-slot1"
+    assert metadata["pacs_credential_id"] == "seos"
     assert "site_code" not in metadata
     assert "card_number" not in metadata
 
@@ -124,7 +124,7 @@ def test_allocated_identity_is_written_straight_back(stub_tracking):
 
     assert len(pacs.writes) == 1
     person_id, credential_id, identities = pacs.writes[0]
-    assert (person_id, credential_id) == ("p1", "seos-slot1")
+    assert (person_id, credential_id) == ("p1", "seos")
     assert [(i.site_code, i.card_number) for i in identities] == [("66", "5001")]
 
 

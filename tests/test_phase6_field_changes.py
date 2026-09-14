@@ -48,7 +48,7 @@ def recorded(monkeypatch):
 
 def _tracked(**overrides):
     row = dict(
-        pacs_person_id="11587", pacs_credential_id="seos-slot1",
+        pacs_person_id="11587", pacs_credential_id="seos",
         ag_card_id="I_UgcwkCz7nO01s", full_name="Accessg Grid", employee_id="11587",
         status="active", last_synced_email="accessg.grid.11587@old.test",
         last_synced_phone="", last_synced_full_name="Accessg Grid",

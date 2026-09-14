@@ -23,11 +23,11 @@ def adapter(make_millennium_adapter, millennium_page):
 
 
 def test_written_card_numbers_are_reported(adapter, seos_ledger):
-    SeosLedger.record("11587", "seos-slot1", [
+    SeosLedger.record("11587", "seos", [
         {"slot": 2, "card_number": "1216", "facility_code": "2"},
         {"slot": 3, "card_number": "1217", "facility_code": "2"},
     ])
-    assert adapter.written_credentials() == {("11587", "seos-slot1"): ["1216", "1217"]}
+    assert adapter.written_credentials() == {("11587", "seos"): ["1216", "1217"]}
 
 
 def test_nothing_written_reports_nothing(adapter, seos_ledger):
@@ -35,13 +35,13 @@ def test_nothing_written_reports_nothing(adapter, seos_ledger):
 
 
 def test_several_cardholders_are_kept_apart(adapter, seos_ledger):
-    SeosLedger.record("11587", "seos-slot1",
+    SeosLedger.record("11587", "seos",
                       [{"slot": 2, "card_number": "1216", "facility_code": "2"}])
-    SeosLedger.record("8824", "seos-slot1",
+    SeosLedger.record("8824", "seos",
                       [{"slot": 3, "card_number": "5001", "facility_code": "66"}])
     written = adapter.written_credentials()
-    assert written[("11587", "seos-slot1")] == ["1216"]
-    assert written[("8824", "seos-slot1")] == ["5001"]
+    assert written[("11587", "seos")] == ["1216"]
+    assert written[("8824", "seos")] == ["5001"]
 
 
 def test_a_read_only_adapter_reports_nothing(make_millennium_adapter, millennium_page):
@@ -71,12 +71,12 @@ def test_the_page_renders_both_states(millennium_page, seos_ledger, monkeypatch)
         credentials=[
             SimpleNamespace(full_name="Accessg Grid", employee_id="11587",
                             status="active", ag_card_id="I_Ugc",
-                            pacs_person_id="11587", pacs_credential_id="seos-slot1"),
+                            pacs_person_id="11587", pacs_credential_id="seos"),
             SimpleNamespace(full_name="Other Person", employee_id="8824",
                             status="active", ag_card_id="xyz",
-                            pacs_person_id="8824", pacs_credential_id="seos-slot1"),
+                            pacs_person_id="8824", pacs_credential_id="seos"),
         ],
-        written={("11587", "seos-slot1"): ["1216", "1217"]},
+        written={("11587", "seos"): ["1216", "1217"]},
         pacs_name="Millennium Ultra (MGI)",
         configured=True, admin_exists=True, locale="en", available_locales=["en"],
     )

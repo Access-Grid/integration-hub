@@ -79,7 +79,7 @@ class _Pacs:
 
     def __init__(self, written=None):
         if written is None:
-            written = {("11587", "seos-slot1"): ["1216", "1217"]}
+            written = {("11587", "seos"): ["1216", "1217"]}
         self._written = written
         self.retired: list = []
 
@@ -120,7 +120,7 @@ class _Ag:
 @pytest.fixture
 def tracked(monkeypatch):
     row = SimpleNamespace(
-        pacs_person_id="11587", pacs_credential_id="seos-slot1",
+        pacs_person_id="11587", pacs_credential_id="seos",
         ag_card_id="I_UgcwkCz7nO01s", status="active", sync_ref="ref-1",
     )
     monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [row])
@@ -138,7 +138,7 @@ def test_a_deleted_half_is_handed_to_the_adapter(tracked):
     pacs = _Pacs()
     snap = _snapshot(_pair())
     assert phase3_deletions._retire_deleted_credentials(snap, _Ag(), pacs) == 1
-    assert pacs.retired == [("11587", "seos-slot1", [ANDROID])]
+    assert pacs.retired == [("11587", "seos", [ANDROID])]
 
 
 def test_a_re_issue_leaves_two_cards_and_the_deleted_one_is_found(tracked):
@@ -150,7 +150,7 @@ def test_a_re_issue_leaves_two_cards_and_the_deleted_one_is_found(tracked):
     pacs = _Pacs()
     snap = _snapshot(_card("1238", "active"), _card("1237", "deleted"))
     assert phase3_deletions._retire_deleted_credentials(snap, _Ag(), pacs) == 1
-    assert pacs.retired == [("11587", "seos-slot1", [("2", "1237")])]
+    assert pacs.retired == [("11587", "seos", [("2", "1237")])]
 
 
 def test_an_unresolvable_pass_retires_nothing(tracked):

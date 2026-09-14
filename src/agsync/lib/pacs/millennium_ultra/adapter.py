@@ -79,6 +79,13 @@ logger = logging.getLogger(__name__)
 MODE_DESFIRE = "desfire"
 MODE_SEOS = "seos"
 
+# The credential id for a cardholder's Seos pass. Deliberately carries no
+# slot number: cards we write take the trigger format, so one landing below
+# the operator's marker used to move the id — and a moved id reads as a new
+# credential, which phase 1 provisions a second pass for. There is one Seos
+# credential per cardholder, so there is nothing for a position to identify.
+SEOS_CREDENTIAL_ID = "seos"
+
 # Seos needs this many free slots before we will provision. Millennium gives
 # each cardholder three; a phone and a watch install consume one each.
 REQUIRED_EMPTY_SLOTS = 2
@@ -607,7 +614,18 @@ class MillenniumUltraAdapter:
             if not s.empty
         }
         token = form.value("__RequestVerificationToken")
-        trigger_slot = _trigger_slot_index(credential_id)
+        # The operator's own marker: the trigger-format card we did not write.
+        # Read from the cardholder rather than the credential id, which no
+        # longer carries a position.
+        trigger_slot = next(
+            (
+                s.index
+                for s in _read_slots(form, self._offset_seconds)
+                if self._is_trigger(s)
+                and (str(s.facility_code), str(s.card_number)) not in recorded
+            ),
+            None,
+        )
 
         retired = 0
         for entry in wanted:
@@ -696,7 +714,7 @@ class MillenniumUltraAdapter:
     def _seos_credentials(
         self, pid: str, slots: list[Slot], trigger: Slot
     ) -> list[Credential]:
-        credential_id = f"seos-slot{trigger.index}"
+        credential_id = SEOS_CREDENTIAL_ID
         ledger = SeosLedger.get(pid, credential_id)
         empty = [s for s in slots if s.empty]
 
@@ -774,7 +792,7 @@ class MillenniumUltraAdapter:
         card identity against the current cardholder when we have it, so a
         suspend never lands on whatever happens to sit in the old position.
         """
-        if credential_id.startswith("seos-"):
+        if credential_id == SEOS_CREDENTIAL_ID:
             ledger = SeosLedger.get(pid, credential_id)
             if slots is None:
                 return [int(e["slot"]) for e in ledger]
@@ -875,13 +893,6 @@ class MillenniumUltraAdapter:
         }
         self._profiles[pid] = profile
         return profile
-
-
-def _trigger_slot_index(credential_id: str) -> int | None:
-    """The slot a Seos credential id was minted from ("seos-slot1" -> 1)."""
-    prefix, cid = "seos-slot", str(credential_id)
-    suffix = cid[len(prefix):] if cid.startswith(prefix) else ""
-    return int(suffix) if suffix.isdigit() else None
 
 
 def _read_slots(form: CardholderForm, offset_seconds: int = 0) -> list[Slot]:

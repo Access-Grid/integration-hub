@@ -139,7 +139,7 @@ def test_an_unreadable_cardholder_is_not_a_deletion(monkeypatch):
     # No credentials_by_person entry: the page could not be read this cycle.
 
     row = SimpleNamespace(
-        pacs_person_id="11587", pacs_credential_id="seos-slot1",
+        pacs_person_id="11587", pacs_credential_id="seos",
         ag_card_id="agcard-1", status="active",
     )
     monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [row])

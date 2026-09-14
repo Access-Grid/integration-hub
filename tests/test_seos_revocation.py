@@ -47,7 +47,7 @@ def _status(adapter):
 
 
 def _ledger(*numbers, slots=(2, 3)):
-    SeosLedger.record("11587", "seos-slot1", [
+    SeosLedger.record("11587", "seos", [
         {"slot": slot, "card_number": n, "facility_code": "66"}
         for slot, n in zip(slots, numbers, strict=False)
     ])
@@ -144,7 +144,7 @@ def test_suspending_follows_the_card_not_the_old_slot_number(
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
 
     assert adapter.update_credential_status(
-        "11587", "seos-slot1", CredentialStatus.SUSPENDED,
+        "11587", "seos", CredentialStatus.SUSPENDED,
     )
     _, body = client.saved[0][1].to_multipart()
     assert b'name="Card_3_Active"' not in body     # the card's current slot
@@ -184,9 +184,9 @@ def test_retiring_a_card_deletes_it_and_forgets_it(
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
 
-    assert adapter.retire_credentials("11587", "seos-slot1", [_identity("5002")]) == 1
+    assert adapter.retire_credentials("11587", "seos", [_identity("5002")]) == 1
     assert client.deleted == [("11587", "7930")]
-    assert [e["card_number"] for e in SeosLedger.get("11587", "seos-slot1")] == ["5001"]
+    assert [e["card_number"] for e in SeosLedger.get("11587", "seos")] == ["5001"]
 
 
 def test_the_surviving_pass_stays_active_after_a_retirement(
@@ -201,7 +201,7 @@ def test_the_surviving_pass_stays_active_after_a_retirement(
     _ledger("5001", "5002")
     page = _page(millennium_page, set_slot, slot2=("5001", True), slot3=("5002", True))
     adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
-    adapter.retire_credentials("11587", "seos-slot1", [_identity("5002")])
+    adapter.retire_credentials("11587", "seos", [_identity("5002")])
 
     # Slot 3 is now empty, as Millennium would serve it after the delete.
     after = _page(millennium_page, set_slot, slot2=("5001", True))
@@ -219,8 +219,8 @@ def test_a_refused_delete_keeps_the_ledger_entry(
     client.delete_result = False
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
 
-    assert adapter.retire_credentials("11587", "seos-slot1", [_identity("5002")]) == 0
-    assert len(SeosLedger.get("11587", "seos-slot1")) == 2
+    assert adapter.retire_credentials("11587", "seos", [_identity("5002")]) == 0
+    assert len(SeosLedger.get("11587", "seos")) == 2
 
 
 def test_a_card_we_never_wrote_is_never_deleted(
@@ -232,7 +232,7 @@ def test_a_card_we_never_wrote_is_never_deleted(
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
 
-    assert adapter.retire_credentials("11587", "seos-slot1", [_identity("9999")]) == 0
+    assert adapter.retire_credentials("11587", "seos", [_identity("9999")]) == 0
     assert client.deleted == []
 
 
@@ -245,5 +245,5 @@ def test_desfire_never_retires_anything(
     adapter = make_millennium_adapter(client)  # DESFire: the cards are theirs
 
     assert adapter.supports_credential_retirement is False
-    assert adapter.retire_credentials("11587", "seos-slot1", [_identity("5001")]) == 0
+    assert adapter.retire_credentials("11587", "seos", [_identity("5001")]) == 0
     assert client.deleted == []

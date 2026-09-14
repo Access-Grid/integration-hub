@@ -117,7 +117,7 @@ def test_a_pair_reaches_the_pacs():
             return True
 
     pacs = Receiving()
-    assert push_allocated_identities(pacs, "11587", "seos-slot1", _pair()) is True
+    assert push_allocated_identities(pacs, "11587", "seos", _pair()) is True
     assert [(i.site_code, i.card_number) for i in pacs.written] == [
         ("2", "1216"), ("2", "1217"),
     ]
@@ -135,9 +135,9 @@ def test_a_paired_pass_is_found_by_its_tag_not_its_id():
     """
     snap = Snapshot()
     half = SimpleNamespace(id="ewXEpYZyG2Fimj4", state="created")
-    snap.ag_cards_by_token[("11587", "seos-slot1")] = [half]
+    snap.ag_cards_by_token[("11587", "seos")] = [half]
 
-    assert snap.resolve_ag_card("I_UgcwkCz7nO01s", "11587", "seos-slot1") is half
+    assert snap.resolve_ag_card("I_UgcwkCz7nO01s", "11587", "seos") is half
 
 
 def test_the_id_is_preferred_when_it_is_present():
@@ -168,17 +168,17 @@ def test_a_reference_finds_both_halves_of_a_pair():
     snap = Snapshot()
     first = SimpleNamespace(
         id="ewXEpYZyG2Fimj4", site_code="2", card_number="1216",
-        metadata={"sync_ref": "abc123", "pacs_credential_id": "seos-slot1"},
+        metadata={"sync_ref": "abc123", "pacs_credential_id": "seos"},
         employee_id="11587", state="created", expiration_date=EXPIRES,
     )
     second = SimpleNamespace(
         id="h_6ue16ECOc8N2M", site_code="2", card_number="1217",
-        metadata={"sync_ref": "abc123", "pacs_credential_id": "seos-slot1"},
+        metadata={"sync_ref": "abc123", "pacs_credential_id": "seos"},
         employee_id="11587", state="created", expiration_date=EXPIRES,
     )
     snap.ag_cards_by_sync_ref["abc123"] = [first, second]
 
-    found = snap.resolve_ag_cards("I_UgcwkCz7nO01s", "11587", "seos-slot1", "abc123")
+    found = snap.resolve_ag_cards("I_UgcwkCz7nO01s", "11587", "seos", "abc123")
     assert found == [first, second]
     assert [(i.site_code, i.card_number) for i in identities_from_cards(found)] == [
         ("2", "1216"), ("2", "1217"),
@@ -194,19 +194,19 @@ def test_the_reference_beats_the_ambiguous_token():
     snap = Snapshot()
     stale = SimpleNamespace(id="old", state="suspended")
     current = SimpleNamespace(id="new", state="created")
-    snap.ag_cards_by_token[("11587", "seos-slot1")] = [stale]
+    snap.ag_cards_by_token[("11587", "seos")] = [stale]
     snap.ag_cards_by_sync_ref["abc123"] = [current]
 
-    assert snap.resolve_ag_card("missing", "11587", "seos-slot1", "abc123") is current
+    assert snap.resolve_ag_card("missing", "11587", "seos", "abc123") is current
 
 
 def test_cards_issued_before_references_still_resolve():
     # Upgrading must not orphan passes already out in the world.
     snap = Snapshot()
     legacy = SimpleNamespace(id="legacy", state="created")
-    snap.ag_cards_by_token[("11587", "seos-slot1")] = [legacy]
+    snap.ag_cards_by_token[("11587", "seos")] = [legacy]
 
-    assert snap.resolve_ag_card(None, "11587", "seos-slot1", "") is legacy
+    assert snap.resolve_ag_card(None, "11587", "seos", "") is legacy
 
 
 def test_an_unknown_reference_does_not_invent_a_card():
@@ -240,9 +240,9 @@ def test_a_legacy_pair_resolves_to_both_halves_without_a_reference():
         id="h_6ue16ECOc8N2M", site_code="2", card_number="1217",
         expiration_date=EXPIRES, details=[],
     )
-    snap.ag_cards_by_token[("11587", "seos-slot1")] = [apple, android]
+    snap.ag_cards_by_token[("11587", "seos")] = [apple, android]
 
-    found = snap.resolve_ag_cards("I_UgcwkCz7nO01s", "11587", "seos-slot1", "")
+    found = snap.resolve_ag_cards("I_UgcwkCz7nO01s", "11587", "seos", "")
     assert [(i.site_code, i.card_number) for i in identities_from_cards(found)] == [
         ("2", "1216"), ("2", "1217"),
     ]

@@ -246,7 +246,7 @@ def test_seos_writes_allocated_cards_into_empty_slots(
         CredentialIdentity("66", "5001", datetime(2026, 8, 18, 4, tzinfo=UTC), None),
         CredentialIdentity("66", "5002", datetime(2026, 8, 18, 4, tzinfo=UTC), None),
     ]
-    assert adapter.write_back_credentials("11587", "seos-slot1", identities) is True
+    assert adapter.write_back_credentials("11587", "seos", identities) is True
 
     _, form = client.saved[0]
     _, body = form.to_multipart()
@@ -270,9 +270,9 @@ def test_seos_write_records_the_slots_it_used(
     page = _seos_page(millennium_page, set_slot)
     adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
     adapter.write_back_credentials(
-        "11587", "seos-slot1", [CredentialIdentity("66", "5001")],
+        "11587", "seos", [CredentialIdentity("66", "5001")],
     )
-    assert SeosLedger.get("11587", "seos-slot1") == [
+    assert SeosLedger.get("11587", "seos") == [
         {"slot": 2, "card_number": "5001", "facility_code": "66"},
     ]
 
@@ -292,7 +292,7 @@ def test_seos_write_is_idempotent(
     # Returns False because nothing was written — the invariant that matters
     # is that the cardholder was not touched.
     assert adapter.write_back_credentials(
-        "11587", "seos-slot1", [CredentialIdentity("66", "5001")],
+        "11587", "seos", [CredentialIdentity("66", "5001")],
     ) is False
     assert client.saved == []
 
@@ -305,7 +305,7 @@ def test_seos_refuses_a_card_number_already_in_use(
     client.number_free = False
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
     assert adapter.write_back_credentials(
-        "11587", "seos-slot1", [CredentialIdentity("66", "5001")],
+        "11587", "seos", [CredentialIdentity("66", "5001")],
     ) is False
     assert client.saved == []
 
@@ -317,7 +317,7 @@ def test_seos_writes_nothing_when_slots_run_short(
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
     assert adapter.write_back_credentials(
-        "11587", "seos-slot1",
+        "11587", "seos",
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is False
     # All or nothing: a partial write would strand the second device.
@@ -333,13 +333,13 @@ def test_seos_suspend_targets_the_written_slots(
         card_format=TRIGGER, active=True,
     )
     SeosLedger.record(
-        "11587", "seos-slot1",
+        "11587", "seos",
         [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
     )
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
     assert adapter.update_credential_status(
-        "11587", "seos-slot1", CredentialStatus.SUSPENDED,
+        "11587", "seos", CredentialStatus.SUSPENDED,
     )
     _, body = client.saved[0][1].to_multipart()
     assert b'name="Card_2_Active"' not in body
@@ -419,13 +419,13 @@ def test_status_write_is_refused_for_a_slot_with_no_card(
     # an empty slot is not a thing, so we decline rather than post junk.
     page = _seos_page(millennium_page, set_slot)
     SeosLedger.record(
-        "11587", "seos-slot1",
+        "11587", "seos",
         [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
     )
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
     assert adapter.update_credential_status(
-        "11587", "seos-slot1", CredentialStatus.ACTIVE,
+        "11587", "seos", CredentialStatus.ACTIVE,
     ) is False
     assert client.saved == []
 
@@ -433,13 +433,13 @@ def test_status_write_is_refused_for_a_slot_with_no_card(
 def test_ledger_keeps_one_entry_per_physical_card(seos_ledger):
     # A rewritten card must not accumulate a second ledger row.
     SeosLedger.record(
-        "11587", "seos-slot1",
+        "11587", "seos",
         [
             {"slot": 2, "card_number": "5001", "facility_code": "66"},
             {"slot": 3, "card_number": "5001", "facility_code": "66"},
         ],
     )
-    assert SeosLedger.get("11587", "seos-slot1") == [
+    assert SeosLedger.get("11587", "seos") == [
         {"slot": 3, "card_number": "5001", "facility_code": "66"},
     ]
 
@@ -456,18 +456,18 @@ def test_a_credential_removed_in_the_pacs_is_never_recreated(
     """
     page = _seos_page(millennium_page, set_slot)          # slots 2 and 3 empty
     SeosLedger.record(
-        "11587", "seos-slot1",
+        "11587", "seos",
         [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
     )
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
 
     assert adapter.write_back_credentials(
-        "11587", "seos-slot1", [CredentialIdentity("66", "5001")],
+        "11587", "seos", [CredentialIdentity("66", "5001")],
     ) is False
     assert client.saved == []
     # And it stays remembered, so a later cycle does not rediscover it.
-    assert SeosLedger.get("11587", "seos-slot1") == [
+    assert SeosLedger.get("11587", "seos") == [
         {"slot": 2, "card_number": "5001", "facility_code": "66"},
     ]
 
@@ -479,14 +479,14 @@ def test_a_genuinely_new_device_is_still_written_alongside_a_removed_one(
     # installs later, which is the whole point of re-offering.
     page = _seos_page(millennium_page, set_slot)
     SeosLedger.record(
-        "11587", "seos-slot1",
+        "11587", "seos",
         [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
     )
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
 
     assert adapter.write_back_credentials(
-        "11587", "seos-slot1",
+        "11587", "seos",
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is True
     _, body = client.saved[0][1].to_multipart()
