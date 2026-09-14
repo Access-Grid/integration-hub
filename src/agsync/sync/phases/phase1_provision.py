@@ -92,6 +92,19 @@ def run(
                     tracking.update_last_known_ag_state(pid, cred.id, ag_state)
                 continue
 
+            if existing and existing.sync_error:
+                # A provision that failed belongs to phase 5, which counts
+                # the attempts and gives up after MAX_RETRIES. Re-attempting
+                # here recognises no such limit: the row has no card id, so
+                # this phase reads it as new and tries again every cycle,
+                # for the life of the process. One install spent a day
+                # asking Origo to create a user that already existed.
+                logger.debug(
+                    "  %s (%s): last provision failed — leaving it to phase 5",
+                    pid, person.full_name,
+                )
+                continue
+
             if not person.full_name:
                 logger.warning("  %s: no name — skipping", pid)
                 skipped += 1
