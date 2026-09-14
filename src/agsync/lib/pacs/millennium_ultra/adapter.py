@@ -411,8 +411,15 @@ class MillenniumUltraAdapter:
 
         Millennium has no other switch: an unchecked Card_N_Active is an
         inactive card. The card keeps its number, dates and access levels.
+
+        A credential still awaiting its install unticks the same box — the
+        two are one state here, however different their reasons.
         """
-        if status not in (CredentialStatus.ACTIVE, CredentialStatus.SUSPENDED):
+        if status not in (
+            CredentialStatus.ACTIVE,
+            CredentialStatus.SUSPENDED,
+            CredentialStatus.AWAITING_INSTALL,
+        ):
             return False
         want_active = status == CredentialStatus.ACTIVE
         pid = str(person_id)

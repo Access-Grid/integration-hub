@@ -45,6 +45,11 @@ class PacsAuthExpired(RuntimeError):
 class CredentialStatus(str, Enum):
     ACTIVE = "active"
     SUSPENDED = "suspended"
+    # Issued, but on nobody's phone yet. Distinct from SUSPENDED because
+    # nobody revoked anything: the credential is simply not usable, and
+    # saying "suspended" in a log reads as an accusation that never happened.
+    # Only meaningful where we mint the credential ourselves.
+    AWAITING_INSTALL = "awaiting_install"
     UNKNOWN = "unknown"
 
 

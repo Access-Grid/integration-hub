@@ -65,9 +65,17 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
 
         desired = (
             CredentialStatus.ACTIVE if is_installed(cards)
-            else CredentialStatus.SUSPENDED
+            else CredentialStatus.AWAITING_INSTALL
         )
-        if cred.status == desired:
+        # The adapter reads its own state off the card, where "off" has no
+        # reason attached, so an awaited install and a suspension look the
+        # same coming back.
+        already = (
+            cred.status is CredentialStatus.ACTIVE
+            if desired is CredentialStatus.ACTIVE
+            else cred.status is not CredentialStatus.ACTIVE
+        )
+        if already:
             continue
 
         try:
@@ -127,6 +135,14 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
 
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
+        # A credential we minted has its card driven by the install gate
+        # above — one owner per checkbox. Here the card is the customer's
+        # own, where an issued pass rightly leaves it active.
+        if cred is not None and cred.allocate_identity:
+            tracking.update_last_known_ag_state(
+                tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
+            )
+            continue
         if cred is None or cred.status == desired:
             tracking.update_last_known_ag_state(
                 tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,

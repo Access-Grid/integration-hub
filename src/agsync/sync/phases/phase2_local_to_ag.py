@@ -79,7 +79,15 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         # Pushing that back would suspend the pass the holder is about to
         # install, and a suspended pass cannot be installed — so the two
         # phases would deadlock on each other.
-        if desired == "suspended" and ag_state == "created":
+        #
+        # Only for credentials we minted. Where the card is the customer's
+        # own, an operator switching it off before anyone installed is a
+        # real revocation and has to reach AccessGrid.
+        if (
+            desired == "suspended"
+            and ag_state == "created"
+            and getattr(cred, "allocate_identity", False)
+        ):
             logger.debug(
                 "  Skip %s/%s — the pass is not installed yet, so its card is "
                 "inactive by design",

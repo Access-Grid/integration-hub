@@ -93,9 +93,10 @@ def wired(monkeypatch):
 
 
 def test_an_active_card_is_deactivated_while_the_pass_waits(wired):
+    """And says why: awaiting an install, not suspended by anyone."""
     snap, pacs, ag = wired(_card(state="created"), CredentialStatus.ACTIVE)
     assert phase4._hold_uninstalled_inactive(snap, pacs, ag) == 1
-    assert pacs.calls == [("11618", "seos", CredentialStatus.SUSPENDED)]
+    assert pacs.calls == [("11618", "seos", CredentialStatus.AWAITING_INSTALL)]
 
 
 def test_the_card_goes_live_once_a_device_installs(wired):
@@ -163,3 +164,38 @@ def test_phase2_does_not_push_the_hold_back_to_accessgrid(monkeypatch):
     ))
     assert phase2.run(snap, ag) == 0
     assert suspended == []
+
+
+def test_a_read_only_pacs_still_reports_a_revocation_before_install(monkeypatch):
+    """The guard is only for credentials we minted.
+
+    On a PACS whose cards are the customer's own, switching one off before
+    anyone installed the pass is a real revocation, and it has to reach
+    AccessGrid rather than being mistaken for our own install hold.
+    """
+    from agsync.sync.phases import phase2_local_to_ag as phase2
+
+    row = SimpleNamespace(
+        pacs_person_id="p1", pacs_credential_id="tok-1",
+        ag_card_id="pass-1", status="active", sync_ref="ref-1",
+        last_known_ag_state="created",
+    )
+    monkeypatch.setattr(phase2.tracking, "all_tracked", lambda: [row])
+
+    snap = Snapshot()
+    snap.ag_cards_by_sync_ref["ref-1"] = [_card(state="created")]
+    snap.credentials_by_person["p1"] = [
+        SimpleNamespace(
+            id="tok-1", status=CredentialStatus.SUSPENDED,
+            allocate_identity=False, trigger_active=True,
+        ),
+    ]
+
+    suspended = []
+    ag = SimpleNamespace(access_cards=SimpleNamespace(
+        suspend=lambda card_id: suspended.append(card_id),
+        resume=lambda card_id: None,
+        delete=lambda card_id: None,
+    ))
+    phase2.run(snap, ag)
+    assert suspended == ["pass-1"]
