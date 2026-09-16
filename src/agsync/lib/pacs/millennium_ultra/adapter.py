@@ -414,14 +414,18 @@ class MillenniumUltraAdapter:
             )
 
         candidates: set[str] = set()
-        unmatched = 0
+        carrying = unmatched = 0
+        ambiguous: list[tuple[str, int]] = []
         for person in rows:
             if not person.carries_format(label):
                 continue
+            carrying += 1
             ids = by_name.get(export.name_key(person.first_name, person.last_name))
             if not ids:
                 unmatched += 1
                 continue
+            if len(ids) > 1:
+                ambiguous.append((f"{person.first_name} {person.last_name}", len(ids)))
             candidates.update(ids)
 
         if unmatched:
@@ -433,10 +437,29 @@ class MillenniumUltraAdapter:
                 "roster entry matches their name — they will not be enrolled",
                 unmatched,
             )
-        logger.info(
-            "Millennium: export found %d cardholder(s) carrying the trigger format",
-            len(candidates),
-        )
+        for name, count in ambiguous:
+            # Says why more pages are being read than there are trigger
+            # cards. All of them are read and confirmed; the extras drop out
+            # for holding no trigger card, but the reads are real.
+            logger.info(
+                "Millennium: %s matches %d cardholders by name — reading all of "
+                "them to find which one holds the trigger card",
+                name, count,
+            )
+        # Counted separately because they differ exactly when a name is
+        # ambiguous, and reporting candidates as though they were enrolled
+        # cardholders would overstate how many people are actually involved.
+        if carrying == len(candidates):
+            logger.info(
+                "Millennium: export found %d cardholder(s) carrying the trigger format",
+                carrying,
+            )
+        else:
+            logger.info(
+                "Millennium: export found %d cardholder(s) carrying the trigger "
+                "format, across %d possible roster entries",
+                carrying, len(candidates),
+            )
         return candidates
 
     def _plan_sweep(self, ids: list[str], roster: list[dict] | None = None) -> None:

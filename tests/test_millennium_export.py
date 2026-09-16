@@ -131,18 +131,38 @@ def test_a_failed_export_falls_back_to_sweeping(
 
 
 def test_an_ambiguous_name_shortlists_every_candidate(
-    make_millennium_adapter, millennium_page
+    make_millennium_adapter, millennium_page, caplog
 ):
     """Names are not unique here — one collides five ways on the live
     install — so every candidate is read and confirmed rather than guessed
-    between."""
+    between.
+
+    And it is said out loud: otherwise more pages get read than there are
+    trigger cards, with nothing explaining the difference.
+    """
     csv_text = FIXTURE.read_text()
     roster = _roster() + [{"ID": 9999, "IsActive": True, "Name": "Bunsen, Auston"}]
     client = ExportingClient(csv_text, roster, {"11591": millennium_page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
     adapter.trigger_card_format = "8"
-    list(adapter.list_people())
+    with caplog.at_level("INFO"):
+        list(adapter.list_people())
     assert {"11591", "9999"} <= adapter._sweep
+    assert "Auston Bunsen matches 2 cardholders by name" in caplog.text
+    # Two people carry a trigger card; three roster entries might be them.
+    assert "2 cardholder(s) carrying the trigger format, across 3" in caplog.text
+
+
+def test_an_unambiguous_run_reports_one_number(
+    make_millennium_adapter, millennium_page, caplog
+):
+    """Counting candidates as cardholders would overstate the usual case."""
+    adapter, _ = _adapter(make_millennium_adapter, millennium_page)
+    with caplog.at_level("INFO"):
+        list(adapter.list_people())
+    assert "export found 2 cardholder(s) carrying the trigger format" in caplog.text
+    assert "across" not in caplog.text
+    assert "matches" not in caplog.text
 
 
 def test_a_trigger_card_with_no_roster_match_is_reported(
