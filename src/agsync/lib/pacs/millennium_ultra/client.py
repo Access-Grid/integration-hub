@@ -38,13 +38,20 @@ none of which looks like an error:
   * the JSON endpoints return a valid, empty ``[]`` while the HTML screens
     answer 500
 
-The third is the dangerous one: a well-formed empty roster is
-indistinguishable from a PACS with no cardholders, and reads downstream as
-"every cardholder was deleted". All three are detected and raised as
-MillenniumAuthError so the engine asks for a reconnect instead. An install
-that genuinely has no cardholders would be misreported by the last rule —
-that is the intended trade, because being wrong in that direction prompts a
-human, and being wrong in the other direction silently stops the sync.
+The third is the awkward one: a well-formed empty roster is
+indistinguishable from a PACS with no cardholders. It used to be the
+dangerous one too, reading downstream as "every cardholder was deleted",
+but phase 3 now abandons a cycle whose snapshot has no people at all and
+declines to act on any cardholder whose page failed to load. So a dead
+cookie no longer deletes anything.
+
+What it does instead is stop, quietly, looking exactly like a healthy
+install with nothing to do — which is why all three shapes are still raised
+as MillenniumAuthError, and why the engine asks for a reconnect rather than
+inferring one. An install that genuinely has no cardholders is misreported
+by that rule; the trade is deliberate, because being wrong in this
+direction prompts a human and being wrong in the other direction is
+invisible.
 """
 
 from __future__ import annotations
