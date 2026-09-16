@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from agsync.sync.engine import CycleResult, SyncEngine
+from agsync.sync.engine import MIN_INTERVAL_S, CycleResult, SyncEngine
 
 
 @pytest.fixture
@@ -95,9 +95,10 @@ def test_the_next_run_time_is_in_the_future(engine, monkeypatch):
 
     status = engine.get_status()
     next_run = datetime.fromisoformat(status["next_run_iso"])
-    # 20s cycle x3 = 60s ahead, not "now".
+    # A 20s cycle wants 60s; the five-minute floor wins. Either way the
+    # point of the assertion is that it is scheduled ahead, not at "now".
     assert (next_run - datetime.now(UTC)).total_seconds() > 30
-    assert status["cached_interval_s"] == 60
+    assert status["cached_interval_s"] == MIN_INTERVAL_S
 
 
 def test_waiting_on_a_human_backs_off(engine, monkeypatch):

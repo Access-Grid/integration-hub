@@ -96,3 +96,45 @@ def test_a_changed_template_rebuilds_the_adapter(engine, monkeypatch):
     engine._pacs_adapter(engine._with_derived_mode(object(), _ag_cfg(), _pacs_cfg()))
 
     assert built == ["desfire", "seos"]  # cached in between, rebuilt on change
+
+
+def test_a_fast_cycle_still_waits_five_minutes():
+    """The interval used to be 3x the cycle, floored at 10 seconds.
+
+    That was sensible while cycle time tracked how hard the PACS was
+    working. Reading it through a bulk export made cycles finish in seconds
+    — so the rule rewarded finding a cheap path with syncing every 15
+    seconds, which is more total load on the install, not less.
+    """
+    from agsync.sync.engine import (
+        INTERVAL_MULTIPLIER,
+        MAX_INTERVAL_S,
+        MIN_INTERVAL_S,
+    )
+
+    def interval(cycle_seconds):
+        return max(
+            MIN_INTERVAL_S,
+            min(MAX_INTERVAL_S, cycle_seconds * INTERVAL_MULTIPLIER),
+        )
+
+    assert interval(5) == 300
+    assert interval(60) == 300
+
+
+def test_a_slow_cycle_still_backs_off():
+    """The property the dynamic rule exists for, kept."""
+    from agsync.sync.engine import (
+        INTERVAL_MULTIPLIER,
+        MAX_INTERVAL_S,
+        MIN_INTERVAL_S,
+    )
+
+    def interval(cycle_seconds):
+        return max(
+            MIN_INTERVAL_S,
+            min(MAX_INTERVAL_S, cycle_seconds * INTERVAL_MULTIPLIER),
+        )
+
+    assert interval(150) > 300
+    assert interval(400) == MAX_INTERVAL_S

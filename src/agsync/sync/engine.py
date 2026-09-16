@@ -7,7 +7,8 @@ wake.
 
 Lifecycle:
   - thread is created in start() and stays alive until stop()
-  - dynamic interval: 3 × snapshot build time, clamped [10s, 600s]
+  - interval: 5 minutes, stretching to 3 × cycle time when a cycle runs
+    long, capped at 10 minutes
   - circuit breaker: 10 consecutive failures pause the engine
   - status payload exposed via get_status() for the web UI
 
@@ -46,7 +47,12 @@ from .snapshot import build_snapshot
 
 logger = logging.getLogger(__name__)
 
-MIN_INTERVAL_S = 10
+# The floor is the interval in practice: a cycle that reads the PACS through
+# a bulk export finishes in seconds, and 3x of that would sync every 15
+# seconds — cheaper per cycle but far more often, which is more total load on
+# the install, not less. The dynamic rule is kept above this floor so a slow
+# PACS is still read less often, which is the property it was for.
+MIN_INTERVAL_S = 300
 MAX_INTERVAL_S = 600
 INTERVAL_MULTIPLIER = 3
 ERROR_BACKOFF_S = 30
