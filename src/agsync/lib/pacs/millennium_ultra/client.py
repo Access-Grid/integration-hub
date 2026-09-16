@@ -11,15 +11,23 @@ Endpoints, all verified against a live install (hosted8.mgiaccess.com):
         JSON roster for one initial letter. The path segment is the row the
         UI has selected and does not affect the result, so we send 0.
   GET  /Cardholders/Cardholders/Index/{id}?pw=200
-        The cardholder detail screen. This is also the only place card
-        formats are enumerated (in each slot's <select>).
+        The cardholder detail screen. Also the only place card formats are
+        enumerated (in each slot's <select>), and the source of the
+        __RequestVerificationToken that DeleteCard requires.
   POST /Cardholders/Cardholders/Index/{id}
         Full-form save. See html_form — every field must be echoed back.
   GET  /Cardholders/Cardholders/ValidateEncodedCardNumber?...
         "true" when a facility-code/card-number pair is free.
   POST /Cardholders/Cardholders/DeleteCard   (ID, CardID)
-        Removes a card from a slot. Used only to roll back a half-written
-        provision; normal suspension unchecks Card_N_Active instead.
+        Removes a card from its slot. Used when AccessGrid has deleted a
+        credential we wrote and the slot should be released; suspension is
+        a different thing and unchecks Card_N_Active instead.
+
+There is no endpoint for creating a card: the full-form save does it. An
+empty Card_N_CardID tells Millennium to mint one and assign the id itself,
+a populated one updates that card in place. Which is the other reason every
+field has to be echoed back — the save replaces the whole record, card
+slots included, so a field left out is a field erased.
 
 Session expiry is the failure mode that matters, and it does not announce
 itself. A dead cookie has been observed producing three different shapes,
@@ -325,8 +333,11 @@ class MillenniumUltraClient:
     def delete_card(self, cardholder_id: str | int, card_id: str, token: str) -> bool:
         """Remove a card from its slot.
 
-        Only used to roll back a provision we could not finish; suspending a
-        credential unchecks Card_N_Active and leaves the card in place.
+        Used when AccessGrid has deleted a credential we wrote, so the slot
+        it occupies can be released — a cardholder has only three, and one
+        held by a dead credential is one a real device cannot have.
+        Suspending is a different thing: it unchecks Card_N_Active and
+        leaves the card where it is.
         """
         response = self._http.post(
             self._url("/Cardholders/Cardholders/DeleteCard"),
