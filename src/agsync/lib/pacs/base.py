@@ -33,6 +33,18 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 
+class PacsRecordUnavailable(RuntimeError):
+    """This record could not be read on this cycle, and that is not news.
+
+    Raised instead of answering an empty result, because empty is a claim —
+    "this person holds no credentials" — and no phase may act on a claim we
+    did not actually make. It covers both a read that failed and a read the
+    adapter chose not to do: an adapter that knows which records matter is
+    expected to skip the rest, and skipping is the normal case rather than
+    the exception.
+    """
+
+
 class PacsAuthExpired(RuntimeError):
     """The PACS session we were given is no longer valid.
 

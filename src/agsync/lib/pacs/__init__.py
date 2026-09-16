@@ -6,6 +6,7 @@ from .base import (
     CredentialStatus,
     PacsAdapter,
     PacsAuthExpired,
+    PacsRecordUnavailable,
     Person,
 )
 from .registry import available_pacs, build_adapter, get_descriptor
@@ -18,6 +19,7 @@ __all__ = [
     "ConnectionResult",
     "PacsAdapter",
     "PacsAuthExpired",
+    "PacsRecordUnavailable",
     "Person",
     "available_pacs",
     "build_adapter",

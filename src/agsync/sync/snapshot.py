@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..ag import AccessGrid
-from ..lib.pacs import Credential, PacsAdapter, Person
+from ..lib.pacs import Credential, PacsAdapter, PacsRecordUnavailable, Person
 
 logger = logging.getLogger(__name__)
 
@@ -147,21 +147,30 @@ def build_snapshot(
 
     logger.info("PACS: %d people loaded", len(snap.people))
 
+    unread = 0
     for pid, person in snap.people.items():
         if not person.active:
             snap.credentials_by_person[pid] = []
             continue
         try:
             creds = list(pacs.list_credentials(pid))
+        except PacsRecordUnavailable:
+            # Routine. An adapter that can tell which records matter skips
+            # the rest, so this is most of the roster on most cycles — one
+            # line each would bury everything else in the log.
+            unread += 1
+            continue  # no entry at all — see phase 3
         except Exception as e:  # noqa: BLE001
             logger.warning("Failed to fetch credentials for %s (%s): %s", pid, person.full_name, e)
-            continue  # no entry at all — see phase 3
+            continue
         snap.credentials_by_person[pid] = creds
 
     logger.info(
         "PACS: %d credentials total, %d trigger-active",
         snap.total_credentials, snap.trigger_credentials,
     )
+    if unread:
+        logger.info("PACS: %d record(s) not read this cycle", unread)
 
     logger.info("Fetching AG cards for template %s", template_id)
     try:

@@ -196,8 +196,13 @@ def test_a_cardholder_outside_the_sweep_is_never_fetched(
 def test_an_unread_cardholder_reports_unreadable_rather_than_empty(
     make_millennium_adapter, millennium_page
 ):
-    """Answering None is only safe because no phase treats it as evidence."""
-    from agsync.lib.pacs.millennium_ultra.client import MillenniumError
+    """Not a failure — the normal answer for most of the roster now.
+
+    It has its own exception so the snapshot can count these quietly
+    instead of logging a warning per cardholder, which on this install
+    would be ~1,597 lines a cycle.
+    """
+    from agsync.lib.pacs import PacsRecordUnavailable
 
     csv_text = FIXTURE.read_text()
     client = ExportingClient(csv_text, _roster(), {"11591": millennium_page})
@@ -205,5 +210,33 @@ def test_an_unread_cardholder_reports_unreadable_rather_than_empty(
     adapter.trigger_card_format = "8"
     list(adapter.list_people())
 
-    with pytest.raises(MillenniumError, match="could not be read"):
+    with pytest.raises(PacsRecordUnavailable, match="not read this cycle"):
         list(adapter.list_credentials("197"))
+
+
+def test_the_snapshot_counts_unread_records_instead_of_warning_per_person(
+    make_millennium_adapter, millennium_page, caplog
+):
+    """One line, not one per cardholder.
+
+    Most of the roster is deliberately unread now, so a warning each turned
+    a healthy cycle into ~1,597 lines of alarm and buried everything worth
+    seeing.
+    """
+    from types import SimpleNamespace
+
+    from agsync.sync.snapshot import build_snapshot
+
+    csv_text = FIXTURE.read_text()
+    pages = {"11591": millennium_page, "11618": millennium_page, "197": millennium_page}
+    client = ExportingClient(csv_text, _roster(), pages)
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+    adapter.trigger_card_format = "8"
+
+    ag = SimpleNamespace(access_cards=SimpleNamespace(list=lambda **kw: []))
+    with caplog.at_level("INFO"):
+        snap = build_snapshot(adapter, ag, "tmpl-1")
+
+    assert "197" not in snap.credentials_by_person   # unread, so absent
+    assert "Failed to fetch credentials" not in caplog.text
+    assert "1 record(s) not read this cycle" in caplog.text
