@@ -1,4 +1,5 @@
 from .base import (
+    BrowserLogin,
     ConnectionResult,
     Credential,
     CredentialIdentity,
@@ -10,6 +11,7 @@ from .base import (
 from .registry import available_pacs, build_adapter, get_descriptor
 
 __all__ = [
+    "BrowserLogin",
     "Credential",
     "CredentialIdentity",
     "CredentialStatus",

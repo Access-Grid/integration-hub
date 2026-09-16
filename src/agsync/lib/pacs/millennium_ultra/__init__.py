@@ -1,6 +1,6 @@
 """Millennium Ultra (MGI) web-UI adapter."""
 
-from ..base import ConnectionField, PacsDescriptor
+from ..base import BrowserLogin, ConnectionField, PacsDescriptor
 from ..registry import register
 from .adapter import MillenniumUltraAdapter
 
@@ -30,6 +30,16 @@ DESCRIPTOR = PacsDescriptor(
     # session through the AG Connect side-car before anything else works —
     # including reading the card-format list the trigger is chosen from.
     requires_connect=True,
+    browser_login=BrowserLogin(
+        # The forms-auth cookie a Millennium login produces.
+        required_cookie=".AspNet.UltraAuth",
+        # Companions its screens expect alongside it. `timeoffset` is the
+        # one that matters: the date fields are rendered and parsed against
+        # it, so a session without it writes activation times in the wrong
+        # timezone.
+        extra_cookies=("UltraCompanyName", "timeoffset"),
+        login_path="/Account/LogIn",
+    ),
     # DESFire vs Seos is decided by the AccessGrid template's protocol, not
     # by the operator — asking would let the two disagree, and a wrong
     # answer either writes cards into the PACS that should not exist or

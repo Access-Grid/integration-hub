@@ -57,6 +57,20 @@ def _seos_credential_id_drops_the_slot(conn: sqlite3.Connection) -> None:
     )
 
 
+def _pacs_session_is_keyed_by_vendor(conn: sqlite3.Connection) -> None:
+    """Move the captured browser session under a vendor-keyed name.
+
+    It was stored as "millennium_session", which is the shape the whole
+    connect flow had: one vendor's cookie names in core. The payload is
+    unchanged — only core's name for it — so the row is renamed rather than
+    rewritten, and it stays encrypted throughout.
+    """
+    conn.execute(
+        "UPDATE OR REPLACE settings SET key = 'pacs_session:millennium_ultra' "
+        "WHERE key = 'millennium_session'"
+    )
+
+
 MIGRATIONS: list[tuple[str, Step]] = [
     (
         "001_init",
@@ -147,6 +161,7 @@ MIGRATIONS: list[tuple[str, Step]] = [
         """,
     ),
     ("005_seos_credential_id_drops_the_slot", _seos_credential_id_drops_the_slot),
+    ("006_pacs_session_is_keyed_by_vendor", _pacs_session_is_keyed_by_vendor),
 ]
 
 

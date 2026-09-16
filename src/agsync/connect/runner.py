@@ -54,11 +54,16 @@ def run_from_uri(uri: str, on_status=None) -> int:
             details = claim.json()
             key = b64url_decode(details["key"])
 
+            # No default for the cookie name: a wrong guess would watch for
+            # something that never appears and time out looking like a
+            # failed sign-in, which is a miserable thing to debug.
             sealed = capture_session(
                 details["login_url"],
                 key,
-                cookie_name=details.get("cookie_name") or ".AspNet.UltraAuth",
+                cookie_name=details["cookie_name"],
+                also=tuple(details.get("extra_cookies") or ()),
                 on_status=on_status,
+                pacs_name=details.get("pacs_name") or "the PACS",
             )
             if sealed is None:
                 http.post("/connect/cancel", json={"launch_id": launch_id})

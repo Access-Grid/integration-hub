@@ -1,10 +1,14 @@
 """The contract between the agsync service and the AG Connect side-car.
 
-Millennium Ultra's login is behind a captcha, so no amount of scripting can
+Some PACS logins are behind a captcha, so no amount of scripting can
 authenticate for the operator — a human has to type it. AG Connect is the
 smallest thing that makes that human's session usable by a background
 service: it opens a throwaway Chromium at the PACS login page, waits for the
 operator to sign in, lifts the resulting session cookie, and hands it back.
+
+Which cookie that is, and what else travels with it, is the vendor's
+business and reaches the side-car over the wire — see `BrowserLogin` on the
+PACS descriptor. Nothing in this package names a PACS.
 
 Two process boundaries have to be crossed, and each is deliberately narrow:
 
@@ -33,11 +37,6 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 URI_SCHEME = "agconnect"
 URI_VERSION = "v1"
-
-# The forms-auth cookie a Millennium Ultra login produces, plus the
-# companion cookies its screens expect to see alongside it.
-MILLENNIUM_AUTH_COOKIE = ".AspNet.UltraAuth"
-MILLENNIUM_EXTRA_COOKIES = ("UltraCompanyName", "timeoffset")
 
 
 def b64url_encode(raw: bytes) -> str:

@@ -32,16 +32,10 @@ from ..ag import PROTOCOL_SEOS, template_protocol
 from ..ag import build_client as build_ag_client
 from ..auth import require_admin
 from ..connect import register as uri_register
-from ..connect.protocol import (
-    MILLENNIUM_AUTH_COOKIE,
-    b64url_encode,
-    build_launch_uri,
-    unseal,
-)
+from ..connect.protocol import b64url_encode, build_launch_uri, unseal
 from ..lib.pacs import build_adapter, get_descriptor
-from ..lib.pacs.millennium_ultra.client import normalize_base_url
 from ..notifications import reset_throttle
-from ..settings_store import AccessGridConfig, MillenniumSession, PacsConfig
+from ..settings_store import AccessGridConfig, PacsConfig, PacsSession
 from ..sync import get_engine
 
 logger = logging.getLogger(__name__)
@@ -108,9 +102,19 @@ class _LaunchRegistry:
 _registry = _LaunchRegistry()
 
 
-def _millennium_params() -> dict:
+def _configured_vendor() -> str:
+    return (PacsConfig.load() or {}).get("vendor", "")
+
+
+def _pacs_params() -> dict:
     cfg = PacsConfig.load() or {}
     return dict(cfg.get("params") or {})
+
+
+def _browser_login():
+    """The configured PACS's sign-in shape, or None if it needs no session."""
+    descriptor = get_descriptor(_configured_vendor())
+    return descriptor.browser_login if descriptor else None
 
 
 def _login_url() -> str:
@@ -120,11 +124,13 @@ def _login_url() -> str:
     captured on a previous connect so a reconnect still works if the wizard
     is mid-flight.
     """
-    params = _millennium_params()
-    base = normalize_base_url(params.get("base_url") or "")
+    spec = _browser_login()
+    if spec is None:
+        return ""
+    base = _pacs_params().get("base_url") or ""
     if not base:
-        base = normalize_base_url((MillenniumSession.load() or {}).get("base_url") or "")
-    return f"{base}/Account/LogIn" if base else ""
+        base = (PacsSession.load(_configured_vendor()) or {}).get("base_url") or ""
+    return spec.login_url(base)
 
 
 def _server_url(request: Request) -> str:
@@ -144,7 +150,7 @@ def connect_begin(request: Request, _user=Depends(require_admin)):
     login_url = _login_url()
     if not login_url:
         return JSONResponse(
-            {"ok": False, "message": "Save the Millennium Ultra URL first."},
+            {"ok": False, "message": "Save the PACS URL first."},
             status_code=400,
         )
     launch = _registry.create(login_url)
@@ -186,7 +192,7 @@ def connect_status(
     trigger is already chosen, so it is just an acknowledgement.
     """
     record = _registry.get(launch) if launch else None
-    connected = MillenniumSession.is_connected()
+    connected = PacsSession.is_connected(_configured_vendor())
     fresh = record is not None and record.state == "connected"
 
     if connected and (record is None or fresh):
@@ -201,7 +207,7 @@ def connect_status(
             {
                 "formats": formats,
                 "error": error,
-                "vendor": "millennium_ultra",
+                "vendor": _configured_vendor(),
                 "mode": _detected_mode(),
             },
         )
@@ -237,11 +243,12 @@ def _detected_mode() -> str:
 
 def _read_card_formats() -> tuple[list[dict], str]:
     """Read this install's card formats through the freshly-captured session."""
-    descriptor = get_descriptor("millennium_ultra")
+    vendor = _configured_vendor()
+    descriptor = get_descriptor(vendor)
     if descriptor is None:
-        return [], "Millennium Ultra adapter is not available"
+        return [], "No PACS adapter is configured"
     try:
-        adapter = build_adapter("millennium_ultra", _millennium_params())
+        adapter = build_adapter(vendor, _pacs_params())
         return (
             [{"id": fid, "label": label} for fid, label in adapter.card_formats()],
             "",
@@ -266,11 +273,16 @@ async def connect_claim(request: Request):
     launch = _registry.claim(str(body.get("launch_id", "")))
     if launch is None:
         return JSONResponse({"ok": False}, status_code=404)
+    spec = _browser_login()
+    descriptor = get_descriptor(_configured_vendor())
     return {
         "ok": True,
         "key": b64url_encode(launch.key),
         "login_url": launch.login_url,
-        "cookie_name": MILLENNIUM_AUTH_COOKIE,
+        # The side-car is told what to watch for rather than knowing it.
+        "cookie_name": spec.required_cookie if spec else "",
+        "extra_cookies": list(spec.extra_cookies) if spec else [],
+        "pacs_name": descriptor.display_name if descriptor else "the PACS",
     }
 
 
@@ -290,14 +302,19 @@ async def connect_callback(request: Request):
         return JSONResponse({"ok": False}, status_code=400)
 
     cookies = {c["name"]: c["value"] for c in payload.get("cookies", [])}
-    auth_cookie = cookies.get(MILLENNIUM_AUTH_COOKIE, "")
-    if not auth_cookie:
+    vendor = _configured_vendor()
+    spec = _browser_login()
+    if spec is None:
         launch.state = "error"
-        launch.message = "Sign-in did not produce a Millennium session cookie."
+        launch.message = "This PACS does not sign in through a browser."
+        return JSONResponse({"ok": False}, status_code=400)
+    if not cookies.get(spec.required_cookie):
+        launch.state = "error"
+        launch.message = "Sign-in did not produce a session cookie."
         return JSONResponse({"ok": False}, status_code=400)
 
-    params = _millennium_params()
-    base_url = normalize_base_url(params.get("base_url") or "")
+    adapter = build_adapter(vendor, _pacs_params())
+    session = adapter.session_from_cookies(cookies)
 
     # Prove the session actually reads data before storing it. A cookie can
     # authenticate and still return nothing — a sign-in captured mid-flow
@@ -305,7 +322,7 @@ async def connect_callback(request: Request):
     # roster looks like a PACS with no cardholders, which shows up as
     # "unreachable" long after the operator has walked away. Better to fail
     # here, where there is a human standing in front of a Try again button.
-    ok, detail = _session_reads_cardholders(base_url, auth_cookie, cookies)
+    ok, detail = adapter.validate_session(session)
     if not ok:
         launch.state = "error"
         launch.message = (
@@ -315,13 +332,8 @@ async def connect_callback(request: Request):
         logger.warning("AG Connect: rejected an unusable session — %s", detail)
         return JSONResponse({"ok": False, "message": launch.message}, status_code=400)
 
-    MillenniumSession.save(
-        auth_cookie=auth_cookie,
-        base_url=base_url,
-        company_name=cookies.get("UltraCompanyName", ""),
-        time_offset=cookies.get("timeoffset", ""),
-        captured_at=datetime.now(UTC).isoformat(timespec="seconds"),
-    )
+    session["captured_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+    PacsSession.save(vendor, session)
     # The key has done its job; drop it so the callback can't be replayed.
     launch.key = b""
     launch.state = "connected"
@@ -336,30 +348,6 @@ async def connect_callback(request: Request):
     get_engine().session_restored()
     logger.info("AG Connect: session captured for launch %s", launch.launch_id)
     return {"ok": True}
-
-
-def _session_reads_cardholders(
-    base_url: str, auth_cookie: str, cookies: dict[str, str]
-) -> tuple[bool, str]:
-    """Can this session actually list cardholders? (ok, detail)."""
-    from ..lib.pacs.millennium_ultra.client import MillenniumUltraClient
-
-    client = None
-    try:
-        client = MillenniumUltraClient(
-            base_url=base_url,
-            auth_cookie=auth_cookie,
-            company_name=cookies.get("UltraCompanyName", ""),
-            time_offset=cookies.get("timeoffset", ""),
-        )
-        if not client.first_cardholder_id():
-            return False, "signed in, but no cardholders were readable"
-    except Exception as e:  # noqa: BLE001 — reported to the operator verbatim
-        return False, f"{type(e).__name__}: {e}"
-    finally:
-        if client is not None:
-            client.close()
-    return True, ""
 
 
 @router.post("/cancel")

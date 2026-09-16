@@ -11,9 +11,9 @@ from ..config import get_settings
 from ..lib.pacs import build_adapter, get_descriptor
 from ..settings_store import (
     AccessGridConfig,
-    MillenniumSession,
     NotificationConfig,
     PacsConfig,
+    PacsSession,
 )
 from ..sync import get_engine
 
@@ -60,7 +60,7 @@ def settings_page(
     descriptor = get_descriptor(vendor_id) if vendor_id else None
     params = pacs.get("params") or {}
     smtp = NotificationConfig.load() or {}
-    session = MillenniumSession.load() or {}
+    session = PacsSession.load(vendor_id) or {}
     return request.app.state.template_response(
         request, "settings.html",
         {

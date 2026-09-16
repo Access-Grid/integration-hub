@@ -585,6 +585,41 @@ class MillenniumUltraAdapter:
         )
         return True
 
+    def session_from_cookies(self, cookies: dict[str, str]) -> dict:
+        """The cookie jar reduced to what this adapter is constructed from.
+
+        `timeoffset` travels with the auth cookie because Millennium's date
+        fields are rendered and parsed against it — a session without it
+        writes card activation times in the wrong timezone.
+        """
+        from . import DESCRIPTOR
+
+        spec = DESCRIPTOR.browser_login
+        return {
+            "auth_cookie": cookies.get(spec.required_cookie, ""),
+            "base_url": self.base_url,
+            "company_name": cookies.get("UltraCompanyName", ""),
+            "time_offset": cookies.get("timeoffset", ""),
+        }
+
+    def validate_session(self, session: dict) -> tuple[bool, str]:
+        client = None
+        try:
+            client = MillenniumUltraClient(
+                base_url=session.get("base_url") or self.base_url,
+                auth_cookie=session.get("auth_cookie", ""),
+                company_name=session.get("company_name", ""),
+                time_offset=session.get("time_offset", ""),
+            )
+            if not client.first_cardholder_id():
+                return False, "signed in, but no cardholders were readable"
+        except Exception as e:  # noqa: BLE001 — reported to the operator verbatim
+            return False, f"{type(e).__name__}: {e}"
+        finally:
+            if client is not None:
+                client.close()
+        return True, ""
+
     @property
     def supports_credential_retirement(self) -> bool:
         """Only Seos cards are ours to remove; DESFire cards are the customer's."""
@@ -971,9 +1006,9 @@ def _read_slots(form: CardholderForm, offset_seconds: int = 0) -> list[Slot]:
 def _stored_session() -> dict:
     """The cookie AG Connect captured, if the operator has connected."""
     try:
-        from ....settings_store import MillenniumSession
+        from ....settings_store import PacsSession
 
-        return MillenniumSession.load() or {}
+        return PacsSession.load("millennium_ultra") or {}
     except Exception:  # noqa: BLE001 — settings/db may not exist yet in tests
         return {}
 

@@ -27,7 +27,7 @@ import time
 import httpx
 from websockets.sync.client import connect as ws_connect
 
-from .protocol import MILLENNIUM_AUTH_COOKIE, MILLENNIUM_EXTRA_COOKIES, seal
+from .protocol import seal
 
 logger = logging.getLogger(__name__)
 
@@ -141,15 +141,17 @@ def _page_socket(port: int, deadline: float) -> str:
 def capture_session(
     login_url: str,
     key: bytes,
-    cookie_name: str = MILLENNIUM_AUTH_COOKIE,
-    also: tuple[str, ...] = MILLENNIUM_EXTRA_COOKIES,
+    cookie_name: str,
+    also: tuple[str, ...] = (),
     on_status=None,
+    pacs_name: str = "the PACS",
 ) -> str | None:
     """Run the login window; return the sealed payload, or None if cancelled.
 
-    The payload carries the auth cookie plus the companion cookies the PACS
-    screens expect — notably `timeoffset`, which Millennium uses to render
-    and parse the date fields we later write card activation times into.
+    `cookie_name` is the one whose appearance means the human got through;
+    `also` are companions the PACS screens expect alongside it. Both come
+    from the vendor's descriptor, so this function never learns whose login
+    it just watched — `pacs_name` is for the operator's benefit only.
     """
     def status(message: str) -> None:
         logger.info("AG Connect: %s", message)
@@ -166,7 +168,7 @@ def capture_session(
         port = _wait_for_devtools_port(profile_dir, deadline)
         cdp = _CDP(_page_socket(port, deadline))
         cdp.call("Network.enable")
-        status("waiting for you to sign in to Millennium Ultra")
+        status(f"waiting for you to sign in to {pacs_name}")
 
         jar: list[dict] = []
         found: dict | None = None

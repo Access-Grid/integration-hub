@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 
 class PacsAuthExpired(RuntimeError):
@@ -139,6 +140,12 @@ class PacsDescriptor:
     # The engine then resolves the template's protocol each cycle and passes
     # it in as `mode`, so the two systems cannot drift apart.
     derives_mode_from_template: bool = False
+    # Set when requires_connect is True: what the side-car should open and
+    # which cookies prove the human got through. Keeping it here is what
+    # lets the connect flow stay vendor-agnostic — the alternative, and what
+    # this replaced, was the cookie names sitting in the connect package as
+    # defaults, which made a generic-looking module answer for one PACS.
+    browser_login: BrowserLogin | None = None
 
 
 @dataclass(frozen=True)
@@ -148,6 +155,47 @@ class ConnectionField:
     kind: str = "text"  # text | password | url
     required: bool = True
     placeholder: str = ""
+
+
+@dataclass(frozen=True)
+class BrowserLogin:
+    """How to capture a session for a PACS whose login a script cannot pass.
+
+    Everything the side-car needs to know about one vendor. It opens a
+    throwaway browser, waits for a human to sign in, and lifts cookies —
+    none of which requires knowing whose login it is, as long as it is told
+    which cookie proves success.
+
+    `extra_cookies` are companions the PACS screens expect alongside the
+    auth cookie. Millennium's `timeoffset` is the example that shows why
+    they are not optional: its screens render and parse dates against it,
+    so a session without it writes card activation times in the wrong
+    timezone.
+    """
+
+    # The cookie whose presence means the human got through.
+    required_cookie: str
+    # Captured too, and handed back with it.
+    extra_cookies: tuple[str, ...] = ()
+    # Appended to the configured base URL to reach the sign-in page.
+    login_path: str = "/"
+
+    def login_url(self, base_url: str) -> str:
+        """The sign-in page, from whatever the operator pasted in setup.
+
+        Reduced to the origin first: they reasonably paste the address bar
+        of the page they were looking at, and the rest of it is not the
+        site root this appends to.
+        """
+        url = (base_url or "").strip()
+        if not url:
+            return ""
+        if "://" not in url:
+            url = f"https://{url}"
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            return ""
+        return f"{parsed.scheme}://{parsed.netloc}/" + self.login_path.lstrip("/")
 
 
 class PacsAdapter(Protocol):
@@ -187,6 +235,27 @@ class PacsAdapter(Protocol):
 
         Must be idempotent: it is re-offered every cycle with the full list,
         and identities already present are expected to be skipped.
+        """
+
+    # Optional, for adapters whose descriptor declares `browser_login`.
+    # Core captures cookies without knowing what they mean; these two turn
+    # them into something this PACS can use, and prove it works.
+
+    def session_from_cookies(self, cookies: dict[str, str]) -> dict:
+        """Build the stored session from a captured cookie jar.
+
+        Whatever is returned is handed back as connection params later, so
+        it must be JSON-serialisable and must carry `auth_cookie`.
+        """
+
+    def validate_session(self, session: dict) -> tuple[bool, str]:
+        """Can this session actually read? (ok, detail).
+
+        Called before the session is stored, while a human is still
+        standing at the screen. A cookie can authenticate and still return
+        nothing — a sign-in captured mid-flow does exactly that — and the
+        failure is silent afterwards: an empty roster looks like a PACS
+        with no people in it.
         """
 
     def written_credentials(self) -> dict[tuple[str, str], list[str]]:

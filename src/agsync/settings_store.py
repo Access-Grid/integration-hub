@@ -231,49 +231,42 @@ class NotificationConfig:
         return _get_encrypted_json(NotificationConfig.KEY)
 
 
-class MillenniumSession:
-    """The Millennium Ultra web session AG Connect captured.
+class PacsSession:
+    """A browser session an operator handed us through AG Connect.
 
     Kept apart from PacsConfig because it has a different lifetime: the
-    cookie expires and gets recaptured by the operator without any of the
-    connection settings changing, and a reconnect must not be able to
-    disturb them.
+    cookie expires and gets recaptured without any of the connection
+    settings changing, and a reconnect must not be able to disturb them.
+
+    Keyed by vendor, and the payload is whatever that PACS needs — the
+    adapter builds it from the captured cookies and consumes it again. Core
+    stores and forwards it without looking inside, which is what keeps the
+    connect flow free of any one vendor's cookie names.
     """
 
-    KEY = "millennium_session"
+    PREFIX = "pacs_session"
 
     @staticmethod
-    def save(
-        auth_cookie: str,
-        base_url: str = "",
-        company_name: str = "",
-        time_offset: str = "",
-        captured_at: str = "",
-    ) -> None:
-        _set_encrypted_json(
-            MillenniumSession.KEY,
-            {
-                "auth_cookie": auth_cookie,
-                "base_url": base_url,
-                "company_name": company_name,
-                # Millennium renders and parses its date fields against this
-                # browser offset, so it travels with the cookie.
-                "time_offset": time_offset,
-                "captured_at": captured_at,
-            },
-        )
+    def _key(vendor: str) -> str:
+        return f"{PacsSession.PREFIX}:{vendor}"
 
     @staticmethod
-    def load() -> dict[str, Any] | None:
-        return _get_encrypted_json(MillenniumSession.KEY)
+    def save(vendor: str, session: dict[str, Any]) -> None:
+        _set_encrypted_json(PacsSession._key(vendor), dict(session))
 
     @staticmethod
-    def clear() -> None:
-        delete(MillenniumSession.KEY)
+    def load(vendor: str) -> dict[str, Any] | None:
+        return _get_encrypted_json(PacsSession._key(vendor))
 
     @staticmethod
-    def is_connected() -> bool:
-        session = _get_encrypted_json(MillenniumSession.KEY) or {}
+    def clear(vendor: str) -> None:
+        delete(PacsSession._key(vendor))
+
+    @staticmethod
+    def is_connected(vendor: str) -> bool:
+        session = _get_encrypted_json(PacsSession._key(vendor)) or {}
+        # Every browser-login PACS proves itself with one cookie; which one
+        # is the adapter's business, so the payload names it the same way.
         return bool(session.get("auth_cookie"))
 
 
@@ -282,8 +275,8 @@ def is_configured() -> bool:
 
     A PACS that advertises `requires_connect` is not finished until its
     enrollment trigger has been chosen, which can only happen after the
-    operator has signed in — so a saved-but-unconnected Millennium install
-    reads as unconfigured and the engine stays parked.
+    operator has signed in — so a saved-but-unconnected install of such a
+    PACS reads as unconfigured and the engine stays parked.
     """
     if AccessGridConfig.load() is None:
         return False

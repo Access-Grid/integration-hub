@@ -109,16 +109,23 @@ def test_each_launch_gets_its_own_key():
 # --- refusing a session that does not work ------------------------------
 
 
+def _adapter():
+    """A Millennium adapter with no session of its own to validate against."""
+    from agsync.lib.pacs.millennium_ultra.adapter import MillenniumUltraAdapter
+
+    return MillenniumUltraAdapter(base_url="https://pacs.test", auth_cookie="x")
+
+
+def _session():
+    return {"auth_cookie": "cookie", "base_url": "https://pacs.test"}
+
+
 def test_a_session_that_reads_nothing_is_rejected(monkeypatch):
-    """A cookie can authenticate and still return no data.
+    """A cookie can authenticate and still return nothing.
 
-    That is what a sign-in captured mid-flow produces, and storing it fails
-    silently downstream: an empty roster is indistinguishable from a PACS
-    with no cardholders, so it surfaces hours later as "unreachable". The
-    check belongs here, while a human is still watching.
+    A sign-in captured mid-flow does exactly that, and the failure is
+    silent afterwards — an empty roster reads as a PACS with no people.
     """
-    from agsync.routes.connect import _session_reads_cardholders
-
     class Blank:
         def __init__(self, **kwargs):
             pass
@@ -129,17 +136,18 @@ def test_a_session_that_reads_nothing_is_rejected(monkeypatch):
         def close(self):
             pass
 
+    # Built before patching: the adapter makes a client of its own at
+    # construction, which is not the one under test here.
+    adapter = _adapter()
     monkeypatch.setattr(
-        "agsync.lib.pacs.millennium_ultra.client.MillenniumUltraClient", Blank,
+        "agsync.lib.pacs.millennium_ultra.adapter.MillenniumUltraClient", Blank,
     )
-    ok, detail = _session_reads_cardholders("https://pacs.test", "cookie", {})
+    ok, detail = adapter.validate_session(_session())
     assert ok is False
     assert "no cardholders" in detail
 
 
 def test_a_working_session_is_accepted(monkeypatch):
-    from agsync.routes.connect import _session_reads_cardholders
-
     class Working:
         def __init__(self, **kwargs):
             pass
@@ -150,22 +158,76 @@ def test_a_working_session_is_accepted(monkeypatch):
         def close(self):
             pass
 
+    # Built before patching: the adapter makes a client of its own at
+    # construction, which is not the one under test here.
+    adapter = _adapter()
     monkeypatch.setattr(
-        "agsync.lib.pacs.millennium_ultra.client.MillenniumUltraClient", Working,
+        "agsync.lib.pacs.millennium_ultra.adapter.MillenniumUltraClient", Working,
     )
-    assert _session_reads_cardholders("https://pacs.test", "cookie", {}) == (True, "")
+    assert adapter.validate_session(_session()) == (True, "")
 
 
 def test_an_unreachable_pacs_is_reported_not_stored(monkeypatch):
-    from agsync.routes.connect import _session_reads_cardholders
-
     class Broken:
         def __init__(self, **kwargs):
             raise RuntimeError("connection refused")
 
+    # Built before patching: the adapter makes a client of its own at
+    # construction, which is not the one under test here.
+    adapter = _adapter()
     monkeypatch.setattr(
-        "agsync.lib.pacs.millennium_ultra.client.MillenniumUltraClient", Broken,
+        "agsync.lib.pacs.millennium_ultra.adapter.MillenniumUltraClient", Broken,
     )
-    ok, detail = _session_reads_cardholders("https://pacs.test", "cookie", {})
+    ok, detail = adapter.validate_session(_session())
     assert ok is False
     assert "connection refused" in detail
+
+
+def test_the_cookie_jar_becomes_the_stored_session():
+    """Core captures cookies without knowing what they mean.
+
+    Turning them into a session is the adapter's job — including carrying
+    `timeoffset`, which Millennium's date fields are parsed against.
+    """
+    session = _adapter().session_from_cookies({
+        ".AspNet.UltraAuth": "auth-value",
+        "UltraCompanyName": "Acme",
+        "timeoffset": "-240",
+        "irrelevant": "ignored",
+    })
+    assert session["auth_cookie"] == "auth-value"
+    assert session["company_name"] == "Acme"
+    assert session["time_offset"] == "-240"
+    assert "irrelevant" not in session
+
+
+def test_the_connect_package_names_no_vendor():
+    """The point of the refactor, kept honest.
+
+    Cookie names used to sit in connect/protocol.py as constants and in
+    capture.py as default arguments, so a module that looked generic
+    answered for exactly one PACS. Anything vendor-specific belongs on the
+    descriptor now.
+    """
+    import pathlib
+
+    import agsync.connect as pkg
+
+    root = pathlib.Path(pkg.__file__).parent
+    offenders = [
+        path.name
+        for path in root.glob("*.py")
+        if "millennium" in path.read_text().lower()
+    ]
+    assert offenders == []
+
+
+def test_capture_requires_being_told_which_cookie():
+    """No default: a wrong guess waits for a cookie that never arrives and
+    times out looking like a failed sign-in."""
+    import inspect
+
+    from agsync.connect.capture import capture_session
+
+    assert inspect.signature(capture_session).parameters["cookie_name"].default \
+        is inspect.Parameter.empty
