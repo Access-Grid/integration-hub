@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -70,6 +71,22 @@ from .html_form import CardholderForm
 logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT = 60.0
+
+# Smallest gap between two requests to the install, across every client in
+# this process. Millennium is an ASP.NET UI sized for one operator clicking
+# around, and an unpaced sweep put ~5.4 requests a second through it for
+# minutes at a time — which is where the read timeouts came from. 100ms
+# costs about 40 seconds on a 400-page sweep.
+#
+# Process-wide rather than per-client on purpose: the sync engine is not the
+# only caller. A /settings or /connect page build its own adapter on a
+# request thread, and those were timing out *during* a sweep, so pacing that
+# only covered the engine would miss exactly the collision that showed up.
+MIN_REQUEST_INTERVAL_S = 0.1
+
+# Nothing here is concurrent by design — the engine is one thread — but a web
+# request can overlap a cycle, so the ceiling is stated rather than assumed.
+MAX_CONNECTIONS = 4
 HTTP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
@@ -113,6 +130,13 @@ def normalize_base_url(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else ""
 
 
+# Guards the pace clock below. Held only for the length of the wait, which
+# is what makes callers queue behind one another rather than all sleeping
+# the same 100ms and then firing together.
+_PACE_LOCK = threading.Lock()
+_last_request_at = 0.0
+
+
 class MillenniumUltraClient:
     def __init__(
         self,
@@ -137,10 +161,24 @@ class MillenniumUltraClient:
             headers={"User-Agent": HTTP_USER_AGENT},
             timeout=HTTP_TIMEOUT,
             follow_redirects=False,
+            limits=httpx.Limits(
+                max_connections=MAX_CONNECTIONS,
+                max_keepalive_connections=MAX_CONNECTIONS,
+            ),
         )
 
     def close(self) -> None:
         self._http.close()
+
+    @staticmethod
+    def _pace() -> None:
+        """Block until MIN_REQUEST_INTERVAL_S has passed since the last call."""
+        global _last_request_at
+        with _PACE_LOCK:
+            wait = _last_request_at + MIN_REQUEST_INTERVAL_S - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            _last_request_at = time.monotonic()
 
     # -- plumbing --------------------------------------------------------
 
@@ -168,6 +206,7 @@ class MillenniumUltraClient:
                 "Accept": "application/json, text/javascript, */*; q=0.01",
                 "X-Requested-With": "XMLHttpRequest",
             }
+        self._pace()
         response = self._http.get(self._url(path), params=params, headers=headers)
         self._check_auth(response)
         if response.status_code >= 500 and server_error_means_expired:
@@ -314,6 +353,7 @@ class MillenniumUltraClient:
         """
         content_type, body = form.to_multipart()
         referer = self._url(f"/Cardholders/Cardholders/Index/{cardholder_id}?pw=200")
+        self._pace()
         response = self._http.post(
             self._url(f"/Cardholders/Cardholders/Index/{cardholder_id}"),
             content=body,
@@ -346,6 +386,7 @@ class MillenniumUltraClient:
         Suspending is a different thing: it unchecks Card_N_Active and
         leaves the card where it is.
         """
+        self._pace()
         response = self._http.post(
             self._url("/Cardholders/Cardholders/DeleteCard"),
             data={
