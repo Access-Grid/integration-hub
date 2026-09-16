@@ -37,7 +37,11 @@ DESCRIPTOR = PacsDescriptor(
         # one that matters: the date fields are rendered and parsed against
         # it, so a session without it writes activation times in the wrong
         # timezone.
-        extra_cookies=("UltraCompanyName", "timeoffset"),
+        # __RequestVerificationToken is ASP.NET's anti-forgery cookie. Only
+        # the bulk-export endpoints check it, and without it they answer 502
+        # rather than 403 — which reads as the server being unwell rather
+        # than as a rejected request, and cost an afternoon to pin down.
+        extra_cookies=("UltraCompanyName", "timeoffset", "__RequestVerificationToken"),
         login_path="/Account/LogIn",
     ),
     # DESFire vs Seos is decided by the AccessGrid template's protocol, not

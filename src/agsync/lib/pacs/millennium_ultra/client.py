@@ -66,11 +66,38 @@ from urllib.parse import urlparse
 import httpx
 
 from ..base import PacsAuthExpired
+from . import export as export_mod
 from .html_form import CardholderForm
 
 logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT = 60.0
+
+# How long to wait for the cardholder export job, and how often to ask. It
+# has completed in under a second on a healthy install and 502'd outright on
+# a struggling one, so the ceiling is about not hanging a cycle rather than
+# about the job being slow.
+EXPORT_TIMEOUT_S = 90.0
+EXPORT_POLL_INTERVAL_S = 1.0
+
+# What to ask the export for. Images are the field that matters by its
+# absence: with them the job 504s outright on this install, which is what
+# made the endpoint look unusable at first. The rest is the smallest set
+# that answers "who carries a trigger card, and what is in their slots" —
+# Employee ID is included because it is cheap and occasionally the only
+# thing distinguishing two people with the same name.
+_EXPORT_FIELDS = (
+    (1, "First Name"),
+    (2, "Last Name"),
+    (4, "Employee ID"),
+    (14, "Current Status"),
+    (16, "Encoded Card No."),
+    (17, "Activation Date"),
+    (18, "Expiration Date"),
+    (19, "Active"),
+    (20, "Card Format"),
+    (21, "Facility Code"),
+)
 
 # Smallest gap between two requests to the install, across every client in
 # this process. Millennium is an ASP.NET UI sized for one operator clicking
@@ -93,12 +120,23 @@ HTTP_USER_AGENT = (
 )
 
 AUTH_COOKIE = ".AspNet.UltraAuth"
+# ASP.NET's anti-forgery cookie. Only the export endpoints check it.
+REQUEST_TOKEN_COOKIE = "__RequestVerificationToken"
 COMPANY_COOKIE = "UltraCompanyName"
 TIMEOFFSET_COOKIE = "timeoffset"
 
 # Millennium gives every cardholder exactly this many card slots; the detail
 # page declares it as `cardsPerCardholder = 3`.
 CARD_SLOTS = (1, 2, 3)
+
+_EXPORT_REQUEST = {
+    "format": 1,
+    # Millennium's own spelling; correcting it silently disables the flag.
+    "IncudeImages": False,
+    "tenants": [0],
+    "cards": list(CARD_SLOTS),
+    "fields": [{"ID": fid, "Name": name} for fid, name in _EXPORT_FIELDS],
+}
 
 # The roster endpoint is keyed by the ASCII code of the surname's initial.
 # Only A-Z is swept: names starting with a digit, punctuation or an accented
@@ -144,11 +182,17 @@ class MillenniumUltraClient:
         auth_cookie: str,
         company_name: str = "",
         time_offset: str = "",
+        request_token: str = "",
     ):
         self.base_url = normalize_base_url(base_url)
         if not self.base_url:
             raise MillenniumError("Millennium base URL is not configured")
         cookies = {AUTH_COOKIE: auth_cookie}
+        if request_token:
+            # The export endpoints are the only ones that check it. Missing,
+            # they answer 502 rather than 403, which reads as the server
+            # being unwell rather than as a rejected request.
+            cookies[REQUEST_TOKEN_COOKIE] = request_token
         if company_name:
             cookies[COMPANY_COOKIE] = company_name
         if time_offset:
@@ -341,6 +385,76 @@ class MillenniumUltraClient:
             ajax=True,
         )
         return response.text.strip().lower() == "true"
+
+    # -- bulk read -------------------------------------------------------
+
+    def export_cardholders(self) -> str:
+        """Every cardholder's slots in three requests, as CSV.
+
+        A queued job, not an endpoint: start it, poll until the status says
+        it finished, then fetch the file that status names. See export.py
+        for what the CSV holds and what it leaves out.
+
+        Raises MillenniumError if the job fails or does not finish in time.
+        The caller is expected to fall back to reading detail pages — this
+        is an optimisation, and a PACS that will not export is not a PACS
+        that cannot be synced.
+        """
+        started = self._post_json(
+            "/DatabaseFunctions/ExportCardholders/ExportCardholdersNow",
+            _EXPORT_REQUEST,
+        )
+        if started is not True:
+            raise MillenniumError(f"Millennium refused to start the export: {started!r}")
+
+        deadline = time.time() + EXPORT_TIMEOUT_S
+        while time.time() < deadline:
+            status = self._post_json(
+                "/Home/GetLongOperationStatus", {"operation": export_mod.OPERATION}
+            )
+            if not isinstance(status, dict):
+                raise MillenniumError(f"Unreadable export status: {status!r}")
+            if status.get("Failed") or (status.get("Error") or ""):
+                raise MillenniumError(
+                    f"Millennium's export failed: {status.get('Error') or 'no detail'}"
+                )
+            if status.get("Completed") and status.get("Success"):
+                name = status.get("Context") or ""
+                if not name:
+                    raise MillenniumError("Export finished without naming its file")
+                return export_mod.unpack(self._fetch_export_file(str(name)))
+            time.sleep(EXPORT_POLL_INTERVAL_S)
+
+        raise MillenniumError(
+            f"Millennium's export did not finish within {EXPORT_TIMEOUT_S:.0f}s"
+        )
+
+    def _fetch_export_file(self, name: str) -> bytes:
+        """The zip the finished job left behind."""
+        response = self._get(f"/DatabaseFunctions/ExportCardholders/GetExportFile/{name}")
+        return response.content
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> Any:
+        """POST JSON the way the UI's own XHRs do, and read JSON back."""
+        self._pace()
+        response = self._http.post(
+            self._url(path),
+            json=payload,
+            headers={
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Content-Type": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+                "Origin": self.base_url,
+                "Referer": self._url("/DatabaseFunctions/ExportCardholders"),
+            },
+        )
+        self._check_auth(response)
+        if response.status_code >= 400:
+            raise MillenniumError(f"POST {path} -> HTTP {response.status_code}")
+        try:
+            return response.json()
+        except ValueError as e:
+            raise MillenniumError(f"POST {path} did not answer JSON") from e
 
     # -- writes ----------------------------------------------------------
 

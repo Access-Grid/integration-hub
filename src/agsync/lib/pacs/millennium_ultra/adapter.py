@@ -68,6 +68,7 @@ from ..base import (
     PacsDescriptor,
     Person,
 )
+from . import export
 from .client import (
     CARD_SLOTS,
     MillenniumAuthError,
@@ -268,6 +269,7 @@ class MillenniumUltraAdapter:
         auth_cookie: str = "",
         company_name: str = "",
         time_offset: str = "",
+        request_token: str = "",
         sweep_budget: int = DEFAULT_SWEEP_BUDGET,
     ):
         session = _stored_session() if not auth_cookie else {}
@@ -279,6 +281,7 @@ class MillenniumUltraAdapter:
         self._offset_seconds = int(time_offset or session.get("time_offset") or 0)
         self._client = MillenniumUltraClient(
             base_url=self.base_url,
+            request_token=request_token or session.get("request_token", ""),
             auth_cookie=auth_cookie or session.get("auth_cookie", ""),
             company_name=company_name or session.get("company_name", ""),
             time_offset=str(time_offset or session.get("time_offset") or ""),
@@ -303,6 +306,9 @@ class MillenniumUltraAdapter:
         self._cold = True
         # Cardholders whose page failed to load: id -> (attempts, next try).
         self._retry: dict[str, tuple[int, float]] = {}
+        # The trigger format's display name, resolved once. "" means looked
+        # for and not found; None means not looked for yet.
+        self._trigger_format_label: str | None = None
 
     # -- contract --------------------------------------------------------
 
@@ -328,7 +334,7 @@ class MillenniumUltraAdapter:
         self._roster = {}
         self._read_this_cycle = 0
         roster = self._client.list_cardholders()
-        self._plan_sweep([str(r.get("ID")) for r in roster])
+        self._plan_sweep([str(r.get("ID")) for r in roster], roster)
         self._reading_total = len(self._sweep)
 
         for row in roster:
@@ -353,15 +359,106 @@ class MillenniumUltraAdapter:
             )
         self._cold = False
 
-    def _plan_sweep(self, ids: list[str]) -> None:
+    def _trigger_format_name(self) -> str:
+        """The display name the export prints for the configured trigger.
+
+        The trigger is stored as Millennium's numeric format id; the export
+        prints the name. The <select> on any cardholder page carries both,
+        so the pair is read once and kept for the life of the adapter —
+        formats are install-level configuration, not per-cycle state.
+        """
+        if self._trigger_format_label is None:
+            self._trigger_format_label = ""
+            try:
+                for fid, label in self.card_formats():
+                    if str(fid) == self.trigger_card_format:
+                        self._trigger_format_label = label
+                        break
+            except Exception as e:  # noqa: BLE001 — falls back to the sweep
+                logger.debug("Millennium: could not read the format list: %s", e)
+        return self._trigger_format_label
+
+    def _enrolled_from_export(self, roster: list[dict]) -> set[str] | None:
+        """Cardholder ids carrying the trigger format, via the bulk export.
+
+        None when the export is unavailable, which is the caller's signal to
+        fall back to reading detail pages. It is an optimisation: on this
+        install it finds 6 slots out of 4,797 in three requests, where the
+        rotating sweep spends 400 requests a cycle looking for them.
+
+        The export has no cardholder id, so rows are matched to the roster
+        by name — and names collide here badly enough (42% of this roster,
+        one of them five ways) that a match is a shortlist. Every candidate
+        is still read and confirmed; this only decides *which* pages to
+        read, never what is true about them.
+        """
+        label = self._trigger_format_name()
+        if not label:
+            return None
+        try:
+            rows = export.parse(self._client.export_cardholders())
+        except Exception as e:  # noqa: BLE001 — never fail a cycle over this
+            logger.info(
+                "Millennium: bulk export unavailable (%s) — sweeping instead", e
+            )
+            return None
+        if not rows:
+            logger.info("Millennium: bulk export came back empty — sweeping instead")
+            return None
+
+        by_name: dict[tuple[str, str], list[str]] = {}
+        for row in roster:
+            first, last = parse_roster_name(row.get("Name", ""))
+            by_name.setdefault(export.name_key(first, last), []).append(
+                str(row.get("ID"))
+            )
+
+        candidates: set[str] = set()
+        unmatched = 0
+        for person in rows:
+            if not person.carries_format(label):
+                continue
+            ids = by_name.get(export.name_key(person.first_name, person.last_name))
+            if not ids:
+                unmatched += 1
+                continue
+            candidates.update(ids)
+
+        if unmatched:
+            # A trigger card we cannot place is the one case where the export
+            # is worse than the sweep, so say so rather than quietly missing
+            # somebody who is meant to be enrolled.
+            logger.warning(
+                "Millennium: %d cardholder(s) carry the trigger format but no "
+                "roster entry matches their name — they will not be enrolled",
+                unmatched,
+            )
+        logger.info(
+            "Millennium: export found %d cardholder(s) carrying the trigger format",
+            len(candidates),
+        )
+        return candidates
+
+    def _plan_sweep(self, ids: list[str], roster: list[dict] | None = None) -> None:
         """Pick which un-enrolled cardholders to re-read this cycle.
 
         Enrolled cardholders are always refreshed, so this slice exists only
-        to notice cards that became enrolled since we last looked. It walks
-        the roster a window at a time, so every cardholder is revisited
-        within a bounded number of cycles instead of the same head being
+        to notice cards that became enrolled since we last looked. The bulk
+        export answers that directly when it is available; failing that, the
+        roster is walked a window at a time so every cardholder is revisited
+        within a bounded number of cycles rather than the same head being
         re-read forever.
         """
+        if roster is not None:
+            candidates = self._enrolled_from_export(roster)
+            if candidates is not None:
+                # Nothing else needs reading: a cardholder absent from this
+                # set has no trigger card, and a cardholder we never read is
+                # explicitly not evidence of anything downstream.
+                self._sweep = candidates
+                self._cold = False
+                return
+
         if self._cold:
             # Nothing is cached yet, so a partial read would look like a
             # population with no credentials — which phase 3 reads as mass
@@ -598,6 +695,7 @@ class MillenniumUltraAdapter:
         return {
             "auth_cookie": cookies.get(spec.required_cookie, ""),
             "base_url": self.base_url,
+            "request_token": cookies.get("__RequestVerificationToken", ""),
             "company_name": cookies.get("UltraCompanyName", ""),
             "time_offset": cookies.get("timeoffset", ""),
         }
@@ -610,6 +708,7 @@ class MillenniumUltraAdapter:
                 auth_cookie=session.get("auth_cookie", ""),
                 company_name=session.get("company_name", ""),
                 time_offset=session.get("time_offset", ""),
+                request_token=session.get("request_token", ""),
             )
             if not client.first_cardholder_id():
                 return False, "signed in, but no cardholders were readable"
