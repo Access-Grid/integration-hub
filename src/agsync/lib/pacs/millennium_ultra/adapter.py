@@ -1040,7 +1040,15 @@ class MillenniumUltraAdapter:
             if self._backing_off(pid):
                 return cached
             retrying = pid in self._retry
-            if not retrying and cached is not None and pid not in self._sweep:
+            if not retrying and pid not in self._sweep:
+                # Including when nothing is cached. It used to read anyway in
+                # that case, which was invisible while the first sweep read
+                # everybody — but once the export narrowed the sweep to the
+                # handful who carry a trigger card, every other cardholder
+                # fell through here and was fetched regardless.
+                #
+                # Answering None is safe: it reaches the snapshot as "not
+                # read this cycle", which no phase treats as evidence.
                 return cached
 
         try:

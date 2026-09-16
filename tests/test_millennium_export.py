@@ -158,3 +158,52 @@ def test_a_trigger_card_with_no_roster_match_is_reported(
     with caplog.at_level("WARNING"):
         list(adapter.list_people())
     assert "no roster entry matches" in caplog.text
+
+
+def test_a_cardholder_outside_the_sweep_is_never_fetched(
+    make_millennium_adapter, millennium_page
+):
+    """The bug the export exposed.
+
+    The gate only skipped cardholders that were already cached, so anyone
+    never read fell through and was fetched regardless of the sweep. That
+    was invisible while the first sweep read everybody; once the export
+    narrowed the sweep to the two who carry a trigger card, the other 1,597
+    were still being read one page at a time.
+    """
+    csv_text = FIXTURE.read_text()
+    pages = {"11591": millennium_page, "11618": millennium_page, "197": millennium_page}
+    client = ExportingClient(csv_text, _roster(), pages)
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+    adapter.trigger_card_format = "8"
+
+    list(adapter.list_people())
+    fetched = []
+    original = client.get_cardholder_form
+
+    def spy(cardholder_id):
+        fetched.append(str(cardholder_id))
+        return original(cardholder_id)
+
+    client.get_cardholder_form = spy
+    for pid in ("11591", "11618", "197"):
+        adapter._profile_for(pid)
+
+    assert "197" not in fetched, "swept out, so it must not be read"
+    assert sorted(fetched) == ["11591", "11618"]
+
+
+def test_an_unread_cardholder_reports_unreadable_rather_than_empty(
+    make_millennium_adapter, millennium_page
+):
+    """Answering None is only safe because no phase treats it as evidence."""
+    from agsync.lib.pacs.millennium_ultra.client import MillenniumError
+
+    csv_text = FIXTURE.read_text()
+    client = ExportingClient(csv_text, _roster(), {"11591": millennium_page})
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+    adapter.trigger_card_format = "8"
+    list(adapter.list_people())
+
+    with pytest.raises(MillenniumError, match="could not be read"):
+        list(adapter.list_credentials("197"))
