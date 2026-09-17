@@ -55,8 +55,17 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
 
-        if tracked.pacs_person_id not in snapshot.credentials_by_person:
-            continue  # their page could not be read this cycle — no evidence
+        # A person still on the roster whose card page we could not read
+        # this cycle tells us nothing, so act on nothing. A person who is
+        # not on the roster at all is a different claim, made by a source we
+        # did read — and one already guarded above, since an empty roster
+        # abandons the phase. Checking these in the wrong order meant a
+        # genuinely deleted cardholder was skipped along with the unreadable
+        # ones, and their pass was never revoked.
+        if person is not None and (
+            tracked.pacs_person_id not in snapshot.credentials_by_person
+        ):
+            continue
 
         reason: str | None = None
         if person is None:
