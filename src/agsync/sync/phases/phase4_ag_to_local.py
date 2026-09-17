@@ -22,7 +22,7 @@ from ...ag import AccessGrid
 from ...lib.pacs import CredentialStatus, PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
-from .writeback import is_installed, push_allocated_identities
+from .writeback import is_dead, is_installed, push_allocated_identities, state_of
 
 logger = logging.getLogger(__name__)
 
@@ -33,16 +33,45 @@ _AG_TO_CRED_STATUS: dict[str, CredentialStatus] = {
 }
 
 
+def _desired_card_status(cards: list) -> CredentialStatus:
+    """What a PACS card should be, given the pass behind it.
+
+    Three outcomes, and the order matters. A suspended pass is still an
+    installed one — a holder who loses their phone still has it installed —
+    so asking "is it installed" first would read a revocation as a working
+    credential and turn the card back on.
+    """
+    live = [c for c in cards if not is_dead(c)]
+    if not live:
+        # Every card of this issue is gone. Whatever the PACS still holds is
+        # not backed by anything; phase 3 releases the slots, this stops the
+        # card working in the meantime.
+        return CredentialStatus.SUSPENDED
+    if any(state_of(c) == "suspended" for c in live):
+        return CredentialStatus.SUSPENDED
+    if is_installed(live):
+        return CredentialStatus.ACTIVE
+    return CredentialStatus.AWAITING_INSTALL
+
+
+_STATUS_REASON = {
+    CredentialStatus.ACTIVE: ("Activating", "installed"),
+    CredentialStatus.SUSPENDED: ("Deactivating", "suspended in AccessGrid"),
+    CredentialStatus.AWAITING_INSTALL: ("Deactivating", "not installed yet"),
+}
+
+
 def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int:
-    """Keep a PACS card inactive until its pass is on a device.
+    """Make each PACS card say what its pass says.
 
     Only for adapters we write credentials into: elsewhere the card is the
     customer's own and its Active box is none of our business.
 
     Deliberately level-triggered, unlike the status loop below. The question
     is not "did anything change" but "does the card match the pass right
-    now", because the operator can tick Active at any time and the answer
-    has to keep being no until an install happens.
+    now" — an operator can tick Active at any time, and a pass can be
+    suspended and resumed without its state ever differing from what we last
+    recorded.
     """
     if not getattr(pacs, "supports_credential_writeback", False):
         return 0
@@ -63,10 +92,7 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
         if not cards:
             continue
 
-        desired = (
-            CredentialStatus.ACTIVE if is_installed(cards)
-            else CredentialStatus.AWAITING_INSTALL
-        )
+        desired = _desired_card_status(cards)
         # The adapter reads its own state off the card, where "off" has no
         # reason attached, so an awaited install and a suspension look the
         # same coming back.
@@ -79,11 +105,10 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
             continue
 
         try:
+            verb, why = _STATUS_REASON[desired]
             logger.info(
                 "  %s card for %s/%s — the pass is %s",
-                "Activating" if desired is CredentialStatus.ACTIVE else "Deactivating",
-                tracked.pacs_person_id, tracked.pacs_credential_id,
-                "installed" if desired is CredentialStatus.ACTIVE else "not installed yet",
+                verb, tracked.pacs_person_id, tracked.pacs_credential_id, why,
             )
             if pacs.update_credential_status(
                 tracked.pacs_person_id, tracked.pacs_credential_id, desired,

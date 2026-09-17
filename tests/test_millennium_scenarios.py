@@ -439,3 +439,106 @@ def test_s11_an_empty_roster_revokes_nobody(monkeypatch):
     ))
     assert phase3_deletions.run(Snapshot(), ag) == 0
     assert deleted == []
+
+
+# =====================================================================
+# 6 & 7 — a lost device is revoked in AccessGrid, and a found one restored
+# =====================================================================
+
+
+def _installed_pass(state="active"):
+    return SimpleNamespace(
+        id="pass-1", state=state, details=None, site_code="66",
+        card_number="5001", expiration_date=None,
+        devices=[{"device_type": "iphone", "status": "installed",
+                  "site_code": "66", "card_number": "5001"}],
+    )
+
+
+def _gate(adapter, cred, card, monkeypatch):
+    row = SimpleNamespace(
+        pacs_person_id="11587", pacs_credential_id="seos", ag_card_id="pass-1",
+        status="active", sync_ref="ref-1",
+    )
+    monkeypatch.setattr(phase4_ag_to_local.tracking, "all_tracked", lambda: [row])
+    snap = Snapshot()
+    snap.credentials_by_person["11587"] = [cred]
+    snap.ag_cards_by_sync_ref["ref-1"] = [card]
+    ag = SimpleNamespace(access_cards=SimpleNamespace(get=lambda cid: card))
+    return phase4_ag_to_local._hold_uninstalled_inactive(snap, adapter, ag)
+
+
+def test_s6_suspending_the_pass_deactivates_the_card(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger, monkeypatch
+):
+    """A lost phone is suspended in AccessGrid; the card must follow.
+
+    The pass is still installed — the holder has simply lost the device —
+    so anything keyed only on "is it installed" would leave the card live,
+    which is the credential that actually opens the door.
+    """
+    page = _enrolled_page(millennium_page, set_slot, written={2: "5001"}, active=True)
+    SeosLedger.record("11587", "seos", [
+        {"slot": 2, "card_number": "5001", "facility_code": "66"},
+    ])
+    adapter, client = _adapter(make_millennium_adapter, page)
+    cred = _credential(adapter)
+
+    assert _gate(adapter, cred, _installed_pass("suspended"), monkeypatch) == 1
+    assert _posted(client).is_checked("Card_2_Active") is False
+
+
+def test_s7_resuming_the_pass_reactivates_the_card(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger, monkeypatch
+):
+    """The device turned up; the card goes back to working."""
+    page = _enrolled_page(millennium_page, set_slot, written={2: "5001"}, active=False)
+    SeosLedger.record("11587", "seos", [
+        {"slot": 2, "card_number": "5001", "facility_code": "66"},
+    ])
+    adapter, client = _adapter(make_millennium_adapter, page)
+    cred = _credential(adapter)
+
+    assert _gate(adapter, cred, _installed_pass("active"), monkeypatch) == 1
+    assert _posted(client).is_checked("Card_2_Active") is True
+
+
+def test_s6_a_suspended_pass_is_not_reactivated_by_being_installed(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger, monkeypatch
+):
+    """The regression this pair exists to stop.
+
+    Deciding on installation alone means a suspended pass on a phone the
+    holder still has resolves to "active", and the gate re-ticks the box a
+    revocation had just cleared.
+    """
+    page = _enrolled_page(millennium_page, set_slot, written={2: "5001"}, active=False)
+    SeosLedger.record("11587", "seos", [
+        {"slot": 2, "card_number": "5001", "facility_code": "66"},
+    ])
+    adapter, client = _adapter(make_millennium_adapter, page)
+    cred = _credential(adapter)
+
+    assert _gate(adapter, cred, _installed_pass("suspended"), monkeypatch) == 0
+    assert client.saved == []
+
+
+def test_s6_a_pass_whose_cards_are_all_gone_deactivates_the_card(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger, monkeypatch
+):
+    """Nothing backs this card any more.
+
+    Phase 3 releases the slot when AccessGrid reports the credential
+    deleted; this stops the card working in the meantime, which may be a
+    cycle or more if the export or the delete is refused.
+    """
+    page = _enrolled_page(millennium_page, set_slot, written={2: "5001"}, active=True)
+    SeosLedger.record("11587", "seos", [
+        {"slot": 2, "card_number": "5001", "facility_code": "66"},
+    ])
+    adapter, client = _adapter(make_millennium_adapter, page)
+    cred = _credential(adapter)
+
+    dead = _installed_pass("deleted")
+    assert _gate(adapter, cred, dead, monkeypatch) == 1
+    assert _posted(client).is_checked("Card_2_Active") is False
