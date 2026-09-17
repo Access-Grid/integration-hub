@@ -542,3 +542,148 @@ def test_s6_a_pass_whose_cards_are_all_gone_deactivates_the_card(
     dead = _installed_pass("deleted")
     assert _gate(adapter, cred, dead, monkeypatch) == 1
     assert _posted(client).is_checked("Card_2_Active") is False
+
+
+# =====================================================================
+# 12 — a card dated out of validity stops working
+# =====================================================================
+
+
+def _dated_page(millennium_page, set_slot, *, activation="", expiration=""):
+    page = _enrolled_page(millennium_page, set_slot, written={2: "5001"}, active=True)
+    import re
+    for field, value in (("ActivationDate", activation), ("ExpirationDate", expiration)):
+        page = re.sub(
+            rf'(name="Card_2_{field}"[^>]*?value=")[^"]*(")',
+            rf'\g<1>{value}\g<2>',
+            page,
+        )
+    return page
+
+
+def _ledger_for_slot2():
+    SeosLedger.record("11587", "seos", [
+        {"slot": 2, "card_number": "5001", "facility_code": "66"},
+    ])
+
+
+def test_s12_an_expired_card_reports_its_end_date(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Read off the card we wrote, so an operator editing it is what counts."""
+    _ledger_for_slot2()
+    page = _dated_page(millennium_page, set_slot, expiration="01/02/2020 12:00 AM")
+    adapter, _ = _adapter(make_millennium_adapter, page)
+    cred = _credential(adapter)
+    assert cred.deactivate_date is not None
+    assert cred.deactivate_date.year == 2020
+
+
+def test_s12_phase_3_deletes_a_pass_whose_card_expired(monkeypatch):
+    """Whatever the Active box still says."""
+    tracked = SimpleNamespace(
+        pacs_person_id="11587", pacs_credential_id="seos", ag_card_id="pass-1",
+        status="active", sync_ref="ref-1",
+    )
+    monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [tracked])
+    monkeypatch.setattr(phase3_deletions.tracking, "update_status", lambda *a, **k: None)
+
+    snap = Snapshot()
+    snap.people["11587"] = SimpleNamespace(id="11587", full_name="Accessg Grid", active=True)
+    snap.credentials_by_person["11587"] = [SimpleNamespace(
+        id="seos", status=CredentialStatus.ACTIVE, trigger_active=True,
+        allocate_identity=True,
+        deactivate_date=datetime(2020, 1, 2, tzinfo=UTC),
+    )]
+
+    deleted: list[str] = []
+    ag = SimpleNamespace(access_cards=SimpleNamespace(
+        delete=lambda card_id: deleted.append(card_id),
+    ))
+    assert phase3_deletions.run(snap, ag) == 1
+    assert deleted == ["pass-1"]
+
+
+def test_s12_a_card_still_in_date_is_left_alone(monkeypatch):
+    tracked = SimpleNamespace(
+        pacs_person_id="11587", pacs_credential_id="seos", ag_card_id="pass-1",
+        status="active", sync_ref="ref-1",
+    )
+    monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [tracked])
+    snap = Snapshot()
+    snap.people["11587"] = SimpleNamespace(id="11587", full_name="Accessg Grid", active=True)
+    snap.credentials_by_person["11587"] = [SimpleNamespace(
+        id="seos", status=CredentialStatus.ACTIVE, trigger_active=True,
+        allocate_identity=True,
+        deactivate_date=datetime(2099, 1, 1, tzinfo=UTC),
+    )]
+    deleted: list[str] = []
+    ag = SimpleNamespace(access_cards=SimpleNamespace(
+        delete=lambda card_id: deleted.append(card_id),
+    ))
+    assert phase3_deletions.run(snap, ag) == 0
+    assert deleted == []
+
+
+def test_s12_a_card_with_no_expiry_is_not_expired(monkeypatch):
+    """No date stated is not the same as a date in the past."""
+    tracked = SimpleNamespace(
+        pacs_person_id="11587", pacs_credential_id="seos", ag_card_id="pass-1",
+        status="active", sync_ref="ref-1",
+    )
+    monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [tracked])
+    snap = Snapshot()
+    snap.people["11587"] = SimpleNamespace(id="11587", full_name="Accessg Grid", active=True)
+    snap.credentials_by_person["11587"] = [SimpleNamespace(
+        id="seos", status=CredentialStatus.ACTIVE, trigger_active=True,
+        allocate_identity=True, deactivate_date=None,
+    )]
+    deleted: list[str] = []
+    ag = SimpleNamespace(access_cards=SimpleNamespace(
+        delete=lambda card_id: deleted.append(card_id),
+    ))
+    assert phase3_deletions.run(snap, ag) == 0
+    assert deleted == []
+
+
+def test_s12_expiries_are_rationed_per_cycle(monkeypatch):
+    """A date-format change could expire a whole population at once."""
+    rows = [
+        SimpleNamespace(
+            pacs_person_id=str(i), pacs_credential_id="seos",
+            ag_card_id=f"pass-{i}", status="active", sync_ref="",
+        )
+        for i in range(phase3_deletions.MAX_EXPIRIES_PER_CYCLE + 10)
+    ]
+    monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: rows)
+    monkeypatch.setattr(phase3_deletions.tracking, "update_status", lambda *a, **k: None)
+
+    snap = Snapshot()
+    for row in rows:
+        snap.people[row.pacs_person_id] = SimpleNamespace(
+            id=row.pacs_person_id, full_name="x", active=True,
+        )
+        snap.credentials_by_person[row.pacs_person_id] = [SimpleNamespace(
+            id="seos", status=CredentialStatus.ACTIVE, trigger_active=True,
+            allocate_identity=True,
+            deactivate_date=datetime(2020, 1, 2, tzinfo=UTC),
+        )]
+
+    deleted: list[str] = []
+    ag = SimpleNamespace(access_cards=SimpleNamespace(
+        delete=lambda card_id: deleted.append(card_id),
+    ))
+    phase3_deletions.run(snap, ag)
+    assert len(deleted) == phase3_deletions.MAX_EXPIRIES_PER_CYCLE
+
+
+def test_s12_a_card_not_yet_valid_holds_the_pass(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Dated to start next week: it should not open a door today."""
+    _ledger_for_slot2()
+    page = _dated_page(millennium_page, set_slot, activation="01/02/2099 12:00 AM")
+    adapter, _ = _adapter(make_millennium_adapter, page)
+    cred = _credential(adapter)
+    assert cred.status is CredentialStatus.SUSPENDED
+    assert cred.activate_date.year == 2099

@@ -24,6 +24,7 @@ never evidence.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
@@ -33,10 +34,26 @@ from .writeback import deleted_identities_from_cards
 
 logger = logging.getLogger(__name__)
 
+
+def _expired(cred) -> bool:
+    """Has this credential passed the date the PACS gave it?
+
+    Only ever True on a date the PACS actually stated: a credential with no
+    expiry is not expired, and one whose date we could not parse arrives as
+    None rather than as the epoch.
+    """
+    expires = getattr(cred, "deactivate_date", None)
+    return expires is not None and expires < datetime.now(UTC)
+
 # A destructive operation on the customer's own records, so it is rationed
 # the way provisioning is. A cycle that wants to remove more than this has
 # almost certainly misread something.
 MAX_RETIREMENTS_PER_CYCLE = 25
+
+# Deleting a pass because its card ran out of time is destructive and driven
+# by a clock, so a date-format change or a badly imported batch could expire
+# a whole population at once. Rationed for the same reason provisioning is.
+MAX_EXPIRIES_PER_CYCLE = 25
 
 
 def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> int:
@@ -47,6 +64,7 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
         return 0
 
     deleted = 0
+    expired_this_cycle = 0
     for tracked in tracking.all_tracked():
         if tracked.status in ("deleted", "deduped") or not tracked.ag_card_id:
             continue
@@ -72,6 +90,21 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
             reason = f"person {tracked.pacs_person_id} no longer in PACS"
         elif cred is None:
             reason = f"credential {tracked.pacs_credential_id} no longer on person"
+        elif _expired(cred):
+            # Whatever the Active box says. A card past its date is not a
+            # credential any more, and the pass on the holder's phone is the
+            # half the PACS cannot switch off by itself.
+            if expired_this_cycle >= MAX_EXPIRIES_PER_CYCLE:
+                logger.warning(
+                    "Phase 3: reached the expiry cap (%d) — the rest wait for "
+                    "the next cycle", MAX_EXPIRIES_PER_CYCLE,
+                )
+                continue
+            expired_this_cycle += 1
+            reason = (
+                f"credential expired on "
+                f"{cred.deactivate_date.strftime('%Y-%m-%d')}"
+            )
         # cred.trigger_active=False is handled in phase 2 (terminate).
 
         if reason is None:

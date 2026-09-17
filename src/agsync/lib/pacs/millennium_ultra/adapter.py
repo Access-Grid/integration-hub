@@ -938,6 +938,20 @@ class MillenniumUltraAdapter:
         live = {
             (s.facility_code, s.card_number): s for s in slots if not s.empty
         }
+        # The credential is only as valid as its shortest-lived card, and only
+        # live once its latest-starting one is. Both read off the cards we
+        # wrote rather than the pass, because an operator editing the dates in
+        # Millennium is the case this exists for.
+        recorded = [
+            live[(str(e.get("facility_code")), str(e.get("card_number")))]
+            for e in ledger
+            if (str(e.get("facility_code")), str(e.get("card_number"))) in live
+        ]
+        expires = [s.expiration for s in recorded if s.expiration]
+        starts = [s.activation for s in recorded if s.activation]
+        deactivate_date = min(expires) if expires else None
+        activate_date = max(starts) if starts else None
+
         status = CredentialStatus.ACTIVE
         for entry in ledger:
             key = (str(entry.get("facility_code")), str(entry.get("card_number")))
@@ -958,6 +972,17 @@ class MillenniumUltraAdapter:
                 )
                 status = CredentialStatus.SUSPENDED
                 break
+        now = datetime.now(UTC)
+        if status is CredentialStatus.ACTIVE and activate_date and activate_date > now:
+            # Dated to start later. The card should not open a door before
+            # the day it was issued for, and neither should the pass.
+            logger.info(
+                "Millennium: cardholder %s is not valid until %s — holding the "
+                "pass until then",
+                pid, activate_date.strftime("%Y-%m-%d"),
+            )
+            status = CredentialStatus.SUSPENDED
+
         return [
             Credential(
                 id=credential_id,
@@ -967,6 +992,10 @@ class MillenniumUltraAdapter:
                 card_number="",
                 site_code="",
                 status=status,
+                # Carried so phase 3 can retire a credential Millennium has
+                # dated out, whatever its Active box still says.
+                activate_date=activate_date,
+                deactivate_date=deactivate_date,
                 trigger_active=True,
                 allocate_identity=True,
                 raw={
