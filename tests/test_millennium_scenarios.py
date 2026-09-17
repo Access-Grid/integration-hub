@@ -687,3 +687,70 @@ def test_s12_a_card_not_yet_valid_holds_the_pass(
     cred = _credential(adapter)
     assert cred.status is CredentialStatus.SUSPENDED
     assert cred.activate_date.year == 2099
+
+
+# =====================================================================
+# Contact details — use what Millennium holds, invent only when it has none
+# =====================================================================
+
+
+def _with_contact(millennium_page, set_slot, *, email="", phone=""):
+    import re
+
+    page = _enrolled_page(millennium_page, set_slot, written={2: "5001"})
+    for field, value in (("EMail", email), ("Phone", phone)):
+        page = re.sub(
+            rf'(name="{field}"[^>]*?value=")[^"]*(")', rf'\g<1>{value}\g<2>', page,
+        )
+    return page
+
+
+def _person(adapter):
+    people = {p.id: p for p in adapter.list_people()}
+    adapter._profile_for("11587")
+    return {p.id: p for p in adapter.list_people()}["11587"], people["11587"]
+
+
+def test_a_real_address_is_used_in_preference_to_a_synthesized_one(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    page = _with_contact(millennium_page, set_slot, email="clarisse@icon.test")
+    adapter, _ = _adapter(make_millennium_adapter, page)
+    after, _ = _person(adapter)
+    assert after.email == "clarisse@icon.test"
+
+
+def test_a_phone_number_is_carried_through(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    page = _with_contact(millennium_page, set_slot, phone="+1 305 555 0142")
+    adapter, _ = _adapter(make_millennium_adapter, page)
+    after, _ = _person(adapter)
+    assert after.phone == "+1 305 555 0142"
+
+
+def test_an_install_with_no_contact_details_still_gets_an_address(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Which is this install: 0 of 1,599 cardholders hold either."""
+    page = _with_contact(millennium_page, set_slot)
+    adapter, _ = _adapter(make_millennium_adapter, page, email_domain="cards.example.com")
+    after, _ = _person(adapter)
+    assert after.email.endswith("@cards.example.com")
+    assert after.phone == ""
+
+
+def test_junk_in_the_email_field_is_treated_as_absent(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Free-text fields hold whatever was typed.
+
+    Issuing to one of those fails at AccessGrid with an error about the
+    address rather than about the field it came from, which is a miserable
+    thing to trace back to a typo in a PACS.
+    """
+    for junk in ("see reception", "n/a", "clarisse@icon", "@icon.test"):
+        page = _with_contact(millennium_page, set_slot, email=junk)
+        adapter, _ = _adapter(make_millennium_adapter, page)
+        after, _ = _person(adapter)
+        assert after.email.endswith("@cards.example.com"), junk

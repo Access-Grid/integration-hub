@@ -154,6 +154,25 @@ def parse_roster_name(name: str) -> tuple[str, str]:
     return match.group("first").strip(), match.group("last").strip()
 
 
+def _first_valid_email(*candidates: str) -> str:
+    """The first of these that could actually be delivered to.
+
+    Millennium's email fields are free text and hold whatever was typed —
+    a name, a note, a phone number. Issuing a pass to one of those fails at
+    AccessGrid with an error about the address rather than about the field
+    it came from, so anything without an @ and a dot after it is treated as
+    absent and the synthesized address is used instead.
+    """
+    for candidate in candidates:
+        value = (candidate or "").strip()
+        if not value or " " in value:
+            continue
+        local, _, domain = value.partition("@")
+        if local and "." in domain:
+            return value
+    return ""
+
+
 def synthesize_email(first: str, last: str, cardholder_id: str, domain: str) -> str:
     """Deterministic address for an install that stores none.
 
@@ -346,12 +365,19 @@ class MillenniumUltraAdapter:
                 first = profile.get("first") or first
                 last = profile.get("last") or last
             full_name = " ".join(p for p in (first, last) if p)
+            stored_email = (profile or {}).get("email") or ""
             yield Person(
                 id=pid,
                 full_name=full_name,
                 first_name=first,
                 last_name=last,
-                email=synthesize_email(first, last, pid, self.email_domain),
+                # Only invent one when the install holds none. A real address
+                # is the holder's, and the synthesized one is a stand-in that
+                # cannot receive anything.
+                email=stored_email or synthesize_email(
+                    first, last, pid, self.email_domain
+                ),
+                phone=(profile or {}).get("phone", ""),
                 # Millennium has no cardholder-level enable flag; the
                 # roster's IsActive only marks the row the UI has selected.
                 active=True,
@@ -1128,6 +1154,13 @@ class MillenniumUltraAdapter:
             "slots": slots,
             "first": form.value("FirstName"),
             "last": form.value("LastName"),
+            # Personal before company: the pass is delivered to a person, and
+            # a shared company address would send several people's passes to
+            # one inbox. Both are commonly blank — this install has neither
+            # for any of its 1,599 cardholders — which is what the synthesized
+            # address exists for.
+            "email": _first_valid_email(form.value("EMail"), form.value("CompanyEMail")),
+            "phone": (form.value("Phone") or form.value("InternalPhone") or "").strip(),
             "enrolled": any(self._is_trigger(s) for s in slots),
         }
         self._profiles[pid] = profile
