@@ -1083,11 +1083,14 @@ class MillenniumUltraAdapter:
                 f"Card_{slot}_ActivationDate",
                 format_datetime(identity.activate_date, self._offset_seconds),
             )
-        if identity.deactivate_date:
-            form.set_value(
-                f"Card_{slot}_ExpirationDate",
-                format_datetime(identity.deactivate_date, self._offset_seconds),
-            )
+        # The expiry is deliberately not written. Millennium owns that field,
+        # and AccessGrid applies a default of its own when issuing — so
+        # writing it back stamped a date nobody chose onto the card, and
+        # phase 3 would later delete the pass for reaching it.
+        #
+        # Not clearing it either: the form already carries whatever the slot
+        # held, so an empty slot stays empty and the marker we overwrite
+        # keeps the date an operator gave it.
         form.set_checked(f"Card_{slot}_Active", True)
 
     def _backing_off(self, pid: str) -> bool:

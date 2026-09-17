@@ -754,3 +754,58 @@ def test_junk_in_the_email_field_is_treated_as_absent(
         adapter, _ = _adapter(make_millennium_adapter, page)
         after, _ = _person(adapter)
         assert after.email.endswith("@cards.example.com"), junk
+
+
+def test_no_expiry_is_invented_for_a_card_millennium_left_blank(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Millennium owns the expiry, and AccessGrid defaults one when issuing.
+
+    Writing that default back stamped a date nobody chose onto the card —
+    and since phase 3 deletes a pass whose card has expired, it would have
+    revoked a working pass a year later for reaching a date the operator
+    never set.
+    """
+    import re
+
+    page = _enrolled_page(millennium_page, set_slot)
+    # The marker's slot is the one that gets written, and it carries no
+    # expiry of its own here.
+    page = re.sub(
+        r'(name="Card_1_ExpirationDate"[^>]*?value=")[^"]*(")', r"\g<1>\g<2>", page,
+    )
+    adapter, client = _adapter(make_millennium_adapter, page)
+
+    assert adapter.write_back_credentials("11587", "seos", [
+        CredentialIdentity(
+            "66", "1238",
+            datetime(2026, 9, 1, tzinfo=UTC),
+            datetime(2027, 9, 1, tzinfo=UTC),   # AccessGrid's default
+        ),
+    ]) is True
+
+    posted = _posted(client)
+    assert posted.value("Card_1_ExpirationDate") == ""
+    # And the credential therefore reports no end date, so nothing expires it.
+    SeosLedger.record("11587", "seos", [
+        {"slot": 1, "card_number": "1238", "facility_code": "66"},
+    ])
+
+
+def test_an_operators_own_expiry_survives_the_overwrite(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Overwriting the marker must not discard a date somebody set."""
+    import re
+
+    page = _enrolled_page(millennium_page, set_slot)
+    page = re.sub(
+        r'(name="Card_1_ExpirationDate"[^>]*?value=")[^"]*(")',
+        r"\g<1>12/31/2027 11:00 PM\g<2>", page,
+    )
+    adapter, client = _adapter(make_millennium_adapter, page)
+
+    adapter.write_back_credentials("11587", "seos", [
+        CredentialIdentity("66", "1238", None, datetime(2027, 9, 1, tzinfo=UTC)),
+    ])
+    assert _posted(client).value("Card_1_ExpirationDate") == "12/31/2027 11:00 PM"
