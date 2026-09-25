@@ -16,6 +16,7 @@ Routes:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -65,10 +66,32 @@ def _static_dir() -> str:
     return str(files("agsync") / "static")
 
 
+def _ignore_client_disconnects(loop, context: dict) -> None:
+    """Drop the noise a browser makes when it goes away mid-request.
+
+    On Windows the proactor event loop reports a client closing a connection
+    abruptly as an unhandled exception — WinError 10054, raised inside
+    asyncio's own callback rather than anywhere we can catch it. The HTMX
+    pollers on /status and /logs produce one every time a page is closed, and
+    the self-signed certificate encourages browsers to drop connections
+    rather than close them politely.
+
+    Nothing failed: the request is already over or the client has gone. But
+    it reaches the root logger, so it lands in the log viewer and buries the
+    lines that matter. Only this exception is dropped — everything else goes
+    to the default handler, because an event loop that swallows its own
+    errors is how a silent failure starts.
+    """
+    if isinstance(context.get("exception"), ConnectionResetError):
+        return
+    loop.default_exception_handler(context)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     install_log_handler()
+    asyncio.get_running_loop().set_exception_handler(_ignore_client_disconnects)
     # First line of the run: the log survives restarts, so without it there
     # is no way to tell a quiet cycle from a process that went away.
     logger.info(
