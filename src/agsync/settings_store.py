@@ -47,6 +47,19 @@ def _get_encrypted_json(key: str) -> dict[str, Any] | None:
     return json.loads(decrypt(raw))
 
 
+def set_json(key: str, payload: Any) -> None:
+    """Store an arbitrary encrypted JSON blob under `key`."""
+    set(key, encrypt(json.dumps(payload)))
+
+
+def get_json(key: str) -> Any:
+    """Read back a blob written by set_json, or None."""
+    raw = get(key)
+    if not raw:
+        return None
+    return json.loads(decrypt(raw))
+
+
 # ---- well-known keys -------------------------------------------------------
 
 class AccessGridConfig:
@@ -57,8 +70,14 @@ class AccessGridConfig:
     # user-supplied extras anyway, but we reject them at save time so the
     # operator gets immediate feedback instead of a silent override.
     RESERVED_METADATA_KEYS = frozenset(
-        {"pacs_credential_id", "site_code", "card_number"}
+        {"pacs_credential_id", "site_code", "card_number", "sync_ref"}
     )
+
+    # Sent on every pass this install issues. They describe the deployment
+    # rather than the person — a PACS that has no job titles still wants its
+    # passes labelled consistently — so they are configured once here instead
+    # of being read per-cardholder.
+    DEFAULT_CARD_CLASSIFICATION = "Resident"
 
     @staticmethod
     def save(
@@ -68,6 +87,8 @@ class AccessGridConfig:
         site_code: str = "",
         dedupe_by_site_card: bool = False,
         extra_metadata: dict[str, str] | None = None,
+        card_title: str = "",
+        card_classification: str = DEFAULT_CARD_CLASSIFICATION,
     ) -> None:
         _set_encrypted_json(
             AccessGridConfig.KEY,
@@ -78,6 +99,8 @@ class AccessGridConfig:
                 "site_code": site_code,
                 "dedupe_by_site_card": bool(dedupe_by_site_card),
                 "extra_metadata": dict(extra_metadata or {}),
+                "card_title": card_title,
+                "card_classification": card_classification,
             },
         )
 
@@ -102,6 +125,17 @@ class AccessGridConfig:
         if not existing:
             return False
         existing["dedupe_by_site_card"] = bool(enabled)
+        _set_encrypted_json(AccessGridConfig.KEY, existing)
+        return True
+
+    @staticmethod
+    def update_card_fields(card_title: str, card_classification: str) -> bool:
+        """Update the title and classification stamped on every pass."""
+        existing = _get_encrypted_json(AccessGridConfig.KEY)
+        if not existing:
+            return False
+        existing["card_title"] = card_title
+        existing["card_classification"] = card_classification
         _set_encrypted_json(AccessGridConfig.KEY, existing)
         return True
 
@@ -135,6 +169,23 @@ class PacsConfig:
         return _get_encrypted_json(PacsConfig.KEY)
 
     @staticmethod
+    def update_params(**changes: Any) -> bool:
+        """Merge changes into the saved connection params.
+
+        Merge rather than replace: the params dict also holds values the
+        connect flow wrote (the enrollment trigger), and a settings form that
+        only knows about two fields must not drop the rest.
+        """
+        existing = _get_encrypted_json(PacsConfig.KEY)
+        if not existing:
+            return False
+        params = dict(existing.get("params") or {})
+        params.update(changes)
+        existing["params"] = params
+        _set_encrypted_json(PacsConfig.KEY, existing)
+        return True
+
+    @staticmethod
     def credential_encoding() -> str:
         """Return the configured encoding, defaulting to site_card."""
         cfg = _get_encrypted_json(PacsConfig.KEY) or {}
@@ -142,5 +193,100 @@ class PacsConfig:
         return enc if enc == PacsConfig.ENCODING_FILE_DATA else PacsConfig.ENCODING_SITE_CARD
 
 
+class NotificationConfig:
+    """Optional SMTP relay for operator notifications.
+
+    Optional on purpose: the only notification that exists is the "sign in
+    again" nag, and an install with no relay still shows it in the UI and
+    the logs. Nothing here gates syncing.
+    """
+
+    KEY = "notifications"
+
+    @staticmethod
+    def save(
+        smtp_host: str = "",
+        smtp_port: int = 587,
+        smtp_username: str = "",
+        smtp_password: str = "",
+        from_address: str = "",
+        use_starttls: bool = True,
+        use_ssl: bool = False,
+    ) -> None:
+        _set_encrypted_json(
+            NotificationConfig.KEY,
+            {
+                "smtp_host": smtp_host,
+                "smtp_port": int(smtp_port or 587),
+                "smtp_username": smtp_username,
+                "smtp_password": smtp_password,
+                "from_address": from_address,
+                "use_starttls": bool(use_starttls),
+                "use_ssl": bool(use_ssl),
+            },
+        )
+
+    @staticmethod
+    def load() -> dict[str, Any] | None:
+        return _get_encrypted_json(NotificationConfig.KEY)
+
+
+class PacsSession:
+    """A browser session an operator handed us through AG Connect.
+
+    Kept apart from PacsConfig because it has a different lifetime: the
+    cookie expires and gets recaptured without any of the connection
+    settings changing, and a reconnect must not be able to disturb them.
+
+    Keyed by vendor, and the payload is whatever that PACS needs — the
+    adapter builds it from the captured cookies and consumes it again. Core
+    stores and forwards it without looking inside, which is what keeps the
+    connect flow free of any one vendor's cookie names.
+    """
+
+    PREFIX = "pacs_session"
+
+    @staticmethod
+    def _key(vendor: str) -> str:
+        return f"{PacsSession.PREFIX}:{vendor}"
+
+    @staticmethod
+    def save(vendor: str, session: dict[str, Any]) -> None:
+        _set_encrypted_json(PacsSession._key(vendor), dict(session))
+
+    @staticmethod
+    def load(vendor: str) -> dict[str, Any] | None:
+        return _get_encrypted_json(PacsSession._key(vendor))
+
+    @staticmethod
+    def clear(vendor: str) -> None:
+        delete(PacsSession._key(vendor))
+
+    @staticmethod
+    def is_connected(vendor: str) -> bool:
+        session = _get_encrypted_json(PacsSession._key(vendor)) or {}
+        # Every browser-login PACS proves itself with one cookie; which one
+        # is the adapter's business, so the payload names it the same way.
+        return bool(session.get("auth_cookie"))
+
+
 def is_configured() -> bool:
-    return AccessGridConfig.load() is not None and PacsConfig.load() is not None
+    """True when the wizard has produced a configuration the engine can run.
+
+    A PACS that advertises `requires_connect` is not finished until its
+    enrollment trigger has been chosen, which can only happen after the
+    operator has signed in — so a saved-but-unconnected install of such a
+    PACS reads as unconfigured and the engine stays parked.
+    """
+    if AccessGridConfig.load() is None:
+        return False
+    pacs = PacsConfig.load()
+    if pacs is None:
+        return False
+
+    from .lib.pacs import get_descriptor
+
+    descriptor = get_descriptor(pacs.get("vendor", ""))
+    if descriptor is not None and descriptor.requires_connect:
+        return bool((pacs.get("params") or {}).get("trigger_card_format"))
+    return True

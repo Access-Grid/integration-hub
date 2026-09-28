@@ -3,13 +3,75 @@
 Each entry in MIGRATIONS is run once, in order. Already-applied migrations
 are tracked in the `_migrations` table so we can add to this list without
 breaking existing installs.
+
+A step is either SQL or a callable taking the connection — the latter for
+data that SQL cannot reach, such as the encrypted settings blobs, whose
+contents are ciphertext to SQLite.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import Callable
 
-MIGRATIONS: list[tuple[str, str]] = [
+Step = str | Callable[[sqlite3.Connection], None]
+
+
+def _seos_credential_id_drops_the_slot(conn: sqlite3.Connection) -> None:
+    """Key a Seos credential on the cardholder, not on a slot position.
+
+    The id used to be "seos-slot<N>", N being the slot of the lowest-indexed
+    card carrying the trigger format. Cards we write carry that format too,
+    so writing into a slot below the operator's marker moved the id — and a
+    moved id reads as a brand-new credential, which phase 1 provisions a
+    second pass for. There is exactly one Seos credential per cardholder, so
+    the position never earned its place in the key.
+    """
+    conn.execute(
+        "UPDATE ag_credentials SET pacs_credential_id = 'seos' "
+        "WHERE pacs_credential_id LIKE 'seos-slot%'"
+    )
+
+    # The ledger of what we wrote into Millennium is an encrypted blob keyed
+    # "<person>:<credential>", so it has to be rewritten in Python.
+    from ..crypto import decrypt, encrypt
+
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = 'millennium_seos_slots'"
+    ).fetchone()
+    if row is None:
+        return
+    ledger = json.loads(decrypt(row[0]))
+    migrated: dict[str, list] = {}
+    for key, entries in ledger.items():
+        person, _, credential = key.partition(":")
+        if credential.startswith("seos-slot"):
+            key = f"{person}:seos"
+        # Merge rather than overwrite: two slot-keyed entries for one
+        # cardholder are exactly the duplicate this migration exists to stop.
+        migrated.setdefault(key, []).extend(entries)
+    conn.execute(
+        "UPDATE settings SET value = ? WHERE key = 'millennium_seos_slots'",
+        (encrypt(json.dumps(migrated)),),
+    )
+
+
+def _pacs_session_is_keyed_by_vendor(conn: sqlite3.Connection) -> None:
+    """Move the captured browser session under a vendor-keyed name.
+
+    It was stored as "millennium_session", which is the shape the whole
+    connect flow had: one vendor's cookie names in core. The payload is
+    unchanged — only core's name for it — so the row is renamed rather than
+    rewritten, and it stays encrypted throughout.
+    """
+    conn.execute(
+        "UPDATE OR REPLACE settings SET key = 'pacs_session:millennium_ultra' "
+        "WHERE key = 'millennium_session'"
+    )
+
+
+MIGRATIONS: list[tuple[str, Step]] = [
     (
         "001_init",
         """
@@ -86,6 +148,20 @@ MIGRATIONS: list[tuple[str, str]] = [
         ADD COLUMN lock_level INTEGER NOT NULL DEFAULT 0;
         """,
     ),
+    (
+        "004_ag_credentials_sync_ref",
+        """
+        -- Unique per issue, minted before the API call and stamped into the
+        -- card's metadata, so a pass can be found again by something we
+        -- chose rather than by whatever id the response happened to return.
+        ALTER TABLE ag_credentials ADD COLUMN sync_ref TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_ag_credentials_sync_ref
+            ON ag_credentials(sync_ref);
+        """,
+    ),
+    ("005_seos_credential_id_drops_the_slot", _seos_credential_id_drops_the_slot),
+    ("006_pacs_session_is_keyed_by_vendor", _pacs_session_is_keyed_by_vendor),
 ]
 
 
@@ -99,9 +175,12 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         """
     )
     applied = {r[0] for r in conn.execute("SELECT name FROM _migrations")}
-    for name, sql in MIGRATIONS:
+    for name, step in MIGRATIONS:
         if name in applied:
             continue
-        conn.executescript(sql)
+        if callable(step):
+            step(conn)
+        else:
+            conn.executescript(step)
         conn.execute("INSERT INTO _migrations(name) VALUES(?)", (name,))
     conn.commit()

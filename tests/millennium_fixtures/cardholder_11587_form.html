@@ -1,0 +1,1496 @@
+<!-- Captured from a live Millennium Ultra install: the cardholder detail
+     form for the disposable test record 11587. Kept whole and unedited
+     apart from the anti-forgery token, because the round-trip save
+     replaces the entire record and the guarantee under test is that we
+     replay every control the page served. -->
+<form action="/Cardholders/Cardholders/Index/11587" class="form-horizontal" enctype="multipart/form-data" id="myForm" method="post" role="form"><input name="__RequestVerificationToken" type="hidden" value="PAGE-TOKEN" /><div id="tabHolder">
+    <ul class="nav nav-tabs" role="tablist" id="cardholderTabsHeader">
+        <li role="presentation" class="active"><a href="#identification" aria-controls="identification" role="tab" data-toggle="tab">Identification</a></li>
+        <li role="presentation"><a href="#cards" aria-controls="cards" role="tab" data-toggle="tab">Cards</a></li>
+        <li role="presentation"><a href="#generalinfo" aria-controls="generalinfo" role="tab" data-toggle="tab">General Information</a></li>
+        <li role="presentation"><a href="#additionalinfo" aria-controls="additionalinfo" role="tab" data-toggle="tab">Additional Information</a></li>
+        <li role="presentation"><a href="#userfields" aria-controls="userfields" role="tab" data-toggle="tab">User Fields</a></li>
+    </ul>
+
+    <div class="tab-content" id="cardholderTabs">
+        <div role="tabpanel" class="tab-pane active" id="identification"><div class="row">
+    <div class="col-xs-12">
+        <div class="pull-left">
+            <div class="row">
+                <div class="col-xs-12">
+                    <div class="form-group pull-left">
+                        <label for="FirstName" class="control-label colLabel">First Name</label>
+                        <div class="colInput">
+                                <input name="FirstName" class="form-control" id="FirstName" type="text" value="Access"
+                                       data-val="true" data-val-required="The First Name is required." />
+                        </div>
+                        <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="FirstName"></div>
+                    </div>
+                    <div class="form-group pull-left col2">
+                        <label for="LastName" class="control-label colLabel">Last Name</label>
+                        <div class="colInput">
+                                <input name="LastName" class="form-control" id="LastName" type="text" value="Grid"
+                                       data-val="true" data-val-required="The Last Name is required." />
+                        </div>
+                        <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="LastName"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12">
+                    <div class="form-group pull-left ">
+                        <label for="MiddleName" class="control-label colLabel" >Card Type</label>
+                        <div class="colInput">
+                            <input class="form-control" id="MiddleName" name="MiddleName" type="text" value="" />
+                        </div>
+                    </div>
+                    <div class="form-group pull-left col2">
+                        <label for="EmployeeID" class="control-label colLabel">Employee ID</label>
+                        <div class="colInput">
+                                    <input name="EmployeeID" class="form-control" id="EmployeeID" type="text" value="123444"
+                                           data-val="true" data-val-required="The Employee ID is required."
+                                           data-val-remote="Cardholder with such Employee ID already exists."
+                                           data-val-remote-additionalfields="*.EmployeeID,*.ID,*.FirstName,*.LastName"
+                                           data-val-remote-url="/Cardholders/Cardholders/ValidateEmployeeID" />
+                        </div>
+                        <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="EmployeeID"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12">
+                    <div class="panel panel-default">
+                        <div class="panel-heading">Personal Information</div>
+                        <div class="panel-body">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="form-group">
+                                        <label for="Sex" class="{ class = control-label colLabel colLabelPersonal disabled, disabled = disabled }" disabled=&quot;disabled&quot;>Sex</label>
+                                        <div class="colInput colInputPersonal">
+                                            <select class="form-control selectpicker disabled" data-none-Selected-Text=" " disabled="disabled" id="Sex" name="Sex"><option selected="selected" value=""> </option>
+<option value="M">Male</option>
+<option value="F">Female</option>
+</select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="form-group">
+                                        <label for="Address1" class="control-label colLabel colLabelPersonal disabled" disabled=&quot;disabled&quot;>Address 1</label>
+                                        <div class="colInput colInputLong ">
+                                            <input class="form-control disabled" disabled="disabled" id="Address1" name="Address1" type="text" value="" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="form-group">
+                                        <label for="Address2" class="control-label colLabel colLabelPersonal disabled" disabled=&quot;disabled&quot;>Address 2</label>
+                                        <div class="colInput colInputLong">
+                                            <input class="form-control disabled" disabled="disabled" id="Address2" name="Address2" type="text" value="" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="form-group pull-left">
+                                        <label for="City" class="control-label colLabel colLabelPersonal disabled" disabled=&quot;disabled&quot;>City</label>
+                                        <div class="colInput colInputPersonal">
+                                            <input class="form-control disabled" disabled="disabled" id="City" name="City" type="text" value="" />
+                                        </div>
+                                    </div>
+                                    <div class="form-group pull-left col2">
+                                        <label for="State" class="control-label colLabel colLabelPersonalShort disabled" disabled=&quot;disabled&quot;>State</label>
+                                        <div class="colInput colInputPersonal">
+<select class="form-control selectpicker disabled" data-none-Selected-Text=" " disabled="disabled" id="State" name="State"><option selected="selected" value=""> </option>
+<option value="Alabama">Alabama</option>
+<option value="Alaska">Alaska</option>
+<option value="Arizona">Arizona</option>
+<option value="Arkansas">Arkansas</option>
+<option value="California">California</option>
+<option value="Colorado">Colorado</option>
+<option value="Connecticut">Connecticut</option>
+<option value="Delaware">Delaware</option>
+<option value="Florida">Florida</option>
+<option value="Georgia">Georgia</option>
+<option value="Hawaii">Hawaii</option>
+<option value="Idaho">Idaho</option>
+<option value="Illinois">Illinois</option>
+<option value="Indiana">Indiana</option>
+<option value="Iowa">Iowa</option>
+<option value="Kansas">Kansas</option>
+<option value="Kentucky">Kentucky</option>
+<option value="Louisiana">Louisiana</option>
+<option value="Maine">Maine</option>
+<option value="Maryland">Maryland</option>
+<option value="Massachusetts">Massachusetts</option>
+<option value="Michigan">Michigan</option>
+<option value="Minnesota">Minnesota</option>
+<option value="Mississippi">Mississippi</option>
+<option value="Missouri">Missouri</option>
+<option value="Montana">Montana</option>
+<option value="Nebraska">Nebraska</option>
+<option value="Nevada">Nevada</option>
+<option value="New Hampshire">New Hampshire</option>
+<option value="New Jersey">New Jersey</option>
+<option value="New Mexico">New Mexico</option>
+<option value="New York">New York</option>
+<option value="North Carolina">North Carolina</option>
+<option value="North Dakota">North Dakota</option>
+<option value="Ohio">Ohio</option>
+<option value="Oklahoma">Oklahoma</option>
+<option value="Oregon">Oregon</option>
+<option value="Pennsylvania">Pennsylvania</option>
+<option value="Rhode Island">Rhode Island</option>
+<option value="South Carolina">South Carolina</option>
+<option value="South Dakota">South Dakota</option>
+<option value="Tennessee">Tennessee</option>
+<option value="Texas">Texas</option>
+<option value="Utah">Utah</option>
+<option value="Vermont">Vermont</option>
+<option value="Virginia">Virginia</option>
+<option value="Washington">Washington</option>
+<option value="West Virginia">West Virginia</option>
+<option value="Wisconsin">Wisconsin</option>
+<option value="Wyoming">Wyoming</option>
+<option selected="selected" value=""> </option>
+<option value="Non US">Non US</option>
+</select>                                        </div>
+                                    </div>
+                                    <div class="form-group pull-left col2">
+                                        <label for="Zip" class="control-label colLabel colLabelPersonalShort disabled" disabled=&quot;disabled&quot;>Zip</label>
+                                        <div class="colInput colInputPersonal">
+                                            <input class="form-control disabled" disabled="disabled" id="Zip" name="Zip" type="text" value="" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="form-group pull-left">
+                                        <label for="Phone" class="control-label colLabel colLabelPersonal disabled" disabled=&quot;disabled&quot;>Phone</label>
+                                        <div class="colInput colInputPersonal">
+                                            <input class="form-control disabled" disabled="disabled" id="Phone" name="Phone" type="text" value="" />
+                                        </div>
+                                    </div>
+                                    <div class="form-group pull-left col2">
+                                        <label for="BirthDay" class="control-label colLabel colLabelPersonalShort disabled" disabled=&quot;disabled&quot;>Birthday</label>
+                                        <div class="colInput colInputPersonal">
+                                            <div class="input-group date" id="birthDatePicker">
+                                                <input name="BirthDay" class="form-control disabled" id="BirthDay" type="text"
+                                                       disabled=&quot;disabled&quot;
+                                                       value=""
+                                                       data-val="true" data-val-date="The Birthday must be a date" />
+                                                <span class="input-group-addon">
+                                                    <span class="glyphicon glyphicon-calendar"></span>
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="BirthDay"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="form-group">
+                                        <label for="EMail" class="control-label colLabel colLabelPersonal disabled" disabled=&quot;disabled&quot;>E-Mail</label>
+                                        <div class="colInput colInputLong">
+                                            <input class="form-control disabled" disabled="disabled" id="EMail" name="EMail" type="text" value="" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <div class="form-group">
+                            <label class="control-label colLabel">Created:</label>
+                            <label class="control-label colInput textLabel">8/18/2026 6:37:53 PM</label>
+
+                            <label class="control-label colLabel colLabelPersonal">Updated:</label>
+                            <label class="control-label colInput textLabel">8/19/2026 2:59:44 AM</label>
+                        </div>
+                        <div class="form-group">
+                            <label class="control-label colLabel disabled"
+                                   disabled=&quot;disabled&quot;>Current Status</label>
+                                <label class="control-label colInput textLabel disabled"
+                                       disabled=&quot;disabled&quot;></label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-xs-12">
+                                    <button type="button" class="btn btn-primary" id="accessHistoryButton"><span class="glyphicon glyphicon-list-alt" aria-hidden="true"></span> Access History</button>
+                            </div>
+                        </div>
+        </div>
+            <div class="colImages">
+                <div class="row">
+                    <div class="col-xs-12  text-center">
+                        <img id="cardholderImage" class="cardholder-image-block cardholder-image" src="/Images/pix.png" alt="Cardholder image" />
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 text-center">
+                        <span class="btn btn-default fileinput-button btn-xs">
+                            <span>Change photo</span>
+                            <input id="photoImage" type="file" name="photoImage">
+                        </span>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12  text-center"><img id="cardholderSign" class="cardholder-image-block cardholder-sign" src="/Images/pix.png" alt="Cardholder sign" /></div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 text-center">
+                        <span class="btn btn-default fileinput-button btn-xs">
+                            <span>Change sign</span>
+                            <input id="signImage" type="file" name="signImage">
+                        </span>
+                    </div>
+                </div>
+            </div>
+    </div>
+</div>
+<input data-val="true" data-val-required="The CardholderType field is required." id="CardholderType" name="CardholderType" type="hidden" value="Cardholder" /></div>
+        <div role="tabpanel" class="tab-pane" id="cards"><ul class="nav nav-tabs right-to-left" role="tablist">
+        <li role="presentation" class=""><a href="#Card_3" aria-controls="Card_3" role="tab" data-toggle="tab">Card 3</a></li>
+        <li role="presentation" class=""><a href="#Card_2" aria-controls="Card_2" role="tab" data-toggle="tab">Card 2</a></li>
+        <li role="presentation" class="active"><a href="#Card_1" aria-controls="Card_1" role="tab" data-toggle="tab">Card 1</a></li>
+</ul>
+<div class="tab-content" id="cardsTabs">
+        <div role="tabpanel" class="tab-pane" id="Card_3">
+
+<div class="row">
+    <div class="col-xs-12">
+        <input type="hidden" name="Card_3_CardID" id="Card_3_CardID" />
+        <div class="form-group pull-left">
+            <label for="Card_3_PrintedCardNumber" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Printed Card No.</label>
+            <div class="colInput">
+                <input name="Card_3_PrintedCardNumber" class="{ class = form-control disabled, disabled = disabled }" id="Card_3_PrintedCardNumber" type="text" 
+                       disabled=&quot;disabled&quot;
+                       value="" />
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_3_ActivationDate" class="control-label colLabel">Activation Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="Card_3_ActivationDatePicker">
+                    <input name="Card_3_ActivationDate" class="form-control" id="Card_3_ActivationDate" type="text" value=""
+                           data-val="true" data-val-date="The Card 3 Activation Date must be a date"
+                           data-val-conditionalrequired="The Card 3 Activation Date is required"
+                           data-val-conditionalrequired-conditionalproperty="#Card_3_Active" />
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_3_ActivationDate"></div>
+        </div>
+        <div class="form-group pull-left col2">
+                <div class="checkbox checkBoxLineC">
+                    <label class="control-label card3col-space">
+                        <input type="checkbox" name="Card_3_Active" id="Card_3_Active"  value="true">Active
+                    </label>
+                </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_3_EncodedCardNumber" class="control-label colLabel">Encoded Card No.</label>
+            <div class="colInput">
+                <input name="Card_3_EncodedCardNumber" class="form-control" id="Card_3_EncodedCardNumber" type="text"
+                       data-val="true" data-val-number="The Card 3  Encoded Card No. must be a number"
+                       data-val-range-min="0" data-val-range-max="9223372036854775807" data-val-range="The Card 3 Encoded Card No. is wrong"
+                       data-val-conditionalrequired="The Card 3 Encoded Card No. is required"
+                       data-val-conditionalrequired-conditionalproperty="#Card_3_Active"
+                       data-val-remote="The Card 3 Encoded Card No. is duplicated"
+                       data-val-remote-additionalfields="*.Card_3_EncodedCardNumber,*.Card_3_CardID,*.Card_3_FaciltyCode,*.Card_3_CardFormat"
+                       data-val-remote-url="/Cardholders/Cardholders/ValidateEncodedCardNumber" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_3_EncodedCardNumber"></div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_3_ExpirationDate" class="control-label colLabel">Expiration Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="Card_3_ExpirationDatePicker">
+                    <input name="Card_3_ExpirationDate" class="form-control" id="Card_3_ExpirationDate" type="text" value=""
+                           data-val="true" data-val-date="The Card 3 Expiration Date must be a date"
+                           data-val-conditionalrequired="The Card 3 Expiration Date is required"
+                           data-val-conditionalrequired-conditionalproperty="#Card_3_Active" />
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_3_ExpirationDate"></div>
+        </div>
+            <div class="form-group pull-left col2">
+                    <button type="button" class="btn btn-default card3col-space cards-buttons disabled" disabled>Delete card 3</button>
+            </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_3_FaciltyCode" class="control-label colLabel">Facility Code</label>
+            <div class="colInput">
+                <input name="Card_3_FaciltyCode" class="form-control" id="Card_3_FaciltyCode" type="text"
+                       data-val="true" data-val-number="The Card 3 Facility Code must be a number"
+                       data-val-range-min="0" data-val-range-max="32767" data-val-range="The Card 3 Facility Code is wrong" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_3_FaciltyCode"></div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_3_CardFormat" class="control-label colLabel">Card Format</label>
+            <div class="colInput">
+                <select name="Card_3_CardFormat" id="Card_3_CardFormat" class="form-control selectpicker" data-none-Selected-Text=" ">
+                                        <option value="4" >
+                        ABA Card
+                    </option>
+                    <option value="6" >
+                        Blue 37
+                    </option>
+                    <option value="7" >
+                        HID 37
+                    </option>
+                    <option value="3" >
+                        Marlok
+                    </option>
+                    <option value="5" >
+                        None
+                    </option>
+                    <option value="2" >
+                        Ultra - Wiegand 26 No FC
+                    </option>
+                    <option value="1" >
+                        Wiegand Card
+                    </option>
+                </select>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_3_BadgeType" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Badge Type</label>
+            <div class="colInput">
+                <select name="Card_3_BadgeType" id="Card_3_BadgeType" class="{ class = form-control selectpicker disabled, disabled = disabled, data_none_Selected_Text =   }"
+                        disabled=&quot;disabled&quot;>
+                        <option value="0" >
+                             
+                        </option>
+                        <option value="1" >
+                            Badge Type 1
+                        </option>
+                        <option value="2" >
+                            Badge Type 2
+                        </option>
+                        <option value="3" >
+                            Badge Type 3
+                        </option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_3_CardClass" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Card Class</label>
+            <div class="colInput">
+                <select name="Card_3_CardClass" id="Card_3_CardClass" class="{ class = form-control selectpicker disabled, disabled = disabled, data_none_Selected_Text =   }"
+                        disabled=&quot;disabled&quot;>
+                        <option value="0" >
+                             
+                        </option>
+                        <option value="4" >
+                            Card Class 1
+                        </option>
+                        <option value="5" >
+                            Card Class 2
+                        </option>
+                        <option value="6" >
+                            Card Class 3
+                        </option>
+                </select>
+            </div>
+        </div>
+            <div class="form-group pull-left col2">
+                <button type="button" class="btn btn-default card3col-space cards-buttons enroll-card-button">Enroll Card Number</button>
+            </div>
+
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_3_PinCode" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>PIN Code</label>
+            <div class="colInput">
+                <input name="Card_3_PinCode" class="{ class = form-control disabled, disabled = disabled }" id="Card_3_PinCode" type="text"
+                       disabled=&quot;disabled&quot;
+                       data-val="true" data-val-number="The Card 3 PIN Code must be a number"
+                       data-val-range-min="0" data-val-range-max="2147483647" data-val-range="The Card 3  PIN Code is wrong" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_3_PinCode"></div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_3_IssueCode" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Issue Code</label>
+            <div class="colInput">
+                <input name="Card_3_IssueCode" class="{ class = form-control disabled, disabled = disabled }" id="Card_3_IssueCode" type="text"
+                       disabled=&quot;disabled&quot;
+                       data-val="true" data-val-number="The Card 3 Issue Code must be a number"
+                       data-val-range-min="0" data-val-range-max="2147483647" data-val-range="The Card 3  Issue Code is wrong" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_3_IssueCode"></div>
+        </div>
+    </div>
+</div>
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="form-group pull-left">
+                        <label class="control-label colLabel"></label>
+                        <div class="colInput"></div>
+            </div>
+
+        </div>
+    </div>
+
+
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="form-group">
+                <div class="checkbox using-times-checkbox">
+                    <label class="control-label pull-left">
+                        <input type="checkbox" name="Card_3_EnableCardsExpiration" id="Card_3_EnableCardsExpiration"  value="true">
+                        Enable card disabling after using times
+                    </label>
+                </div>
+                <div class="colLabelPersonal pull-left using-times-textbox">
+                    <input name="Card_3_CardExpirationCount" class="form-control" id="Card_3_CardExpirationCount" type="text" value="0" />
+                </div>
+            </div>
+        </div>
+    </div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="table-responsive access-level-div">
+            <table class="table table-bordered table-condensed">
+                <thead>
+                    <tr>
+                        <th class="hide">Tenant</th>
+                            <th>Access Level 1</th>
+                            <th>Access Level 2</th>
+                            <th>Access Level 3</th>
+                            <th>Access Level 4</th>
+                            <th>Access Level 5</th>
+                            <th>Access Level 6</th>
+                            <th>Access Level 7</th>
+                            <th>Access Level 8</th>
+                            <th>Access Level 9</th>
+                            <th>Access Level 10</th>
+                    </tr>
+                </thead>
+                <tbody>
+                        <tr data-tenant-id="0" class="access-level-row">
+                            <td class="hide">
+                                <div class="checkbox checkBoxLine">
+                                    <label class="control-label text-left">
+                                        <input type="checkbox" name="Card_3_Tenant_0" id="Card_3_Tenant_0" value="0" checked>Global
+                                    </label>
+                                </div>
+                            </td>
+                                <td data-ac-n="0">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="1">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="2">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="3">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="4">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="5">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="6">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="7">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="8">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="9">
+                                    <div>
+                                    </div>
+                                </td>
+                        </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+<input type="hidden" name="Card_3_AccessLevels" id="Card_3_AccessLevels" value="{}" />
+</div>
+        <div role="tabpanel" class="tab-pane" id="Card_2">
+
+<div class="row">
+    <div class="col-xs-12">
+        <input type="hidden" name="Card_2_CardID" id="Card_2_CardID" value="7922" />
+        <div class="form-group pull-left">
+            <label for="Card_2_PrintedCardNumber" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Printed Card No.</label>
+            <div class="colInput">
+                <input name="Card_2_PrintedCardNumber" class="{ class = form-control disabled, disabled = disabled }" id="Card_2_PrintedCardNumber" type="text" 
+                       disabled=&quot;disabled&quot;
+                       value="" />
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_2_ActivationDate" class="control-label colLabel">Activation Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="Card_2_ActivationDatePicker">
+                    <input name="Card_2_ActivationDate" class="form-control" id="Card_2_ActivationDate" type="text" value="08/18/2026 12:00 AM"
+                           data-val="true" data-val-date="The Card 2 Activation Date must be a date"
+                           data-val-conditionalrequired="The Card 2 Activation Date is required"
+                           data-val-conditionalrequired-conditionalproperty="#Card_2_Active" />
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_2_ActivationDate"></div>
+        </div>
+        <div class="form-group pull-left col2">
+                <div class="checkbox checkBoxLineC">
+                    <label class="control-label card3col-space">
+                        <input type="checkbox" name="Card_2_Active" id="Card_2_Active"  value="true">Active
+                    </label>
+                </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_2_EncodedCardNumber" class="control-label colLabel">Encoded Card No.</label>
+            <div class="colInput">
+                <input name="Card_2_EncodedCardNumber" class="form-control" id="Card_2_EncodedCardNumber" type="text" value="2"
+                       data-val="true" data-val-number="The Card 2  Encoded Card No. must be a number"
+                       data-val-range-min="0" data-val-range-max="9223372036854775807" data-val-range="The Card 2 Encoded Card No. is wrong"
+                       data-val-conditionalrequired="The Card 2 Encoded Card No. is required"
+                       data-val-conditionalrequired-conditionalproperty="#Card_2_Active"
+                       data-val-remote="The Card 2 Encoded Card No. is duplicated"
+                       data-val-remote-additionalfields="*.Card_2_EncodedCardNumber,*.Card_2_CardID,*.Card_2_FaciltyCode,*.Card_2_CardFormat"
+                       data-val-remote-url="/Cardholders/Cardholders/ValidateEncodedCardNumber" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_2_EncodedCardNumber"></div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_2_ExpirationDate" class="control-label colLabel">Expiration Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="Card_2_ExpirationDatePicker">
+                    <input name="Card_2_ExpirationDate" class="form-control" id="Card_2_ExpirationDate" type="text" value="08/17/2028 12:00 AM"
+                           data-val="true" data-val-date="The Card 2 Expiration Date must be a date"
+                           data-val-conditionalrequired="The Card 2 Expiration Date is required"
+                           data-val-conditionalrequired-conditionalproperty="#Card_2_Active" />
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_2_ExpirationDate"></div>
+        </div>
+            <div class="form-group pull-left col2">
+                    <button type="button" class="btn btn-default card3col-space cards-buttons delete-card-button">Delete card 2</button>
+            </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_2_FaciltyCode" class="control-label colLabel">Facility Code</label>
+            <div class="colInput">
+                <input name="Card_2_FaciltyCode" class="form-control" id="Card_2_FaciltyCode" type="text" value="2"
+                       data-val="true" data-val-number="The Card 2 Facility Code must be a number"
+                       data-val-range-min="0" data-val-range-max="32767" data-val-range="The Card 2 Facility Code is wrong" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_2_FaciltyCode"></div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_2_CardFormat" class="control-label colLabel">Card Format</label>
+            <div class="colInput">
+                <select name="Card_2_CardFormat" id="Card_2_CardFormat" class="form-control selectpicker" data-none-Selected-Text=" ">
+                                        <option value="4" >
+                        ABA Card
+                    </option>
+                    <option value="6" >
+                        Blue 37
+                    </option>
+                    <option value="7" >
+                        HID 37
+                    </option>
+                    <option value="3" >
+                        Marlok
+                    </option>
+                    <option value="5" >
+                        None
+                    </option>
+                    <option value="2" >
+                        Ultra - Wiegand 26 No FC
+                    </option>
+                    <option value="1" selected>
+                        Wiegand Card
+                    </option>
+                </select>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_2_BadgeType" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Badge Type</label>
+            <div class="colInput">
+                <select name="Card_2_BadgeType" id="Card_2_BadgeType" class="{ class = form-control selectpicker disabled, disabled = disabled, data_none_Selected_Text =   }"
+                        disabled=&quot;disabled&quot;>
+                        <option value="0" >
+                             
+                        </option>
+                        <option value="1" >
+                            Badge Type 1
+                        </option>
+                        <option value="2" >
+                            Badge Type 2
+                        </option>
+                        <option value="3" >
+                            Badge Type 3
+                        </option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_2_CardClass" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Card Class</label>
+            <div class="colInput">
+                <select name="Card_2_CardClass" id="Card_2_CardClass" class="{ class = form-control selectpicker disabled, disabled = disabled, data_none_Selected_Text =   }"
+                        disabled=&quot;disabled&quot;>
+                        <option value="0" >
+                             
+                        </option>
+                        <option value="4" >
+                            Card Class 1
+                        </option>
+                        <option value="5" >
+                            Card Class 2
+                        </option>
+                        <option value="6" >
+                            Card Class 3
+                        </option>
+                </select>
+            </div>
+        </div>
+            <div class="form-group pull-left col2">
+                <button type="button" class="btn btn-default card3col-space cards-buttons enroll-card-button">Enroll Card Number</button>
+            </div>
+
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_2_PinCode" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>PIN Code</label>
+            <div class="colInput">
+                <input name="Card_2_PinCode" class="{ class = form-control disabled, disabled = disabled }" id="Card_2_PinCode" type="text"
+                       disabled=&quot;disabled&quot;
+                       data-val="true" data-val-number="The Card 2 PIN Code must be a number"
+                       data-val-range-min="0" data-val-range-max="2147483647" data-val-range="The Card 2  PIN Code is wrong" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_2_PinCode"></div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_2_IssueCode" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Issue Code</label>
+            <div class="colInput">
+                <input name="Card_2_IssueCode" class="{ class = form-control disabled, disabled = disabled }" id="Card_2_IssueCode" type="text"
+                       disabled=&quot;disabled&quot;
+                       data-val="true" data-val-number="The Card 2 Issue Code must be a number"
+                       data-val-range-min="0" data-val-range-max="2147483647" data-val-range="The Card 2  Issue Code is wrong" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_2_IssueCode"></div>
+        </div>
+    </div>
+</div>
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="form-group pull-left">
+                        <label class="control-label colLabel"></label>
+                        <div class="colInput"></div>
+            </div>
+
+        </div>
+    </div>
+
+
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="form-group">
+                <div class="checkbox using-times-checkbox">
+                    <label class="control-label pull-left">
+                        <input type="checkbox" name="Card_2_EnableCardsExpiration" id="Card_2_EnableCardsExpiration"  value="true">
+                        Enable card disabling after using times
+                    </label>
+                </div>
+                <div class="colLabelPersonal pull-left using-times-textbox">
+                    <input name="Card_2_CardExpirationCount" class="form-control" id="Card_2_CardExpirationCount" type="text" value="0" />
+                </div>
+            </div>
+        </div>
+    </div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="table-responsive access-level-div">
+            <table class="table table-bordered table-condensed">
+                <thead>
+                    <tr>
+                        <th class="hide">Tenant</th>
+                            <th>Access Level 1</th>
+                            <th>Access Level 2</th>
+                            <th>Access Level 3</th>
+                            <th>Access Level 4</th>
+                            <th>Access Level 5</th>
+                            <th>Access Level 6</th>
+                            <th>Access Level 7</th>
+                            <th>Access Level 8</th>
+                            <th>Access Level 9</th>
+                            <th>Access Level 10</th>
+                    </tr>
+                </thead>
+                <tbody>
+                        <tr data-tenant-id="0" class="access-level-row">
+                            <td class="hide">
+                                <div class="checkbox checkBoxLine">
+                                    <label class="control-label text-left">
+                                        <input type="checkbox" name="Card_2_Tenant_0" id="Card_2_Tenant_0" value="0" checked>Global
+                                    </label>
+                                </div>
+                            </td>
+                                <td data-ac-n="0">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="1">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="2">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="3">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="4">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="5">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="6">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="7">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="8">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="9">
+                                    <div>
+                                    </div>
+                                </td>
+                        </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+<input type="hidden" name="Card_2_AccessLevels" id="Card_2_AccessLevels" value="{}" />
+</div>
+        <div role="tabpanel" class="tab-pane active" id="Card_1">
+
+<div class="row">
+    <div class="col-xs-12">
+        <input type="hidden" name="Card_1_CardID" id="Card_1_CardID" value="7919" />
+        <div class="form-group pull-left">
+            <label for="Card_1_PrintedCardNumber" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Printed Card No.</label>
+            <div class="colInput">
+                <input name="Card_1_PrintedCardNumber" class="{ class = form-control disabled, disabled = disabled }" id="Card_1_PrintedCardNumber" type="text" 
+                       disabled=&quot;disabled&quot;
+                       value="" />
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_1_ActivationDate" class="control-label colLabel">Activation Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="Card_1_ActivationDatePicker">
+                    <input name="Card_1_ActivationDate" class="form-control" id="Card_1_ActivationDate" type="text" value="08/18/2026 12:00 AM"
+                           data-val="true" data-val-date="The Card 1 Activation Date must be a date"
+                           data-val-conditionalrequired="The Card 1 Activation Date is required"
+                           data-val-conditionalrequired-conditionalproperty="#Card_1_Active" />
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_1_ActivationDate"></div>
+        </div>
+        <div class="form-group pull-left col2">
+                <div class="checkbox checkBoxLineC">
+                    <label class="control-label card3col-space">
+                        <input type="checkbox" name="Card_1_Active" id="Card_1_Active"  value="true">Active
+                    </label>
+                </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_1_EncodedCardNumber" class="control-label colLabel">Encoded Card No.</label>
+            <div class="colInput">
+                <input name="Card_1_EncodedCardNumber" class="form-control" id="Card_1_EncodedCardNumber" type="text" value="1"
+                       data-val="true" data-val-number="The Card 1  Encoded Card No. must be a number"
+                       data-val-range-min="0" data-val-range-max="9223372036854775807" data-val-range="The Card 1 Encoded Card No. is wrong"
+                       data-val-conditionalrequired="The Card 1 Encoded Card No. is required"
+                       data-val-conditionalrequired-conditionalproperty="#Card_1_Active"
+                       data-val-remote="The Card 1 Encoded Card No. is duplicated"
+                       data-val-remote-additionalfields="*.Card_1_EncodedCardNumber,*.Card_1_CardID,*.Card_1_FaciltyCode,*.Card_1_CardFormat"
+                       data-val-remote-url="/Cardholders/Cardholders/ValidateEncodedCardNumber" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_1_EncodedCardNumber"></div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_1_ExpirationDate" class="control-label colLabel">Expiration Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="Card_1_ExpirationDatePicker">
+                    <input name="Card_1_ExpirationDate" class="form-control" id="Card_1_ExpirationDate" type="text" value="08/17/2028 12:00 AM"
+                           data-val="true" data-val-date="The Card 1 Expiration Date must be a date"
+                           data-val-conditionalrequired="The Card 1 Expiration Date is required"
+                           data-val-conditionalrequired-conditionalproperty="#Card_1_Active" />
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_1_ExpirationDate"></div>
+        </div>
+            <div class="form-group pull-left col2">
+                    <button type="button" class="btn btn-default card3col-space cards-buttons delete-card-button">Delete card 1</button>
+            </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_1_FaciltyCode" class="control-label colLabel">Facility Code</label>
+            <div class="colInput">
+                <input name="Card_1_FaciltyCode" class="form-control" id="Card_1_FaciltyCode" type="text" value="1"
+                       data-val="true" data-val-number="The Card 1 Facility Code must be a number"
+                       data-val-range-min="0" data-val-range-max="32767" data-val-range="The Card 1 Facility Code is wrong" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_1_FaciltyCode"></div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_1_CardFormat" class="control-label colLabel">Card Format</label>
+            <div class="colInput">
+                <select name="Card_1_CardFormat" id="Card_1_CardFormat" class="form-control selectpicker" data-none-Selected-Text=" ">
+                                        <option value="4" >
+                        ABA Card
+                    </option>
+                    <option value="6" >
+                        Blue 37
+                    </option>
+                    <option value="7" >
+                        HID 37
+                    </option>
+                    <option value="3" >
+                        Marlok
+                    </option>
+                    <option value="5" >
+                        None
+                    </option>
+                    <option value="2" >
+                        Ultra - Wiegand 26 No FC
+                    </option>
+                    <option value="1" selected>
+                        Wiegand Card
+                    </option>
+                </select>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_1_BadgeType" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Badge Type</label>
+            <div class="colInput">
+                <select name="Card_1_BadgeType" id="Card_1_BadgeType" class="{ class = form-control selectpicker disabled, disabled = disabled, data_none_Selected_Text =   }"
+                        disabled=&quot;disabled&quot;>
+                        <option value="0" >
+                             
+                        </option>
+                        <option value="1" >
+                            Badge Type 1
+                        </option>
+                        <option value="2" >
+                            Badge Type 2
+                        </option>
+                        <option value="3" >
+                            Badge Type 3
+                        </option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_1_CardClass" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Card Class</label>
+            <div class="colInput">
+                <select name="Card_1_CardClass" id="Card_1_CardClass" class="{ class = form-control selectpicker disabled, disabled = disabled, data_none_Selected_Text =   }"
+                        disabled=&quot;disabled&quot;>
+                        <option value="0" >
+                             
+                        </option>
+                        <option value="4" >
+                            Card Class 1
+                        </option>
+                        <option value="5" >
+                            Card Class 2
+                        </option>
+                        <option value="6" >
+                            Card Class 3
+                        </option>
+                </select>
+            </div>
+        </div>
+            <div class="form-group pull-left col2">
+                <button type="button" class="btn btn-default card3col-space cards-buttons enroll-card-button">Enroll Card Number</button>
+            </div>
+
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Card_1_PinCode" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>PIN Code</label>
+            <div class="colInput">
+                <input name="Card_1_PinCode" class="{ class = form-control disabled, disabled = disabled }" id="Card_1_PinCode" type="text"
+                       disabled=&quot;disabled&quot;
+                       data-val="true" data-val-number="The Card 1 PIN Code must be a number"
+                       data-val-range-min="0" data-val-range-max="2147483647" data-val-range="The Card 1  PIN Code is wrong" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_1_PinCode"></div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="Card_1_IssueCode" class="{ class = control-label colLabel disabled, disabled = disabled }"
+                   disabled=&quot;disabled&quot;>Issue Code</label>
+            <div class="colInput">
+                <input name="Card_1_IssueCode" class="{ class = form-control disabled, disabled = disabled }" id="Card_1_IssueCode" type="text"
+                       disabled=&quot;disabled&quot;
+                       data-val="true" data-val-number="The Card 1 Issue Code must be a number"
+                       data-val-range-min="0" data-val-range-max="2147483647" data-val-range="The Card 1  Issue Code is wrong" />
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="Card_1_IssueCode"></div>
+        </div>
+    </div>
+</div>
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="form-group pull-left">
+                        <label class="control-label colLabel"></label>
+                        <div class="colInput"></div>
+            </div>
+
+        </div>
+    </div>
+
+
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="form-group">
+                <div class="checkbox using-times-checkbox">
+                    <label class="control-label pull-left">
+                        <input type="checkbox" name="Card_1_EnableCardsExpiration" id="Card_1_EnableCardsExpiration"  value="true">
+                        Enable card disabling after using times
+                    </label>
+                </div>
+                <div class="colLabelPersonal pull-left using-times-textbox">
+                    <input name="Card_1_CardExpirationCount" class="form-control" id="Card_1_CardExpirationCount" type="text" value="0" />
+                </div>
+            </div>
+        </div>
+    </div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="table-responsive access-level-div">
+            <table class="table table-bordered table-condensed">
+                <thead>
+                    <tr>
+                        <th class="hide">Tenant</th>
+                            <th>Access Level 1</th>
+                            <th>Access Level 2</th>
+                            <th>Access Level 3</th>
+                            <th>Access Level 4</th>
+                            <th>Access Level 5</th>
+                            <th>Access Level 6</th>
+                            <th>Access Level 7</th>
+                            <th>Access Level 8</th>
+                            <th>Access Level 9</th>
+                            <th>Access Level 10</th>
+                    </tr>
+                </thead>
+                <tbody>
+                        <tr data-tenant-id="0" class="access-level-row">
+                            <td class="hide">
+                                <div class="checkbox checkBoxLine">
+                                    <label class="control-label text-left">
+                                        <input type="checkbox" name="Card_1_Tenant_0" id="Card_1_Tenant_0" value="0" checked>Global
+                                    </label>
+                                </div>
+                            </td>
+                                <td data-ac-n="0">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="1">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="2">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="3">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="4">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="5">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="6">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="7">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="8">
+                                    <div>
+                                    </div>
+                                </td>
+                                <td data-ac-n="9">
+                                    <div>
+                                    </div>
+                                </td>
+                        </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+<input type="hidden" name="Card_1_AccessLevels" id="Card_1_AccessLevels" value="{}" />
+</div>
+</div></div>
+        <div role="tabpanel" class="tab-pane" id="generalinfo"><div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="PrimaryLocation" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Primary Location</label>
+            <div class="colInput">
+                <select class="form-control selectpicker disabled" data-none-Selected-Text=" " data-val="true" data-val-number="The field PrimaryLocation must be a number." disabled="disabled" id="PrimaryLocation" name="PrimaryLocation"><option value="0"> </option>
+<option value="19">Primary Location 1</option>
+<option value="20">Primary Location 2</option>
+<option value="21">Primary Location 3</option>
+</select>
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="IssueDate" class="control-label colLabel"
+                   >Issue Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="issueDatePicker">
+                    <input name="IssueDate" class="form-control" 
+                           id="IssueDate" type="text" value=""
+                           
+                           data-val="true" data-val-date="The Issue Date must be a date" />
+                        <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="IssueDate"></div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="Department" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Department</label>
+            <div class="colInput">
+                <select class="form-control selectpicker disabled" data-none-Selected-Text=" " data-val="true" data-val-number="The field Department must be a number." disabled="disabled" id="Department" name="Department"><option value="0"> </option>
+<option value="61">1005</option>
+<option value="33">2702</option>
+<option value="24">3101</option>
+<option value="35">3103</option>
+<option value="60">3-11-10</option>
+<option value="40">3-12-10</option>
+<option value="47">3-19-10</option>
+<option value="37">3-2-10</option>
+<option value="41">3-22-10</option>
+<option value="59">3-30-10</option>
+<option value="28">3-4-10</option>
+<option value="50">4-13-10</option>
+<option value="55">4-2-10</option>
+<option value="46">4-5-10</option>
+<option value="53">4-6-10</option>
+<option value="26">908</option>
+<option value="45">Chief Engineer</option>
+<option value="7">Department 1</option>
+<option value="8">Department 2</option>
+<option value="9">Department 3</option>
+<option value="62">dont work</option>
+<option value="38">FD Key</option>
+<option value="48">front desk</option>
+<option value="31">Front Desk Fob</option>
+<option value="32">House Keeping</option>
+<option value="30">HOUSEKEEPER</option>
+<option value="29">Housekeeping</option>
+<option value="49">Housekepping</option>
+<option value="34">JMA</option>
+<option value="27">LUKES</option>
+<option value="44">OLD TENANT FOB</option>
+<option value="63">owner</option>
+<option value="36">per unit owners fax</option>
+<option value="57">PortableWelding</option>
+<option value="43">Power of Attorney</option>
+<option value="25">RECEIVING</option>
+<option value="58">renter</option>
+<option value="52">Restaurant</option>
+<option value="56">SECURITY</option>
+<option value="51">Tenant</option>
+<option value="54">Tenant Fleuling</option>
+<option value="42">Unit 2407</option>
+<option value="23">Unit 2605</option>
+<option value="39">Valet</option>
+<option value="22">Vitel</option>
+</select>
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="ReIssueDate" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Re-issue Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="reIssueDatePicker">
+                    <input name="ReIssueDate" class="form-control disabled" id="ReIssueDate" type="text" value=""
+                           disabled=&quot;disabled&quot;
+                           data-val="true" data-val-date="The Re-issue Date must be a date" />
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="ReIssueDate"></div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="EmployeeClass" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Employee Class</label>
+            <div class="colInput">
+                <select class="form-control selectpicker disabled" data-none-Selected-Text=" " data-val="true" data-val-number="The field EmployeeClass must be a number." disabled="disabled" id="EmployeeClass" name="EmployeeClass"><option value="0"> </option>
+<option value="10">Employee Class 1</option>
+<option value="11">Employee Class 2</option>
+<option value="12">Employee Class 3</option>
+</select>
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="CompanyEMail" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Company E-Mail</label>
+            <div class="colInput">
+                <input class="form-control disabled" disabled="disabled" id="CompanyEMail" name="CompanyEMail" type="text" value="" />
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="MasterArea" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Master Area</label>
+            <div class="colInput">
+                <input class="form-control disabled" disabled="disabled" id="MasterArea" name="MasterArea" type="text" value="" />
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="InternalPhone" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Internal Phone</label>
+            <div class="colInput">
+                <input class="form-control disabled" disabled="disabled" id="InternalPhone" name="InternalPhone" type="text" value="" />
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group">
+            <label for="Supervisor" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Supervisor</label>
+            <div class="colInput">
+                <input class="form-control disabled" disabled="disabled" id="Supervisor" name="Supervisor" type="text" value="" />
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group">
+            <label for="Comment1" class="control-label colLabel"
+                   >Comments</label>
+            <div class="col-xs-12">
+                <textarea name="Comment1" class="form-control"
+                    id="Comment1"
+                    
+                    rows="10"></textarea>
+            </div>
+        </div>
+    </div>
+</div></div>
+        <div role="tabpanel" class="tab-pane" id="additionalinfo"><div class="row">
+    <div class="col-xs-12">
+        <div class="form-group">
+
+                <label class="control-label colLabel">&nbsp;</label>
+                <div class="checkbox">
+                    <label class="control-label disabled"
+                           disabled=&quot;disabled&quot;>
+                        <input type="checkbox" name="AdaShunt" id="AdaShunt"  value="true"
+                               disabled=&quot;disabled&quot;>ADA Shunt
+                    </label>
+                </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="VehicleModel" class="control-label colLabel"
+                   >Vehicle Make</label>
+            <div class="colInput">
+                <input class="form-control" id="VehicleModel" name="VehicleModel" type="text" value="" />
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="BadgeDate" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Badge Print Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="badgeDatePicker">
+                    <input name="BadgeDate" class="form-control disabled" 
+                           disabled=&quot;disabled&quot;
+                           id="BadgeDate" type="text" value=""
+                           data-val="true" data-val-date="The Badge Print Date must be a date" />
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="BadgeDate"></div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="VehicleColor" class="control-label colLabel"
+                   >Vehicle Model</label>
+            <div class="colInput">
+                <input class="form-control" id="VehicleColor" name="VehicleColor" type="text" value="" />
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="EmploymentDate" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Employment Date</label>
+            <div class="colInput">
+                <div class="input-group date" id="employmentDatePicker">
+                    <input name="EmploymentDate" class="form-control disabled" id="EmploymentDate" type="text" value=""
+                           disabled=&quot;disabled&quot;
+                           data-val="true" data-val-date="The Employment Date must be a date" />
+                    <span class="input-group-addon">
+                        <span class="glyphicon glyphicon-calendar"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-danger field-validation-valid validator" data-valmsg-replace="true" data-valmsg-for="EmploymentDate"></div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="VehicleYear" class="control-label colLabel"
+                    >Vehicle Color</label>
+            <div class="colInput">
+                <input class="form-control" id="VehicleYear" name="VehicleYear" type="text" value="" />
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="ParkingDesignation" class="control-label colLabel disabled"
+                   disabled=&quot;disabled&quot;>Parking Designation</label>
+            <div class="colInput">
+                <select class="form-control selectpicker disabled" data-none-Selected-Text=" " data-val="true" data-val-number="The field ParkingDesignation must be a number." disabled="disabled" id="ParkingDesignation" name="ParkingDesignation"><option value="0"> </option>
+<option value="16">1</option>
+<option value="17">2</option>
+<option value="18">3</option>
+<option value="66">4</option>
+<option value="67">5</option>
+<option value="68">6</option>
+<option value="69">7</option>
+</select>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group pull-left">
+            <label for="LicensePlateNo" class="control-label colLabel"
+                   >License Plate No.</label>
+            <div class="colInput">
+                <input class="form-control" id="LicensePlateNo" name="LicensePlateNo" type="text" value="" />
+            </div>
+        </div>
+        <div class="form-group pull-left col2">
+            <label for="ParkingAssignment" class="control-label colLabel"
+                   >Parking Floor</label>
+            <div class="colInput">
+                <select class="form-control selectpicker" data-none-Selected-Text=" " data-val="true" data-val-number="The field ParkingAssignment must be a number." id="ParkingAssignment" name="ParkingAssignment"><option value="0"> </option>
+<option value="13">P1</option>
+<option value="14">P2</option>
+<option value="15">P3</option>
+<option value="64">P4</option>
+<option value="65">P5</option>
+</select>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group">
+            <label for="Comment2" class="control-label colLabel"
+                   >Parking Space</label>
+                <div class="col-xs-12">
+                    <textarea name="Comment2" class="form-control"
+                              id="Comment2"
+                              
+                              rows="10"></textarea>
+                </div>
+         </div>
+    </div>
+</div>
+</div>
+        <div role="tabpanel" class="tab-pane" id="userfields"><div class="row">
+    <div class="col-xs-12">
+        <div class="table-responsive user-field-div">
+            <table class="table table-bordered table-condensed">
+                <thead>
+                    <tr>
+                        <th>Fields Name</th>
+                        <th>Fields Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                        <tr>
+                            <td>Resident Type</td>
+                            <td><input type="text" name="UserField2" id="UserField" class="form-control" /> </td>
+                        </tr>
+                        <tr>
+                            <td>test</td>
+                            <td><input type="text" name="UserField3" id="UserField" class="form-control" /> </td>
+                        </tr>
+                        <tr>
+                            <td>Unit Number</td>
+                            <td><input type="text" name="UserField1" id="UserField" class="form-control" /> </td>
+                        </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div></div>
+    </div>
+</div>
+<input name="ID" id="ID" type="hidden" value="11587">
+<input name="TenantsAsJson" id="TenantsAsJson" type="hidden" value="[0]">
+<script>
+    var CardholderFullName = 'Grid, Access';
+</script>
+                <div class="row">
+                    <div class="col-xs-12">
+                            <button type="button" class="btn btn-primary hide" id="searchButton"><span class="glyphicon glyphicon-search" aria-hidden="true"></span> Search</button>
+                                                        <button type="button" class="btn btn-primary" id="newButton"><span class="glyphicon glyphicon-plus" aria-hidden="true"></span> New</button>
+                                <button type="button" class="btn btn-primary" id="copyButton"><span class="glyphicon glyphicon-copy" aria-hidden="true"></span> Copy</button>
+                                                    <button type="button" class="btn btn btn-primary disabled" disabled="disabled" id="cancelButton"><span class="glyphicon glyphicon-ban-circle" aria-hidden="true"></span> Cancel</button>
+                                                    <button type="submit" class="btn btn-primary disabled" disabled="disabled" id="saveButton"><span class="glyphicon glyphicon-ok" aria-hidden="true"></span> Save</button>
+                                <button type="button" class="btn btn-primary" id="deleteButton"><span class="glyphicon glyphicon-trash" aria-hidden="true"></span> Delete</button>
+                        <button type="button" class="btn btn-primary" id="closeButton"><span class="glyphicon glyphicon-remove" aria-hidden="true"></span> Close</button>
+                    </div>
+                </div>
+</form>

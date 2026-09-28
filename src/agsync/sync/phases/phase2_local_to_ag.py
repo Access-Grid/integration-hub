@@ -55,7 +55,10 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             continue
 
         # Compare PACS status to AG-tracked status.
-        ag_card = snapshot.ag_card_by_id.get(tracked.ag_card_id)
+        ag_card = snapshot.resolve_ag_card(
+            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+            tracked.sync_ref,
+        )
         ag_state = (getattr(ag_card, "state", "") or "").lower() if ag_card else ""
 
         # If AG state diverged from what we last knew, leave it for phase 4.
@@ -69,6 +72,27 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
 
         desired = "active" if cred.status == CredentialStatus.ACTIVE else "suspended"
         if ag_state == desired:
+            continue
+
+        # A pass nobody has installed has an inactive card in the PACS
+        # because phase 4 put it that way, not because anyone revoked it.
+        # Pushing that back would suspend the pass the holder is about to
+        # install, and a suspended pass cannot be installed — so the two
+        # phases would deadlock on each other.
+        #
+        # Only for credentials we minted. Where the card is the customer's
+        # own, an operator switching it off before anyone installed is a
+        # real revocation and has to reach AccessGrid.
+        if (
+            desired == "suspended"
+            and ag_state == "created"
+            and getattr(cred, "allocate_identity", False)
+        ):
+            logger.debug(
+                "  Skip %s/%s — the pass is not installed yet, so its card is "
+                "inactive by design",
+                tracked.pacs_person_id, tracked.pacs_credential_id,
+            )
             continue
 
         try:

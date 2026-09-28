@@ -30,7 +30,7 @@ jobs:
 
       - name: Smoke test (CLI imports)
         env:
-          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'ZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXk=' }}
+          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'YWdzeW5jLWNpLWR1bW15LWtleS1kby1ub3QtdXNlISE=' }}
         run: |
           agsync --version
           python -c "from agsync.server import create_app; create_app()"
@@ -47,7 +47,10 @@ jobs:
             --collect-all agsync `
             --collect-all accessgrid `
             --hidden-import agsync.lib.pacs.avigilon `
+            --hidden-import agsync.lib.pacs.avigilon_alta `
+            --hidden-import agsync.lib.pacs.cdvi `
             --hidden-import agsync.lib.pacs.lenel `
+            --hidden-import agsync.lib.pacs.millennium_ultra `
             --hidden-import win32timezone `
             --add-data "src/agsync/templates;agsync/templates" `
             --add-data "src/agsync/static;agsync/static" `
@@ -100,7 +103,7 @@ jobs:
 
       - name: Smoke test (CLI imports)
         env:
-          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'ZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXk=' }}
+          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'YWdzeW5jLWNpLWR1bW15LWtleS1kby1ub3QtdXNlISE=' }}
         run: |
           agsync --version
           python -c "from agsync.server import create_app; create_app()"
@@ -116,7 +119,10 @@ jobs:
             --collect-all agsync \
             --collect-all accessgrid \
             --hidden-import agsync.lib.pacs.avigilon \
+            --hidden-import agsync.lib.pacs.avigilon_alta \
+            --hidden-import agsync.lib.pacs.cdvi \
             --hidden-import agsync.lib.pacs.lenel \
+            --hidden-import agsync.lib.pacs.millennium_ultra \
             --add-data "src/agsync/templates:agsync/templates" \
             --add-data "src/agsync/static:agsync/static" \
             --add-data "src/agsync/locales:agsync/locales" \

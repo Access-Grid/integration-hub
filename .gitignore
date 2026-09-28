@@ -38,3 +38,6 @@ env/
 # Logs
 *.log
 avigilon-alta.txt
+millenium-ultra.txt
+.claude/
+.claude/*

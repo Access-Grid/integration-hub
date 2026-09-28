@@ -5,6 +5,10 @@ below MAX_RETRIES. Re-runs the same provision logic as phase 1.
 
 Tracking rows that exceed MAX_RETRIES are left alone with their error
 message visible to the operator on the status page.
+
+Credentials flagged `allocate_identity` follow the same rule as in phase 1:
+AccessGrid mints the identity, dedupe is skipped, and the result is handed
+back to the adapter to write into the PACS.
 """
 
 from __future__ import annotations
@@ -13,8 +17,10 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from ...ag import AccessGrid, AccessGridError
+from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
+from .writeback import push_allocated_identities
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,9 @@ def run(
     dedupe_by_site_card: bool = False,
     extra_metadata: dict | None = None,
     use_file_data: bool = False,
+    card_title: str = "",
+    card_classification: str = "",
+    pacs: PacsAdapter | None = None,
 ) -> int:
     failed = tracking.failed_records(MAX_RETRIES)
     if not failed:
@@ -60,6 +69,7 @@ def run(
 
         if (
             dedupe_by_site_card
+            and not cred.allocate_identity
             and eff_site_code
             and cred.card_number
         ):
@@ -82,11 +92,17 @@ def run(
 
         now = datetime.now(UTC)
         metadata: dict = dict(extra_metadata or {})
+        # Our own handle on this issue, echoed back on every card the
+        # call produces — including both halves of a template pair, which
+        # is what makes them findable in a later listing.
+        sync_ref = tracking.new_sync_ref()
+        metadata["sync_ref"] = sync_ref
         metadata["pacs_credential_id"] = cred.id
-        if eff_site_code:
-            metadata["site_code"] = eff_site_code
-        if cred.card_number:
-            metadata["card_number"] = str(cred.card_number)
+        if not cred.allocate_identity:
+            if eff_site_code:
+                metadata["site_code"] = eff_site_code
+            if cred.card_number:
+                metadata["card_number"] = str(cred.card_number)
 
         params: dict = {
             "card_template_id": template_id,
@@ -98,7 +114,10 @@ def run(
         }
         # Same wire-format choice as phase 1: verbatim file_data (opt-in) or
         # decoded site_code + card_number (default); site/card stay metadata.
-        if use_file_data and cred.file_data:
+        if cred.allocate_identity:
+            # AccessGrid allocates when the identity is omitted.
+            pass
+        elif use_file_data and cred.file_data:
             params["file_data"] = cred.file_data
         else:
             if eff_site_code and eff_site_code.isdigit():
@@ -109,8 +128,13 @@ def run(
             params["email"] = person.email
         if person.phone:
             params["phone_number"] = person.phone
-        if person.title:
-            params["title"] = person.title
+        # A per-person title from the PACS wins; the configured one fills in
+        # for systems that have no such field, which is most of them.
+        title = person.title or card_title
+        if title:
+            params["title"] = title
+        if card_classification:
+            params["classification"] = card_classification
 
         try:
             logger.info(
@@ -133,9 +157,14 @@ def run(
                 last_synced_full_name=person.full_name,
                 last_synced_title=person.title,
                 last_known_ag_state=ag_state,
+                sync_ref=sync_ref,
             )
             succeeded += 1
             logger.info("  Retry succeeded for %s", person.full_name)
+            if cred.allocate_identity and pacs is not None:
+                push_allocated_identities(
+                    pacs, tracked.pacs_person_id, tracked.pacs_credential_id, card,
+                )
         except AccessGridError as e:
             logger.warning("  Retry failed for %s: %s", person.full_name, e)
             tracking.record_error(tracked.pacs_person_id, tracked.pacs_credential_id, str(e))
