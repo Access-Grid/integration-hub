@@ -6,6 +6,7 @@ import socket
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 
+from ..ag import test_connection as ag_test
 from ..auth import require_admin
 from ..config import get_settings
 from ..lib.pacs import build_adapter, get_descriptor
@@ -99,6 +100,51 @@ def settings_page(
             "err_key": err_key,
         },
     )
+
+
+@router.post("/settings/accessgrid")
+def update_accessgrid(
+    request: Request,
+    account_id: str = Form(...),
+    template_id: str = Form(...),
+    api_secret: str = Form(""),
+    _user=Depends(require_admin),
+):
+    """Change the AccessGrid account, template or API key.
+
+    Proven before it is stored. Saving credentials that do not work would
+    stop every phase at once, and there is no way back through this page —
+    the engine would be unable to read the template it needs, which is the
+    trap this route exists to remove rather than to reproduce.
+
+    A blank key means "keep the stored one", so the account or template can
+    be corrected on its own.
+    """
+    account_id, template_id = account_id.strip(), template_id.strip()
+    api_secret = api_secret.strip()
+    if not account_id or not template_id:
+        return RedirectResponse(url="/settings?err=accessgrid", status_code=303)
+
+    current = AccessGridConfig.load() or {}
+    if not current:
+        return RedirectResponse(url="/settings?err=not_configured", status_code=303)
+
+    ok, message = ag_test(account_id, api_secret or current.get("api_secret", ""), template_id)
+    if not ok:
+        logger.warning("Rejected AccessGrid credentials: %s", message)
+        return RedirectResponse(url="/settings?err=accessgrid_rejected", status_code=303)
+
+    if not AccessGridConfig.update_credentials(account_id, api_secret, template_id):
+        return RedirectResponse(url="/settings?err=not_configured", status_code=303)
+
+    logger.info(
+        "AccessGrid credentials changed — account %s, template %s%s",
+        account_id, template_id, ", new API key" if api_secret else "",
+    )
+    engine = get_engine()
+    engine.invalidate_pacs_adapter()
+    engine.trigger_now()
+    return RedirectResponse(url="/settings?ok=accessgrid", status_code=303)
 
 
 @router.post("/settings/site-code")

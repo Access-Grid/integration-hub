@@ -42,14 +42,38 @@
   {% if err == 'meta_bad_chars' %}
     <div class="err">{{ t('settings.extra_metadata.err.bad_chars', key=err_key) }}</div>
   {% endif %}
+  {% if ok == 'accessgrid' %}
+    <div class="ok">{{ t('settings.accessgrid.ok') }}</div>
+  {% endif %}
+  {% if err == 'accessgrid' %}
+    <div class="err">{{ t('settings.accessgrid.err') }}</div>
+  {% endif %}
+  {% if err == 'accessgrid_rejected' %}
+    <div class="err">{{ t('settings.accessgrid.err.rejected') }}</div>
+  {% endif %}
   {% if err == 'meta_too_long' %}
     <div class="err">{{ t('settings.extra_metadata.err.too_long', key=err_key) }}</div>
   {% endif %}
 
   <h2>{{ t('settings.connections') }}</h2>
   <dl class="kv">
-    <dt>AccessGrid account</dt><dd>{{ ag_account or '—' }}</dd>
-    <dt>AccessGrid template</dt><dd>{{ ag_template or '—' }}</dd>
+    <dt>{{ t('settings.accessgrid') }}</dt>
+    <dd>
+      <form action="/settings/accessgrid" method="post" class="stacked-form">
+        <label>{{ t('settings.accessgrid.account') }}
+          <input name="account_id" type="text" value="{{ ag_account }}" required>
+        </label>
+        <label>{{ t('settings.accessgrid.template') }}
+          <input name="template_id" type="text" value="{{ ag_template }}" required>
+        </label>
+        <label>{{ t('settings.accessgrid.secret') }}
+          <input name="api_secret" type="password" autocomplete="off"
+                 placeholder="{{ t('settings.accessgrid.secret_placeholder') }}">
+        </label>
+        <button type="submit">{{ t('common.save') }}</button>
+      </form>
+      <small class="muted">{{ t('settings.accessgrid.help') }}</small>
+    </dd>
     <dt>{{ t('settings.site_code') }}</dt>
     <dd>
       <form action="/settings/site-code" method="post" class="inline-form">
