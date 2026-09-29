@@ -109,6 +109,31 @@ class AccessGridConfig:
         return _get_encrypted_json(AccessGridConfig.KEY)
 
     @staticmethod
+    def update_credentials(
+        account_id: str, api_secret: str, template_id: str
+    ) -> bool:
+        """Point the install at a different AccessGrid account or template.
+
+        An empty api_secret keeps the stored one, so the account or template
+        can be corrected without the operator having to fetch a key they are
+        not changing — and so the page never has to render the secret back
+        to them in order to submit it.
+
+        Everything else on the config is left alone: site code, dedupe, the
+        extra metadata and the card fields all describe this deployment
+        rather than the credentials.
+        """
+        existing = _get_encrypted_json(AccessGridConfig.KEY)
+        if not existing:
+            return False
+        existing["account_id"] = account_id
+        existing["template_id"] = template_id
+        if api_secret:
+            existing["api_secret"] = api_secret
+        _set_encrypted_json(AccessGridConfig.KEY, existing)
+        return True
+
+    @staticmethod
     def update_site_code(site_code: str) -> bool:
         """Update only the site_code on an existing config. Returns True on success."""
         existing = _get_encrypted_json(AccessGridConfig.KEY)

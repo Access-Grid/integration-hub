@@ -156,6 +156,13 @@ table.creds td { padding: 0.75rem 0.6rem; border-bottom: 1px solid var(--border)
 .inline-form input { width: 8rem; padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 4px; font: inherit; }
 .inline-form button { padding: 0.35rem 0.75rem; font-size: 0.85rem; }
 
+/* Three fields that belong together, unlike the single-value inline forms
+   above: an account and a template are meaningless apart. */
+.stacked-form { display: flex; flex-direction: column; gap: 0.5rem; max-width: 22rem; margin: 0.25rem 0 0.5rem; }
+.stacked-form label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; color: var(--muted); }
+.stacked-form input { padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 4px; font: inherit; color: var(--fg); }
+.stacked-form button { align-self: flex-start; padding: 0.35rem 0.75rem; font-size: 0.85rem; }
+
 .kv-edit { width: 100%; max-width: 640px; border-collapse: collapse; margin: 0.5rem 0; }
 .kv-edit th { text-align: left; font-weight: 500; color: var(--muted); font-size: 0.85rem; padding: 0.25rem 0.5rem; }
 .kv-edit td { padding: 0.25rem 0.5rem; vertical-align: middle; }
