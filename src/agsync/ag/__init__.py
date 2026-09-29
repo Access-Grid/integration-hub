@@ -36,21 +36,39 @@ def build_client(account_id: str, secret_key: str) -> AccessGrid:
 def template_protocol(client: AccessGrid, template_id: str) -> str:
     """The credential technology a card template issues, e.g. "seos".
 
-    A template id can name a pair (one Apple template, one Android), in
-    which case both halves carry the same protocol and either will do.
+    A template id can name a pair — one Apple template, one Android — and
+    the endpoint answers those with a list instead of a single template.
+    Every half that declares a protocol has to agree before this reports
+    one: the protocol decides which direction the whole integration runs
+    in, and a pair whose halves disagree has no single answer.
+
     Returns "" when it cannot be determined, which callers should treat as
-    "assume the read-only direction" rather than guessing.
+    "assume the read-only direction" rather than guessing. Reading it as
+    the writing direction would have us create credentials in a PACS on the
+    strength of a value we never established.
     """
     try:
         result = client.console.read_template(template_id)
     except Exception as e:  # noqa: BLE001 — never let this break a sync cycle
         logger.warning("Could not read card template %s: %s", template_id, e)
         return ""
+
     templates = result if isinstance(result, list) else [result]
-    for template in templates:
-        protocol = (getattr(template, "protocol", "") or "").strip().lower()
-        if protocol:
-            return protocol
+    protocols = {
+        (getattr(t, "protocol", "") or "").strip().lower() for t in templates
+    }
+    # A half that declares nothing is not a vote for anything; the halves
+    # that do declare still have to agree.
+    protocols.discard("")
+
+    if len(protocols) == 1:
+        return protocols.pop()
+    if protocols:
+        logger.warning(
+            "Card template %s is a pair whose halves disagree about protocol "
+            "(%s) — treating it as undetermined",
+            template_id, ", ".join(sorted(protocols)),
+        )
     return ""
 
 
