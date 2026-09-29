@@ -90,6 +90,13 @@ _EXPORT_FIELDS = (
     (1, "First Name"),
     (2, "Last Name"),
     (4, "Employee ID"),
+    # Contact details, which reach us nowhere else in time. The detail page
+    # carries them too, but it is read after list_people has already built
+    # the Person — so on the cycle a cardholder is first seen, which is the
+    # cycle they are provisioned on, both were empty and the pass went out
+    # to a synthesized address with no phone number.
+    (11, "Phone"),
+    (13, "E-Mail"),
     (14, "Current Status"),
     (16, "Encoded Card No."),
     (17, "Activation Date"),

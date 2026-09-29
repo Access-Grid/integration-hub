@@ -325,6 +325,10 @@ class MillenniumUltraAdapter:
         self._cold = True
         # Cardholders whose page failed to load: id -> (attempts, next try).
         self._retry: dict[str, tuple[int, float]] = {}
+        # Contact details the bulk export supplied this cycle, id -> (email,
+        # phone). The detail page is authoritative once it has been read;
+        # this covers the cycle before that, which is the one that matters.
+        self._exported_contact: dict[str, tuple[str, str]] = {}
         # The trigger format's display name, resolved once. "" means looked
         # for and not found; None means not looked for yet.
         self._trigger_format_label: str | None = None
@@ -365,7 +369,13 @@ class MillenniumUltraAdapter:
                 first = profile.get("first") or first
                 last = profile.get("last") or last
             full_name = " ".join(p for p in (first, last) if p)
-            stored_email = (profile or {}).get("email") or ""
+            exported_email, exported_phone = self._exported_contact.get(pid, ("", ""))
+            # The detail page wins where we have read one, the same
+            # precedence the name uses. The export covers the cycle before
+            # that, which is the cycle a cardholder is provisioned on.
+            stored_email = (profile or {}).get("email") or _first_valid_email(
+                exported_email
+            )
             yield Person(
                 id=pid,
                 full_name=full_name,
@@ -377,7 +387,7 @@ class MillenniumUltraAdapter:
                 email=stored_email or synthesize_email(
                     first, last, pid, self.email_domain
                 ),
-                phone=(profile or {}).get("phone", ""),
+                phone=(profile or {}).get("phone") or exported_phone,
                 # Millennium has no cardholder-level enable flag; the
                 # roster's IsActive only marks the row the UI has selected.
                 active=True,
@@ -438,6 +448,17 @@ class MillenniumUltraAdapter:
             by_name.setdefault(export.name_key(first, last), []).append(
                 str(row.get("ID"))
             )
+
+        # Contact details for everyone the export named, not only the
+        # enrolled: cheap to keep, and it means a cardholder enrolled later
+        # already has them before their detail page is ever read.
+        self._exported_contact = {}
+        for person in rows:
+            for pid in by_name.get(
+                export.name_key(person.first_name, person.last_name)
+            ) or []:
+                if person.email or person.phone:
+                    self._exported_contact[pid] = (person.email, person.phone)
 
         candidates: set[str] = set()
         carrying = unmatched = 0

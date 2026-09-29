@@ -16,6 +16,12 @@ cardholder, with fifteen columns repeated per card slot:
     Date, Card 1 Expiration Date, Card 1 Active, Card 1 Card Format,
     Card 1 Facility Code, Card 1 Badge Type,       ... and again for 2, 3
 
+It does carry the contact details, and they matter here more than they
+look: the detail page has them too, but it is read after `list_people` has
+already built the Person, so on the cycle a cardholder is first seen — the
+same cycle they are provisioned on — there was nothing to read and the pass
+went out to a synthesized address with no phone number.
+
 Two things it does **not** carry, which is why it supplements the detail
 page rather than replacing it:
 
@@ -66,6 +72,8 @@ class ExportedCardholder:
     first_name: str
     last_name: str
     employee_id: str
+    email: str
+    phone: str
     slots: tuple[ExportedSlot, ...]
 
     def carries_format(self, display_name: str) -> bool:
@@ -115,6 +123,8 @@ def parse(csv_text: str, slots: tuple[int, ...] = (1, 2, 3)) -> list[ExportedCar
                 first_name=(row.get("First Name") or "").strip(),
                 last_name=(row.get("Last Name") or "").strip(),
                 employee_id=(row.get("Employee ID") or "").strip(),
+                email=(row.get("E-Mail") or "").strip(),
+                phone=(row.get("Phone") or "").strip(),
                 slots=tuple(found),
             )
         )
