@@ -1,7 +1,8 @@
-"""Shared fixtures for the Avigilon Alta test suite.
+"""Shared fixtures for the adapter test suites.
 
-The sample payloads mirror the real shapes returned by the Helium/OpenPath
-API (captured from a live tenant), trimmed to the fields the adapter reads.
+Each vendor's payloads mirror the real shapes its system returns, captured
+from a live tenant or controller and trimmed to the fields the adapter
+reads — Avigilon Alta first, then CDVI Atrium and Millennium Ultra below.
 """
 
 from __future__ import annotations
@@ -139,3 +140,121 @@ def make_cdvi_adapter():
         return adapter
 
     return _build
+
+
+# --- Millennium Ultra fixtures -------------------------------------------
+#
+# The cardholder page is the real thing, captured from a live install (see
+# tests/millennium_fixtures). Slot state is varied by rewriting attributes on
+# that markup rather than by hand-building a page, so the adapter is always
+# reading the shape Millennium actually serves.
+
+
+@pytest.fixture
+def millennium_page() -> str:
+    from pathlib import Path
+
+    return (
+        Path(__file__).parent / "millennium_fixtures" / "cardholder_11587_form.html"
+    ).read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def set_slot():
+    """Rewrite one card slot in the captured page.
+
+    Passing card_number=None empties the slot, which is how a cardholder
+    with room for a Seos credential is expressed.
+    """
+
+    def _set(
+        html: str,
+        slot: int,
+        *,
+        card_id: str = "",
+        card_number: str | None = "",
+        facility_code: str = "",
+        card_format: str | None = None,
+        active: bool = False,
+    ) -> str:
+        import re
+
+        prefix = f"Card_{slot}_"
+
+        def set_input(source: str, name: str, value: str) -> str:
+            """Replace one input's value attribute, adding it if absent."""
+            pattern = re.compile(r'<input\b[^>]*\bname="' + re.escape(name) + r'"[^>]*>')
+            match = pattern.search(source)
+            assert match, f"no input named {name} in the captured page"
+            tag = re.sub(r'\s+value="[^"]*"', "", match.group(0))
+            tag = tag[:-1].rstrip().removesuffix("/").rstrip() + f' value="{value}" />'
+            return source[: match.start()] + tag + source[match.end() :]
+
+        html = set_input(html, prefix + "CardID", card_id)
+        html = set_input(html, prefix + "EncodedCardNumber", "" if card_number is None else card_number)
+        html = set_input(html, prefix + "FaciltyCode", facility_code)
+
+        # Checkbox state is presence of the `checked` attribute.
+        box = re.compile(
+            r'(<input type="checkbox" name="' + re.escape(prefix) + r'Active"[^>]*?)(\s+checked)?(>)'
+        )
+        html = box.sub(
+            lambda m: f"{m.group(1)}{' checked' if active else ''}{m.group(3)}", html, count=1,
+        )
+
+        # And the format select's selection lives on one <option>.
+        select = re.search(
+            r'<select[^>]*name="' + re.escape(prefix) + r'CardFormat".*?</select>', html, re.S,
+        )
+        if select:
+            body = re.sub(r'\s+selected="selected"', "", select.group(0))
+            body = re.sub(r"<option([^>]*)\sselected([^>]*)>", r"<option\1\2>", body)
+            if card_format:
+                body = re.sub(
+                    r'(<option value="' + re.escape(card_format) + r'")(\s*)>',
+                    r'\1 selected="selected">',
+                    body,
+                    count=1,
+                )
+            html = html[: select.start()] + body + html[select.end() :]
+        return html
+
+    return _set
+
+
+@pytest.fixture
+def make_millennium_adapter():
+    """Build a MillenniumUltraAdapter with its client swapped for a fake."""
+    from agsync.lib.pacs.millennium_ultra.adapter import MillenniumUltraAdapter
+
+    def _build(fake_client, **kwargs) -> MillenniumUltraAdapter:
+        kwargs.setdefault("base_url", "https://millennium.test")
+        kwargs.setdefault("trigger_card_format", "7")
+        kwargs.setdefault("email_domain", "cards.example.com")
+        kwargs.setdefault("auth_cookie", "test-cookie")
+        adapter = MillenniumUltraAdapter(**kwargs)
+        adapter._client.close()  # close the real httpx client built in __init__
+        adapter._client = fake_client
+        return adapter
+
+    return _build
+
+
+@pytest.fixture
+def seos_ledger(monkeypatch):
+    """In-memory stand-in for the encrypted settings blob the ledger uses.
+
+    The ledger records which Millennium slots hold AccessGrid-allocated
+    cards; the tests need its behaviour, not SQLite.
+    """
+    store: dict = {}
+
+    def fake_get(key):
+        return store.get(key)
+
+    def fake_set(key, value):
+        store[key] = value
+
+    monkeypatch.setattr("agsync.settings_store.get_json", fake_get, raising=False)
+    monkeypatch.setattr("agsync.settings_store.set_json", fake_set, raising=False)
+    return store

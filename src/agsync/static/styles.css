@@ -64,7 +64,9 @@ main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; }
 .muted { color: var(--muted); }
 
 label { display: block; margin-bottom: 0.85rem; font-size: 0.9rem; color: var(--muted); }
-label > input, label > select {
+/* Text and select controls fill their label; checkboxes and radios must not,
+   or a choice row turns into a full-width control with its text shoved aside. */
+label > input:not([type="checkbox"]):not([type="radio"]), label > select {
   display: block;
   width: 100%;
   margin-top: 0.25rem;
@@ -75,7 +77,7 @@ label > input, label > select {
   color: var(--fg);
   background: #fff;
 }
-label > input:focus, label > select:focus {
+label > input:not([type="checkbox"]):not([type="radio"]):focus, label > select:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -120,6 +122,8 @@ button:hover, .button:hover { opacity: 0.9; }
 
 .vendor-list { border: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .vendor-card { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.vendor-card > input, .radio-row > input { flex: none; margin: 0; width: auto; }
+.radio-row { display: flex; align-items: flex-start; gap: 0.6rem; line-height: 1.45; }
 .vendor-card:has(input:checked) { border-color: var(--accent); background: #eff6ff; }
 
 .filter-row { display: flex; gap: 1rem; align-items: end; margin-bottom: 1rem; }
@@ -162,3 +166,25 @@ table.creds td { padding: 0.75rem 0.6rem; border-bottom: 1px solid var(--border)
 }
 .kv-edit .meta-remove:hover { color: var(--err-fg); }
 #meta-add-row { margin-right: 0.5rem; background: #e5e7eb; color: var(--fg); }
+
+/* AG Connect hand-off: the operator signs in elsewhere, so this panel is
+   the only feedback they get until the side-car reports back. */
+.waiting { display: flex; align-items: center; gap: 0.6rem; margin: 1rem 0; color: var(--muted); font-size: 0.9rem; }
+.spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+.small { font-size: 0.85rem; }
+.banner a { color: inherit; font-weight: 600; }
+
+/* The re-authenticate banner is the whole clickable target: when nothing is
+   syncing, the fix should be one obvious click from any page. */
+.banner.err a { display: block; text-decoration: none; font-weight: 600; }
+.banner.err a:hover { text-decoration: underline; }

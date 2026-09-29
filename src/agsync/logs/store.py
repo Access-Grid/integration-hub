@@ -106,6 +106,19 @@ def install_handler(level: str = "INFO") -> None:
     handler = _SqliteLogHandler()
     handler.setFormatter(logging.Formatter("%(message)s"))
     root.addHandler(handler)
+    _quieten_noisy_libraries()
+
+
+# Libraries that log a line per HTTP request at INFO. A Millennium sweep
+# makes ~1800 of them, which buries the sync engine's own messages and
+# evicts them from the rolling buffer — the log viewer stops being usable
+# for the thing it exists for. Their warnings and errors still come through.
+_NOISY_LOGGERS = ("httpx", "httpcore", "urllib3", "websockets")
+
+
+def _quieten_noisy_libraries() -> None:
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def levels() -> Iterable[str]:

@@ -22,15 +22,19 @@ jobs:
       - name: Lint
         run: ruff check src
 
+      # A real Fernet key — 32 bytes, base64url. The previous value decoded to
+      # 35 and Fernet rejected it, so every test that encrypted anything
+      # failed here and nowhere else. Nothing did until a migration had to
+      # rewrite the encrypted settings blob.
       - name: Smoke import test
         env:
-          AG_SYNC_ENCRYPTION_KEY: ZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXk=
+          AG_SYNC_ENCRYPTION_KEY: YWdzeW5jLWNpLWR1bW15LWtleS1kby1ub3QtdXNlISE=
         run: |
           agsync --version
           python -c "from agsync.server import create_app; create_app()"
-          python -c "from agsync.lib.pacs import available_pacs; assert {d.vendor for d in available_pacs()} == {'avigilon','avigilon_alta','cdvi','lenel'}"
+          python -c "from agsync.lib.pacs import available_pacs; registered = {d.vendor for d in available_pacs()}; missing = {'avigilon','avigilon_alta','cdvi','lenel','millennium_ultra'} - registered; assert not missing, f'adapters failed to register: {missing}'"
 
       - name: Tests
         env:
-          AG_SYNC_ENCRYPTION_KEY: ZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXk=
+          AG_SYNC_ENCRYPTION_KEY: YWdzeW5jLWNpLWR1bW15LWtleS1kby1ub3QtdXNlISE=
         run: pytest -q

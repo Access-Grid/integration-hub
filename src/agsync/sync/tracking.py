@@ -16,11 +16,23 @@ truly gone.
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from ..db.connection import execute, execute_one, get_db
+
+
+def new_sync_ref() -> str:
+    """A fresh reference for one issue.
+
+    Minted before the API call, because the id AccessGrid returns is not
+    always the id its own listing gives back — a card template pair is
+    tracked by a unified id that never appears in the template's card list.
+    Something we chose ourselves sidesteps that entirely.
+    """
+    return secrets.token_hex(8)
 
 
 @dataclass
@@ -38,6 +50,8 @@ class TrackedCredential:
     last_known_ag_state: str
     sync_error: str | None
     retry_count: int
+    # Our own reference for this issue, echoed in the card's metadata.
+    sync_ref: str = ""
 
 
 def _row_to_tracked(row: Any) -> TrackedCredential:
@@ -55,6 +69,7 @@ def _row_to_tracked(row: Any) -> TrackedCredential:
         last_known_ag_state=row["last_known_ag_state"] or "",
         sync_error=row["sync_error"],
         retry_count=row["retry_count"] or 0,
+        sync_ref=(row["sync_ref"] if "sync_ref" in row.keys() else "") or "",
     )
 
 
@@ -92,6 +107,7 @@ def upsert(
     last_synced_full_name: str = "",
     last_synced_title: str = "",
     last_known_ag_state: str = "",
+    sync_ref: str = "",
 ) -> None:
     now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
@@ -99,8 +115,9 @@ def upsert(
         INSERT INTO ag_credentials (
             pacs_person_id, pacs_credential_id, ag_card_id, full_name, employee_id,
             status, last_synced_email, last_synced_phone, last_synced_full_name,
-            last_synced_title, last_known_ag_state, retry_count, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            last_synced_title, last_known_ag_state, sync_ref, retry_count,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         ON CONFLICT(pacs_person_id, pacs_credential_id) DO UPDATE SET
             ag_card_id            = excluded.ag_card_id,
             full_name             = excluded.full_name,
@@ -111,13 +128,16 @@ def upsert(
             last_synced_full_name = excluded.last_synced_full_name,
             last_synced_title     = excluded.last_synced_title,
             last_known_ag_state   = excluded.last_known_ag_state,
+            -- Keep the existing reference when a caller does not supply one,
+            -- so a status update never orphans a card from its metadata.
+            sync_ref              = COALESCE(NULLIF(excluded.sync_ref, ''), sync_ref),
             sync_error            = NULL,
             updated_at            = excluded.updated_at
         """,
         (
             pacs_person_id, pacs_credential_id, ag_card_id, full_name, employee_id,
             status, last_synced_email, last_synced_phone, last_synced_full_name,
-            last_synced_title, last_known_ag_state, now, now,
+            last_synced_title, last_known_ag_state, sync_ref, now, now,
         ),
     )
 

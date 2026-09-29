@@ -7,21 +7,32 @@ wake.
 
 Lifecycle:
   - thread is created in start() and stays alive until stop()
-  - dynamic interval: 3 × snapshot build time, clamped [10s, 600s]
+  - interval: 5 minutes, stretching to 3 × cycle time when a cycle runs
+    long, capped at 10 minutes
   - circuit breaker: 10 consecutive failures pause the engine
   - status payload exposed via get_status() for the web UI
+
+One failure is special. A PACS whose session was handed to us by a human
+(Millennium Ultra, whose login is captcha-gated) can lose that session, and
+no retry will ever fix it. PacsAuthExpired therefore short-circuits the
+cycle: the engine flags `reconnect_required`, mails the operator, and stops
+touching AccessGrid — an expired session must never be mistaken for a PACS
+that suddenly has no cardholders left.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from ..ag import PROTOCOL_SEOS, template_protocol
 from ..ag import build_client as build_ag_client
+from ..lib.pacs import PacsAuthExpired, get_descriptor
 from ..lib.pacs import build_adapter as build_pacs_adapter
 from ..settings_store import AccessGridConfig, PacsConfig
 from .phases import (
@@ -36,11 +47,44 @@ from .snapshot import build_snapshot
 
 logger = logging.getLogger(__name__)
 
-MIN_INTERVAL_S = 10
+# The floor is the interval in practice: a cycle that reads the PACS through
+# a bulk export finishes in seconds, and 3x of that would sync every 15
+# seconds — cheaper per cycle but far more often, which is more total load on
+# the install, not less. The dynamic rule is kept above this floor so a slow
+# PACS is still read less often, which is the property it was for.
+MIN_INTERVAL_S = 300
 MAX_INTERVAL_S = 600
 INTERVAL_MULTIPLIER = 3
 ERROR_BACKOFF_S = 30
+# How long to wait between attempts while a human has to sign in again.
+# Each attempt costs a full roster sweep, and nothing changes until someone
+# acts, so retrying briskly just loads the PACS for no benefit.
+RECONNECT_RETRY_S = 120
 MAX_CONSECUTIVE_ERRORS = 10
+
+
+def derived_pacs_params(ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Fill in `mode` from the AccessGrid template, for adapters that ask.
+
+    Module-level because the engine is not the only caller: anything that
+    builds an adapter to ask what it has done needs the same direction, and
+    reading it from the stored params alone silently yields the default.
+    """
+    descriptor = get_descriptor(pacs_cfg.get("vendor", ""))
+    if descriptor is None or not descriptor.derives_mode_from_template:
+        return pacs_cfg
+
+    protocol = template_protocol(ag, ag_cfg["template_id"])
+    # An unreadable template must not silently flip a read-only integration
+    # into one that writes cards into the PACS.
+    mode = "seos" if protocol == PROTOCOL_SEOS else "desfire"
+    if not protocol:
+        logger.warning(
+            "Could not read the card template's protocol — assuming %s", mode,
+        )
+    params = dict(pacs_cfg.get("params") or {})
+    params["mode"] = mode
+    return {**pacs_cfg, "params": params}
 
 
 @dataclass
@@ -54,6 +98,11 @@ class CycleResult:
     retried: int = 0
     field_updates: int = 0
     error: str | None = None
+    # False for failures that retrying cannot fix and that a human is
+    # already being asked about, or for a cycle deliberately abandoned.
+    # Counting those toward the circuit breaker pauses the engine for a
+    # reason nobody can act on from here.
+    counts_as_failure: bool = True
 
 
 @dataclass
@@ -68,6 +117,8 @@ class EngineStatus:
     consecutive_errors: int = 0
     pacs_reachable: bool = True
     ag_reachable: bool = True
+    # Set when the PACS session expired: only a human signing in clears it.
+    reconnect_required: bool = False
 
 
 class SyncEngine:
@@ -78,6 +129,15 @@ class SyncEngine:
         self._cycle_lock = threading.Lock()
         self._status = EngineStatus()
         self._status_lock = threading.Lock()
+        # (config fingerprint, adapter). Adapters are reused across cycles:
+        # some hold a warm cache that is expensive to rebuild (Millennium
+        # reads ~1800 detail pages to prime one) and an HTTP connection pool
+        # that would otherwise leak a little on every cycle.
+        self._pacs: tuple[str, Any] | None = None
+        # Bumped whenever configuration changes. The running cycle checks it
+        # between phases and bails out: it is holding an adapter built from
+        # the old settings, and finishing the cycle would act on them.
+        self._generation = 0
 
     # ----- public API --------------------------------------------------
 
@@ -95,12 +155,43 @@ class SyncEngine:
         self._trigger.set()  # wake from sleep
         if self._thread:
             self._thread.join(timeout=timeout)
+        self._retire_pacs_adapter()
         with self._status_lock:
             self._status.running = False
 
     def trigger_now(self) -> None:
         """Run a cycle ASAP (will wait for the current cycle if one is running)."""
         self._trigger.set()
+
+    def session_restored(self) -> None:
+        """A new PACS session has been captured and proven to read.
+
+        Clears the reconnect flag immediately. Otherwise the banner survives
+        until the next cycle *finishes*, and a first cold sweep of a large
+        install takes minutes — so the operator sits looking at a demand to
+        do the thing they just did.
+        """
+        with self._status_lock:
+            self._status.reconnect_required = False
+            self._status.pacs_reachable = True
+            self._status.consecutive_errors = 0
+            self._status.paused = False
+            self._status.pause_reason = ""
+        self.invalidate_pacs_adapter()
+        self._trigger.set()
+
+    def invalidate_pacs_adapter(self) -> None:
+        """Drop the cached adapter and abandon any cycle still using it.
+
+        Needed when something the adapter read at construction changed
+        without the connection settings changing — a recaptured PACS session,
+        or a new enrollment trigger. The in-flight cycle matters as much as
+        the next one: it holds an adapter built from the old settings, so
+        left alone it would keep provisioning against the old trigger.
+        """
+        with self._status_lock:
+            self._generation += 1
+        self._retire_pacs_adapter()
 
     def get_status(self) -> dict[str, Any]:
         with self._status_lock:
@@ -116,6 +207,7 @@ class SyncEngine:
                 "consecutive_errors": s.consecutive_errors,
                 "pacs_reachable": s.pacs_reachable,
                 "ag_reachable": s.ag_reachable,
+                "reconnect_required": s.reconnect_required,
             }
 
     def run_cycle_blocking(self) -> CycleResult:
@@ -152,13 +244,19 @@ class SyncEngine:
                         break
                 continue
 
+            logger.info("Sync cycle starting")
             result = self._run_one_cycle()
             with self._status_lock:
                 self._status.last_cycle = result
-                if result.error:
+                if result.error and result.counts_as_failure:
                     self._status.consecutive_errors += 1
                     self._status.last_error = result.error
                     sleep_s = ERROR_BACKOFF_S
+                elif self._status.reconnect_required:
+                    # Waiting on a person to sign in. Retrying every few
+                    # seconds only hammers the PACS with a full roster sweep
+                    # per attempt for as long as nobody is looking.
+                    sleep_s = RECONNECT_RETRY_S
                 else:
                     self._status.consecutive_errors = 0
                     self._status.last_error = None
@@ -168,10 +266,15 @@ class SyncEngine:
                         min(MAX_INTERVAL_S, (result.duration_ms / 1000.0) * INTERVAL_MULTIPLIER),
                     )
                 self._status.cached_interval_s = sleep_s
-                self._status.next_run_iso = (
-                    datetime.now(UTC).isoformat(timespec="seconds")
-                )
+                next_run = datetime.now(UTC) + timedelta(seconds=sleep_s)
+                self._status.next_run_iso = next_run.isoformat(timespec="seconds")
 
+            # Otherwise the engine goes quiet for up to ten minutes with
+            # nothing saying it is alive, which reads as a stopped sync.
+            logger.info(
+                "Next sync cycle in %ds (at %s)",
+                int(sleep_s), next_run.strftime("%H:%M:%S UTC"),
+            )
             self._trigger.wait(timeout=sleep_s)
             self._trigger.clear()
 
@@ -210,8 +313,9 @@ class SyncEngine:
                 self._status.ag_reachable = False
             return result
 
+        pacs_cfg = self._with_derived_mode(ag, ag_cfg, pacs_cfg)
         try:
-            pacs = build_pacs_adapter(pacs_cfg["vendor"], pacs_cfg["params"])
+            pacs = self._pacs_adapter(pacs_cfg)
         except Exception as e:  # noqa: BLE001
             result.error = f"pacs_init: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
@@ -224,14 +328,31 @@ class SyncEngine:
             with self._status_lock:
                 self._status.pacs_reachable = bool(snapshot.people)
                 self._status.ag_reachable = True
+                self._status.reconnect_required = False
+        except PacsAuthExpired as e:
+            return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)
         except Exception as e:  # noqa: BLE001
             result.error = f"snapshot: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
+            with self._status_lock:
+                # Not an expired session — the PACS did not answer at all —
+                # so this is a different banner and re-authenticating would
+                # not help.
+                self._status.pacs_reachable = False
             return result
+
+        with self._status_lock:
+            generation = self._generation
+
+        def superseded() -> bool:
+            with self._status_lock:
+                return self._generation != generation
 
         site_code = (ag_cfg.get("site_code") or "").strip()
         dedupe = bool(ag_cfg.get("dedupe_by_site_card", False))
         extra_metadata = dict(ag_cfg.get("extra_metadata") or {})
+        card_title = (ag_cfg.get("card_title") or "").strip()
+        card_classification = (ag_cfg.get("card_classification") or "").strip()
         use_file_data = (
             (pacs_cfg.get("options") or {}).get("credential_encoding")
             == PacsConfig.ENCODING_FILE_DATA
@@ -242,17 +363,30 @@ class SyncEngine:
                 dedupe_by_site_card=dedupe,
                 extra_metadata=extra_metadata,
                 use_file_data=use_file_data,
+                card_title=card_title,
+                card_classification=card_classification,
+                pacs=pacs,
+                should_stop=superseded,
             )
+            if superseded():
+                return self._abandon(result, start_ms)
             result.status_changes = phase2_local_to_ag.run(snapshot, ag)
-            result.deleted = phase3_deletions.run(snapshot, ag)
-            result.ag_to_pacs = phase4_ag_to_local.run(snapshot, pacs)
+            result.deleted = phase3_deletions.run(snapshot, ag, pacs)
+            if superseded():
+                return self._abandon(result, start_ms)
+            result.ag_to_pacs = phase4_ag_to_local.run(snapshot, pacs, ag)
             result.retried = phase5_retries.run(
                 snapshot, ag, ag_cfg["template_id"], site_code,
                 dedupe_by_site_card=dedupe,
                 extra_metadata=extra_metadata,
                 use_file_data=use_file_data,
+                card_title=card_title,
+                card_classification=card_classification,
+                pacs=pacs,
             )
             result.field_updates = phase6_field_changes.run(snapshot, ag)
+        except PacsAuthExpired as e:
+            return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)
         except Exception as e:  # noqa: BLE001
             result.error = f"phase: {e}"
             logger.exception("Phase failure during sync")
@@ -264,6 +398,84 @@ class SyncEngine:
             result.duration_ms, result.provisioned, result.status_changes,
             result.deleted, result.ag_to_pacs, result.field_updates, result.retried,
         )
+        return result
+
+
+    def _with_derived_mode(
+        self, ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Resolve the PACS direction, logging when it changes.
+
+        Resolved every cycle rather than stored at setup, so swapping the
+        card template for one of a different technology takes effect on its
+        own. The adapter cache is keyed on the config, so a change here
+        rebuilds the adapter automatically.
+        """
+        resolved = derived_pacs_params(ag, ag_cfg, pacs_cfg)
+        was = (pacs_cfg.get("params") or {}).get("mode")
+        now = (resolved.get("params") or {}).get("mode")
+        if now and was != now:
+            logger.info("Running in %s mode", now)
+        return resolved
+
+    def _abandon(self, result: CycleResult, start_ms: float) -> CycleResult:
+        """Stop a cycle whose configuration changed underneath it."""
+        logger.warning(
+            "Configuration changed mid-cycle — abandoning it and starting over"
+        )
+        result.error = "superseded"
+        result.counts_as_failure = False
+        result.duration_ms = int((time.time() - start_ms) * 1000)
+        self._trigger.set()
+        return result
+
+    def _pacs_adapter(self, pacs_cfg: dict[str, Any]):
+        """The adapter for this config, built once and reused."""
+        fingerprint = json.dumps(pacs_cfg, sort_keys=True, default=str)
+        if self._pacs is not None and self._pacs[0] == fingerprint:
+            return self._pacs[1]
+        self._retire_pacs_adapter()
+        adapter = build_pacs_adapter(pacs_cfg["vendor"], pacs_cfg["params"])
+        self._pacs = (fingerprint, adapter)
+        return adapter
+
+    def _retire_pacs_adapter(self) -> None:
+        previous, self._pacs = self._pacs, None
+        if previous is None:
+            return
+        close = getattr(previous[1], "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001 — nothing useful to do on close
+                logger.debug("Ignoring error closing the previous PACS adapter")
+
+    def _handle_auth_expired(
+        self, vendor: str, error: Exception, result: CycleResult, start_ms: float,
+    ) -> CycleResult:
+        """Park the cycle and ask a human to sign in again.
+
+        Deliberately not counted toward the circuit breaker: the engine
+        should keep waking up and clear the flag the moment a new session
+        appears, rather than needing a restart after ten quiet retries.
+        """
+        from ..notifications import notify_reconnect_required
+
+        descriptor = get_descriptor(vendor)
+        name = descriptor.display_name if descriptor else vendor
+        with self._status_lock:
+            self._status.reconnect_required = True
+            self._status.pacs_reachable = False
+        result.error = f"pacs_auth_expired: {error}"
+        # Retrying cannot fix a captcha-gated login, and the operator has
+        # already been told. Pausing the engine on top of that would mean a
+        # restart was needed after reconnecting.
+        result.counts_as_failure = False
+        result.duration_ms = int((time.time() - start_ms) * 1000)
+        try:
+            notify_reconnect_required(name, str(error))
+        except Exception:  # noqa: BLE001 — notification must not mask the cause
+            logger.exception("Failed to send the reconnect notification")
         return result
 
 

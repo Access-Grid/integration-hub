@@ -10,13 +10,16 @@ Routes:
   /settings       -> connection edit + about
   /api/test-ag    -> wizard ajax connection test
   /api/test-pacs  -> wizard ajax connection test
+  /connect/*      -> AG Connect hand-off for captcha-gated PACS logins
   /api/health     -> public, used by an external HC if anyone wires one
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from importlib.resources import files
 
 from fastapi import FastAPI, Request, Response
@@ -26,12 +29,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import __version__
 from .auth import admin_exists, current_user
 from .db import init_db
 from .i18n import default_locale, get_translator
 from .logs import install_handler as install_log_handler
 from .routes import api, wizard
 from .routes import auth as auth_routes
+from .routes import connect as connect_route
 from .routes import credentials as credentials_route
 from .routes import logs as logs_route
 from .routes import settings as settings_route
@@ -44,6 +49,15 @@ logger = logging.getLogger(__name__)
 LANG_COOKIE = "agsync_lang"
 
 
+def _pacs_display_name() -> str:
+    from .lib.pacs import get_descriptor
+    from .settings_store import PacsConfig
+
+    vendor = (PacsConfig.load() or {}).get("vendor", "")
+    descriptor = get_descriptor(vendor) if vendor else None
+    return descriptor.display_name if descriptor else "the PACS"
+
+
 def _templates_dir() -> str:
     return str(files("agsync") / "templates")
 
@@ -52,10 +66,38 @@ def _static_dir() -> str:
     return str(files("agsync") / "static")
 
 
+def _ignore_client_disconnects(loop, context: dict) -> None:
+    """Drop the noise a browser makes when it goes away mid-request.
+
+    On Windows the proactor event loop reports a client closing a connection
+    abruptly as an unhandled exception — WinError 10054, raised inside
+    asyncio's own callback rather than anywhere we can catch it. The HTMX
+    pollers on /status and /logs produce one every time a page is closed, and
+    the self-signed certificate encourages browsers to drop connections
+    rather than close them politely.
+
+    Nothing failed: the request is already over or the client has gone. But
+    it reaches the root logger, so it lands in the log viewer and buries the
+    lines that matter. Only this exception is dropped — everything else goes
+    to the default handler, because an event loop that swallows its own
+    errors is how a silent failure starts.
+    """
+    if isinstance(context.get("exception"), ConnectionResetError):
+        return
+    loop.default_exception_handler(context)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     install_log_handler()
+    asyncio.get_running_loop().set_exception_handler(_ignore_client_disconnects)
+    # First line of the run: the log survives restarts, so without it there
+    # is no way to tell a quiet cycle from a process that went away.
+    logger.info(
+        "AccessGrid Sync v%s starting at %s",
+        __version__, datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    )
     engine = get_engine()
     if is_configured():
         engine.start()
@@ -71,14 +113,23 @@ def create_app() -> FastAPI:
     def template_response(request: Request, name: str, ctx: dict | None = None):
         locale = request.cookies.get(LANG_COOKIE) or default_locale()
         translator = get_translator(locale)
+        configured = is_configured()
         merged = {
             "request": request,
             "t": translator.t,
             "locale": locale,
             "available_locales": ["en", "es"],
-            "configured": is_configured(),
+            "configured": configured,
             "admin_exists": admin_exists(),
         }
+        # Behind the session: the banner reveals that syncing is down and
+        # carries a launch id, neither of which belongs on the login page.
+        if configured and current_user(request) is not None:
+            # Every page, not just the status screen: a PACS that has stopped
+            # answering means nothing is syncing, and that should not be
+            # discoverable only by visiting one particular page.
+            merged["engine_status"] = get_engine().get_status()
+            merged["pacs_display_name"] = _pacs_display_name()
         if ctx:
             merged.update(ctx)
         return templates.TemplateResponse(name, merged)
@@ -117,5 +168,6 @@ def create_app() -> FastAPI:
     app.include_router(logs_route.router)
     app.include_router(settings_route.router)
     app.include_router(api.router)
+    app.include_router(connect_route.router)
 
     return app

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agsync"
-version = "0.1.7"
+version = "0.2.1"
 description = "AccessGrid sync tool — bridges PACS (Avigilon, Lenel, etc.) to AccessGrid"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,6 +17,10 @@ dependencies = [
     "itsdangerous==2.2.0",
     "python-multipart==0.0.12",
     "httpx==0.27.2",
+    # AG Connect drives a browser over the DevTools protocol, which is a
+    # WebSocket; uvicorn[standard] already pulls this in, but we use it
+    # directly so it is declared here too.
+    "websockets>=12.0",
     "cryptography==43.0.1",
     "pydantic==2.9.2",
     "pydantic-settings==2.5.2",

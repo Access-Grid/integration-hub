@@ -52,6 +52,11 @@ def _adapter_strings(locale: str) -> list[dict[str, str]]:
         out.append(CDVI_HELP.get(locale, CDVI_HELP.get(DEFAULT, {})))
     except ImportError:
         pass
+    try:
+        from agsync.lib.pacs.millennium_ultra.adapter import HELP_TEXT as MILLENNIUM_HELP
+        out.append(MILLENNIUM_HELP.get(locale, MILLENNIUM_HELP.get(DEFAULT, {})))
+    except ImportError:
+        pass
     return out
 
 
