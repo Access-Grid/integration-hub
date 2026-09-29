@@ -332,6 +332,11 @@ class MillenniumUltraAdapter:
         # The trigger format's display name, resolved once. "" means looked
         # for and not found; None means not looked for yet.
         self._trigger_format_label: str | None = None
+        # Cardholders the ledger says we hold cards on, refreshed once per
+        # cycle. Diagnostics use it to tell "a stranger we skipped" from
+        # "somebody we have written a credential to and then lost sight of",
+        # which are the same silence without it.
+        self._ours: set[str] = set()
 
     # -- contract --------------------------------------------------------
 
@@ -356,6 +361,7 @@ class MillenniumUltraAdapter:
     def list_people(self) -> Iterable[Person]:
         self._roster = {}
         self._read_this_cycle = 0
+        self._ours = {key.partition(":")[0] for key in SeosLedger.all()}
         roster = self._client.list_cardholders()
         self._plan_sweep([str(r.get("ID")) for r in roster], roster)
         self._reading_total = len(self._sweep)
@@ -526,6 +532,18 @@ class MillenniumUltraAdapter:
                 # set has no trigger card, and a cardholder we never read is
                 # explicitly not evidence of anything downstream.
                 self._sweep = candidates
+                # Except that a cardholder we have written a card to is not
+                # a stranger, and the name join can miss them — the export
+                # carries no cardholder id, so the match is by name and a
+                # roster entry spelled differently never lands. Missing here
+                # means every phase downstream sees them as absent.
+                missed = sorted(self._ours - candidates)
+                if missed:
+                    logger.warning(
+                        "Millennium: %d cardholder(s) we hold cards on are not in "
+                        "this cycle's sweep: %s — they can only be read from cache",
+                        len(missed), ", ".join(missed),
+                    )
                 self._cold = False
                 return
 
@@ -568,6 +586,15 @@ class MillenniumUltraAdapter:
         slots: list[Slot] = profile["slots"]
         triggers = [s for s in slots if self._is_trigger(s)]
         if not triggers:
+            if pid in self._ours:
+                # Expected for a namesake the export's name join swept in;
+                # not expected for somebody we have written a card to, whose
+                # card carries the trigger format itself.
+                logger.warning(
+                    "Millennium: cardholder %s holds cards we wrote but no slot "
+                    "carries format %s — reporting no credentials. Slots: %s",
+                    pid, self.trigger_card_format, _describe(slots),
+                )
             return []
 
         if self.mode == MODE_DESFIRE:
@@ -630,7 +657,7 @@ class MillenniumUltraAdapter:
             return True
         ok = self._client.save_cardholder(pid, form)
         if ok:
-            self._profiles.pop(pid, None)
+            self._drop_profile(pid, "changing a card's Active box")
         return ok
 
     @property
@@ -712,6 +739,17 @@ class MillenniumUltraAdapter:
                 continue
             pending.append(identity)
         if not pending:
+            # The ordinary case every cycle after the last card landed, and
+            # also the case where a watch's credential never arrives. They
+            # are indistinguishable without saying what was on offer.
+            logger.info(
+                "Millennium: nothing new to write for cardholder %s — offered %s; "
+                "on the cardholder %s; already written %s",
+                pid,
+                ", ".join(f"{i.site_code}/{i.card_number}" for i in identities),
+                ", ".join(f"{fc}/{n}" for fc, n in sorted(existing)) or "nothing",
+                ", ".join(f"{fc}/{n}" for fc, n in sorted(already_written)) or "nothing",
+            )
             return False
 
         if len(pending) > len(free):
@@ -749,9 +787,11 @@ class MillenniumUltraAdapter:
         if not self._client.save_cardholder(pid, form):
             return False
         SeosLedger.record(pid, credential_id, written)
-        self._profiles.pop(pid, None)
+        self._drop_profile(pid, "writing credentials")
         logger.info(
-            "Millennium: wrote %d credential(s) into cardholder %s", len(pending), pid,
+            "Millennium: wrote %d credential(s) into cardholder %s: %s",
+            len(pending), pid,
+            ", ".join(f"{i.site_code}/{i.card_number}" for i in pending),
         )
         return True
 
@@ -904,7 +944,7 @@ class MillenniumUltraAdapter:
 
         if retired:
             SeosLedger.record(pid, credential_id, written)
-            self._profiles.pop(pid, None)
+            self._drop_profile(pid, "retiring credentials")
         return retired
 
     # -- internals -------------------------------------------------------
@@ -1030,6 +1070,14 @@ class MillenniumUltraAdapter:
             )
             status = CredentialStatus.SUSPENDED
 
+        logger.info(
+            "Millennium: cardholder %s → %s credential (%s); slots %s",
+            pid, status.value,
+            ", ".join(
+                f"{e.get('facility_code')}/{e.get('card_number')}" for e in ledger
+            ) or "nothing written yet",
+            _describe(slots),
+        )
         return [
             Credential(
                 id=credential_id,
@@ -1129,6 +1177,24 @@ class MillenniumUltraAdapter:
             pid, error, delay, attempts,
         )
 
+    def _drop_profile(self, pid: str, why: str) -> None:
+        """Forget a cardholder's cached page after writing to it.
+
+        Named rather than inlined because it is load-bearing: a cardholder
+        the sweep does not name is read *only* when their cached profile
+        says they are enrolled, so dropping the cache is what decides
+        whether they are ever read again.
+        """
+        if self._profiles.pop(pid, None) is None:
+            return
+        logger.info(
+            "Millennium: dropped the cached page for cardholder %s after %s%s",
+            pid, why,
+            "" if pid in self._sweep
+            else " — they are not in this cycle's sweep, so this is the last "
+                 "cycle they are visible unless the next sweep names them",
+        )
+
     def _profile_for(self, pid: str) -> dict | None:
         """Current slot state for a cardholder, refetched when it matters.
 
@@ -1154,6 +1220,15 @@ class MillenniumUltraAdapter:
                 #
                 # Answering None is safe: it reaches the snapshot as "not
                 # read this cycle", which no phase treats as evidence.
+                if pid in self._ours:
+                    logger.warning(
+                        "Millennium: not reading cardholder %s this cycle — not in "
+                        "the sweep and %s. We hold cards on them, so every phase "
+                        "will see them as having no credential",
+                        pid,
+                        "serving a profile cached from an earlier cycle"
+                        if cached else "nothing is cached",
+                    )
                 return cached
 
         try:
@@ -1189,6 +1264,16 @@ class MillenniumUltraAdapter:
         }
         self._profiles[pid] = profile
         return profile
+
+
+def _describe(slots: list[Slot]) -> str:
+    """One-line slot summary, for diagnostics."""
+    return ", ".join(
+        f"{s.index}:empty" if s.empty
+        else f"{s.index}:{s.facility_code}/{s.card_number} "
+             f"fmt={s.card_format or '-'} {'on' if s.active else 'off'}"
+        for s in slots
+    ) or "none"
 
 
 def _read_slots(form: CardholderForm, offset_seconds: int = 0) -> list[Slot]:

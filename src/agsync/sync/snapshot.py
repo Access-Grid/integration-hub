@@ -147,6 +147,20 @@ def build_snapshot(
 
     logger.info("PACS: %d people loaded", len(snap.people))
 
+    # Cardholders we are tracking. An unread stranger is routine; an unread
+    # cardholder we hold a pass for is the thing that hides a bug, because
+    # every phase downstream reads their absence as "nothing to do".
+    try:
+        from . import tracking
+
+        tracked_people = {
+            t.pacs_person_id for t in tracking.all_tracked()
+            if t.ag_card_id and t.status not in ("deleted", "deduped")
+        }
+    except Exception as e:  # noqa: BLE001 — diagnostics must not break a cycle
+        logger.debug("Could not read the tracking table for diagnostics: %s", e)
+        tracked_people = set()
+
     unread = 0
     for pid, person in snap.people.items():
         if not person.active:
@@ -157,8 +171,15 @@ def build_snapshot(
         except PacsRecordUnavailable:
             # Routine. An adapter that can tell which records matter skips
             # the rest, so this is most of the roster on most cycles — one
-            # line each would bury everything else in the log.
+            # line each would bury everything else in the log. The handful
+            # we are tracking are named, because for those it is not routine.
             unread += 1
+            if pid in tracked_people:
+                logger.warning(
+                    "PACS: %s (%s) holds a pass we issued but was not read this "
+                    "cycle — phases 2, 3 and 4 will all skip them",
+                    pid, person.full_name,
+                )
             continue  # no entry at all — see phase 3
         except Exception as e:  # noqa: BLE001
             logger.warning("Failed to fetch credentials for %s (%s): %s", pid, person.full_name, e)
@@ -169,6 +190,12 @@ def build_snapshot(
         "PACS: %d credentials total, %d trigger-active",
         snap.total_credentials, snap.trigger_credentials,
     )
+    missing = sorted(tracked_people - set(snap.credentials_by_person))
+    if missing:
+        logger.warning(
+            "PACS: %d tracked cardholder(s) produced no credential this cycle: %s",
+            len(missing), ", ".join(missing),
+        )
     if unread:
         logger.info("PACS: %d record(s) not read this cycle", unread)
 

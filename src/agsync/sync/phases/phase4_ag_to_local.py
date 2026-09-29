@@ -26,6 +26,22 @@ from .writeback import is_dead, is_installed, push_allocated_identities, state_o
 
 logger = logging.getLogger(__name__)
 
+def _devices(card) -> list[str]:
+    """One card's per-device credentials, for diagnostics.
+
+    The watch's own card number lives here and nowhere else, so this is the
+    line that says whether AccessGrid has issued one yet.
+    """
+    out = []
+    for d in getattr(card, "devices", None) or []:
+        get = d.get if isinstance(d, dict) else lambda k, _d=d: getattr(_d, k, None)
+        out.append(
+            f"{get('device_type') or '?'} {get('site_code') or '?'}/"
+            f"{get('card_number') or '?'} {get('status') or '?'}"
+        )
+    return out
+
+
 _AG_TO_CRED_STATUS: dict[str, CredentialStatus] = {
     "active": CredentialStatus.ACTIVE,
     "created": CredentialStatus.ACTIVE,
@@ -83,6 +99,8 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
         if cred is None or not cred.allocate_identity:
+            # The "no such credential" case is already named once per cycle
+            # by _push_new_credentials, which walks the same rows.
             continue
 
         cards = snapshot.detailed_cards(
@@ -90,6 +108,12 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
             tracked.pacs_credential_id, tracked.sync_ref,
         )
         if not cards:
+            logger.warning(
+                "  Not setting the card state for %s/%s — AG card %s did not "
+                "resolve to any card",
+                tracked.pacs_person_id, tracked.pacs_credential_id,
+                tracked.ag_card_id,
+            )
             continue
 
         desired = _desired_card_status(cards)
@@ -125,6 +149,7 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
 
 
 def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> int:
+    _log_tracked_summary()
     updated = _push_new_credentials(snapshot, pacs, ag)
     if ag is not None:
         updated += _hold_uninstalled_inactive(snapshot, pacs, ag)
@@ -220,7 +245,16 @@ def _push_new_credentials(
             continue
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
-        if cred is None or not cred.allocate_identity:
+        if cred is None:
+            # The exit that hides a missing watch credential: nothing is
+            # offered to the PACS, nothing is written, and nothing is said.
+            logger.warning(
+                "  Not writing credentials for %s/%s — the PACS reported no such "
+                "credential this cycle",
+                tracked.pacs_person_id, tracked.pacs_credential_id,
+            )
+            continue
+        if not cred.allocate_identity:
             continue
         # All of them, each re-read: one issue can span several cards, and a
         # second device's card number lives on the pass's `devices`, which
@@ -237,7 +271,23 @@ def _push_new_credentials(
             )
         )
         if not cards:
+            logger.warning(
+                "  Not writing credentials for %s/%s — AG card %s did not resolve "
+                "to any card (sync_ref %s)",
+                tracked.pacs_person_id, tracked.pacs_credential_id,
+                tracked.ag_card_id, tracked.sync_ref or "none",
+            )
             continue
+        logger.info(
+            "  %s/%s resolved to %d AG card(s): %s",
+            tracked.pacs_person_id, tracked.pacs_credential_id, len(cards),
+            ", ".join(
+                f"{getattr(c, 'id', '?')} {getattr(c, 'site_code', '?')}/"
+                f"{getattr(c, 'card_number', '?')} {state_of(c) or '?'}"
+                f" [{', '.join(_devices(c)) or 'no devices'}]"
+                for c in cards
+            ),
+        )
         if push_allocated_identities(
             pacs, tracked.pacs_person_id, tracked.pacs_credential_id, cards,
         ):
@@ -245,3 +295,17 @@ def _push_new_credentials(
     if pushed:
         logger.info("Phase 4: wrote credentials back for %d cardholder(s)", pushed)
     return pushed
+
+
+def _log_tracked_summary() -> None:
+    """One line naming every row phase 4 will consider, and its state."""
+    rows = tracking.all_tracked()
+    logger.info(
+        "Phase 4: %d tracked row(s): %s",
+        len(rows),
+        "; ".join(
+            f"{t.pacs_person_id}/{t.pacs_credential_id} status={t.status} "
+            f"ag={t.ag_card_id or 'none'} last_known={t.last_known_ag_state or '-'}"
+            for t in rows
+        ) or "none",
+    )
