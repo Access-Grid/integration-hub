@@ -158,6 +158,34 @@ def update_status(pacs_person_id: str, pacs_credential_id: str, status: str, las
     )
 
 
+def mark_deleted(pacs_person_id: str, pacs_credential_id: str) -> None:
+    """Record that the pass we issued is gone, and release the id.
+
+    ag_card_id is what phase 1 reads to decide a credential is already
+    handled — it checks for the id, not the status — so a row that keeps it
+    after the pass is deleted can never be provisioned again. Deleting a
+    cardholder's card in the PACS and adding a new one then does nothing at
+    all, and says nothing either, because that check is a bare continue.
+
+    The row itself stays: status and last_known_ag_state keep the record of
+    what happened, and the field-tracking columns keep what was last sent.
+    """
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    get_db().execute(
+        """
+        UPDATE ag_credentials
+           SET status = 'deleted',
+               last_known_ag_state = 'deleted',
+               ag_card_id = NULL,
+               sync_error = NULL,
+               retry_count = 0,
+               updated_at = ?
+         WHERE pacs_person_id = ? AND pacs_credential_id = ?
+        """,
+        (now, pacs_person_id, pacs_credential_id),
+    )
+
+
 def record_error(pacs_person_id: str, pacs_credential_id: str, error: str) -> None:
     now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(

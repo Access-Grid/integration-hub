@@ -71,6 +71,24 @@ def _pacs_session_is_keyed_by_vendor(conn: sqlite3.Connection) -> None:
     )
 
 
+def _release_card_ids_on_deleted_rows(conn: sqlite3.Connection) -> None:
+    """Unstick cardholders whose pass was deleted before that was fixed.
+
+    Phase 1 decides a credential is already handled by the presence of an
+    ag_card_id, not by the row's status, and deleting a pass used to leave
+    the id behind. Those rows are permanently skipped: delete the card in
+    the PACS, add a new one, and nothing happens and nothing is logged.
+
+    Clearing the id on rows already marked deleted lets them be provisioned
+    again. Only 'deleted' rows are touched — a suspended or active row
+    still has a pass, and its id is the only way back to it.
+    """
+    conn.execute(
+        "UPDATE ag_credentials SET ag_card_id = NULL "
+        "WHERE status = 'deleted' AND ag_card_id IS NOT NULL"
+    )
+
+
 MIGRATIONS: list[tuple[str, Step]] = [
     (
         "001_init",
@@ -162,6 +180,7 @@ MIGRATIONS: list[tuple[str, Step]] = [
     ),
     ("005_seos_credential_id_drops_the_slot", _seos_credential_id_drops_the_slot),
     ("006_pacs_session_is_keyed_by_vendor", _pacs_session_is_keyed_by_vendor),
+    ("007_release_card_ids_on_deleted_rows", _release_card_ids_on_deleted_rows),
 ]
 
 
