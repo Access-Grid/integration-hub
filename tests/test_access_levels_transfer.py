@@ -24,10 +24,12 @@ PID = "11587"
 ROSTER = [{"ID": PID, "IsActive": True, "Name": "Grid, Accessg"}]
 
 # Captured from a live save on hosted8.mgiaccess.com. The outer key is the
-# tenant, the next a per-card row number, and ALID the access level itself —
-# nothing in it names the slot or the card, which is what makes copying it
-# between slots sound. Treated as opaque all the same: the per-level AD/ED
-# dates are exactly what re-encoding would quietly mangle.
+# tenant; the next is the id of the "Access Level N" column the level sits in
+# (200 to 209, the same ids the bulk export takes for those columns); then
+# the level itself and its own dates. Those keys mean the same thing on every
+# card and name neither the slot nor the card, which is what makes copying
+# the blob between slots sound. Treated as opaque all the same: the per-level
+# AD/ED dates are exactly what re-encoding would quietly mangle.
 LEVELS = (
     '{"0":{"200":{"ALID":1,"AD":"2026-09-29T00:00:00+00:00","ED":null},'
     '"201":{"ALID":2,"AD":"2026-09-29T00:00:00+00:00","ED":null}}}'
@@ -132,10 +134,10 @@ def test_the_blob_is_copied_byte_for_byte(
     make_millennium_adapter, millennium_page, set_slot, seos_ledger
 ):
     """It is opaque to us, so it must not be normalised on the way through."""
-    # Three levels, captured live. The row keys are positional and the
-    # cardholder screen renders them in order — 2 is "MASTER 1", 1 is
-    # "Common", 212 is "SPECIAL ACCESS MASTER" — so their order is meaning,
-    # not noise, and a dict round trip is not guaranteed to preserve it.
+    # Three levels, captured live, and the cardholder screen renders them
+    # in the columns the keys name: 200 holds ALID 2 as "MASTER 1", 201
+    # holds ALID 1 as "Common", 202 holds ALID 212 as "SPECIAL ACCESS
+    # MASTER". Which column a level occupies is meaning, not noise.
     awkward = (
         '{"0":{"200":{"ALID":2,"AD":null,"ED":null},'
         '"201":{"ALID":1,"AD":null,"ED":null},'

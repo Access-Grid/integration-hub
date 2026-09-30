@@ -1007,9 +1007,17 @@ class MillenniumUltraAdapter:
         The second is what a watch credential arriving cycles later needs,
         by which time no marker is left to read.
 
-        Copied verbatim rather than parsed. It is an opaque blob to us, and
-        re-encoding a structure we do not own is how a working access level
-        becomes a subtly broken one.
+        Copied verbatim rather than parsed:
+
+            {"0":{"200":{"ALID":2,"AD":null,"ED":null},
+                  "201":{"ALID":1,"AD":null,"ED":null}}}
+
+        Tenant, then the id of the "Access Level N" column the level sits in
+        — 200 to 209 for the ten of them, the same ids the bulk export takes
+        — then the level itself and its own dates. Those keys mean the same
+        thing on every card, which is what makes moving the blob between
+        slots sound. Re-encoding a structure we do not own is how a working
+        access level becomes a subtly broken one.
         """
         for slot in slots:
             if not self._is_trigger(slot):
