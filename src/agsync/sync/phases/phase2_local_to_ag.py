@@ -45,9 +45,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                     tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
                 )
                 ag.access_cards.delete(card_id=tracked.ag_card_id)
-                tracking.update_status(
+                tracking.mark_deleted(
                     tracked.pacs_person_id, tracked.pacs_credential_id,
-                    "deleted", last_known_ag_state="deleted",
                 )
                 updated += 1
             except AccessGridError as e:

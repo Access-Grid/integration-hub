@@ -113,9 +113,8 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
         try:
             logger.info("  Deleting AG card %s — %s", tracked.ag_card_id, reason)
             ag.access_cards.delete(card_id=tracked.ag_card_id)
-            tracking.update_status(
+            tracking.mark_deleted(
                 tracked.pacs_person_id, tracked.pacs_credential_id,
-                "deleted", last_known_ag_state="deleted",
             )
             deleted += 1
         except AccessGridError as e:
