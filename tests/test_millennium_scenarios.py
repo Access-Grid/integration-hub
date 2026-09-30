@@ -387,7 +387,7 @@ def test_s11_a_deleted_cardholder_has_their_pass_revoked(monkeypatch):
     monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [tracked])
     updated: list[tuple] = []
     monkeypatch.setattr(
-        phase3_deletions.tracking, "update_status",
+        phase3_deletions.tracking, "mark_deleted",
         lambda *a, **k: updated.append((a, k)),
     )
 
@@ -412,7 +412,7 @@ def test_s11_a_cardholder_who_lost_only_their_card_is_also_revoked(monkeypatch):
         status="active", sync_ref="ref-1",
     )
     monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [tracked])
-    monkeypatch.setattr(phase3_deletions.tracking, "update_status", lambda *a, **k: None)
+    monkeypatch.setattr(phase3_deletions.tracking, "mark_deleted", lambda *a, **k: None)
 
     snap = Snapshot()
     snap.people["11587"] = SimpleNamespace(id="11587", full_name="Accessg Grid", active=True)
@@ -586,7 +586,7 @@ def test_s12_phase_3_deletes_a_pass_whose_card_expired(monkeypatch):
         status="active", sync_ref="ref-1",
     )
     monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [tracked])
-    monkeypatch.setattr(phase3_deletions.tracking, "update_status", lambda *a, **k: None)
+    monkeypatch.setattr(phase3_deletions.tracking, "mark_deleted", lambda *a, **k: None)
 
     snap = Snapshot()
     snap.people["11587"] = SimpleNamespace(id="11587", full_name="Accessg Grid", active=True)
@@ -656,7 +656,7 @@ def test_s12_expiries_are_rationed_per_cycle(monkeypatch):
         for i in range(phase3_deletions.MAX_EXPIRIES_PER_CYCLE + 10)
     ]
     monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: rows)
-    monkeypatch.setattr(phase3_deletions.tracking, "update_status", lambda *a, **k: None)
+    monkeypatch.setattr(phase3_deletions.tracking, "mark_deleted", lambda *a, **k: None)
 
     snap = Snapshot()
     for row in rows:
