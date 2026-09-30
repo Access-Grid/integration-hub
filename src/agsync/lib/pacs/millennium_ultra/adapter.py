@@ -599,6 +599,18 @@ class MillenniumUltraAdapter:
                     "carries format %s — reporting no credentials. Slots: %s",
                     pid, self.trigger_card_format, _describe(slots),
                 )
+                # And the record of those cards is now false, so drop it.
+                # Phase 3 deletes the pass off the back of this same empty
+                # answer; left recorded, the cards would suspend whatever
+                # pass a new trigger card earned next, because a recorded
+                # card missing from the cardholder is how an operator's
+                # revocation is detected.
+                #
+                # Safe precisely here and nowhere else: our own cards carry
+                # the trigger format, so a cardholder with no trigger slot
+                # cannot be holding one. Confirmed against the slots anyway,
+                # since it is the ledger that makes a card ours to release.
+                self._forget_if_nothing_remains(pid, slots)
             return []
 
         if self.mode == MODE_DESFIRE:
@@ -951,90 +963,26 @@ class MillenniumUltraAdapter:
             self._drop_profile(pid, "retiring credentials")
         return retired
 
-    def forget_credential(self, person_id: str, credential_id: str) -> bool:
-        """Stop recording the cards we wrote for a credential that is gone.
+    # -- internals -------------------------------------------------------
 
-        Called once phase 3 has deleted the pass. Until it is, the ledger has
-        to stay: it is what tells a card an operator revoked from a card we
-        never wrote, and what stops a revoked card being written back.
-
-        Afterwards the record is not merely useless but harmful. A recorded
-        card that is no longer on the cardholder suspends the credential, so
-        a cardholder given a fresh trigger card gets a new pass that is
-        suspended from birth over cards belonging to the pass before it.
-
-        Refuses unless it can establish that none of the recorded cards are
-        still in a slot, and says why. Forgetting while they are there is the
-        dangerous direction: the cards we write carry the trigger format, so
-        the ledger is the only thing distinguishing them from an operator's
-        marker — `_marker_slot` would offer one up to be overwritten.
-
-        Returns whether the entry was dropped.
-        """
-        if self.mode != MODE_SEOS:
-            return False
-        pid = str(person_id)
-        entries = SeosLedger.get(pid, credential_id)
-        if not entries:
-            return False
-
-        recorded = ", ".join(
-            f"{e.get('facility_code')}/{e.get('card_number')}" for e in entries
-        )
-
-        # The cardholder is gone from Millennium, so no slot of theirs can
-        # still hold anything. The roster is rebuilt every cycle and is the
-        # same evidence phase 3 deleted the pass on.
-        if pid not in self._roster:
-            logger.info(
-                "Millennium: cardholder %s is no longer in Millennium — "
-                "forgetting the cards we recorded there (%s)",
-                pid, recorded,
-            )
-            SeosLedger.forget(pid, credential_id)
-            return True
-
-        profile = self._profiles.get(pid)
-        if profile is None:
-            # Not read this cycle, so what is in their slots is unknown, and
-            # a guess in either direction does damage.
-            logger.warning(
-                "Millennium: not forgetting the cards recorded for cardholder "
-                "%s (%s) — their page was not read this cycle",
-                pid, recorded,
-            )
-            return False
-
-        live = {
-            (s.facility_code, s.card_number)
-            for s in profile["slots"] if not s.empty
-        }
-        remaining = [
-            f"{e.get('facility_code')}/{e.get('card_number')}"
+    def _forget_if_nothing_remains(self, pid: str, slots: list[Slot]) -> None:
+        """Drop the ledger entry when none of its cards are on the cardholder."""
+        live = {(s.facility_code, s.card_number) for s in slots if not s.empty}
+        entries = SeosLedger.get(pid, SEOS_CREDENTIAL_ID)
+        if any(
+            (str(e.get("facility_code")), str(e.get("card_number"))) in live
             for e in entries
-            if (str(e.get("facility_code")), str(e.get("card_number"))) in live
-        ]
-        if remaining:
-            # Somebody has to release these, and only the ledger says they
-            # are ours. Kept deliberately, even though it means the stale
-            # entry survives.
-            logger.warning(
-                "Millennium: not forgetting the cards recorded for cardholder "
-                "%s — %s %s still on the cardholder",
-                pid, ", ".join(remaining),
-                "is" if len(remaining) == 1 else "are",
-            )
-            return False
-
+        ):
+            return
         logger.info(
             "Millennium: forgetting the cards recorded for cardholder %s (%s) — "
-            "the pass they belonged to is gone and none of them are in a slot",
-            pid, recorded,
+            "none of them are on the cardholder any more",
+            pid,
+            ", ".join(
+                f"{e.get('facility_code')}/{e.get('card_number')}" for e in entries
+            ),
         )
-        SeosLedger.forget(pid, credential_id)
-        return True
-
-    # -- internals -------------------------------------------------------
+        SeosLedger.forget(pid, SEOS_CREDENTIAL_ID)
 
     def _is_trigger(self, slot: Slot) -> bool:
         # A slot only carries a format when it holds a real card, so this is
