@@ -332,6 +332,10 @@ class MillenniumUltraAdapter:
         # The trigger format's display name, resolved once. "" means looked
         # for and not found; None means not looked for yet.
         self._trigger_format_label: str | None = None
+        # Candidates who share a name with another roster entry. The export
+        # has no cardholder id, so their contact details cannot be told
+        # apart and their detail page has to be read before they are yielded.
+        self._ambiguous: set[str] = set()
 
     # -- contract --------------------------------------------------------
 
@@ -364,6 +368,17 @@ class MillenniumUltraAdapter:
             pid = str(row.get("ID"))
             self._roster[pid] = row
             first, last = parse_roster_name(row.get("Name", ""))
+            # A namesake's contact details cannot come from the export, so
+            # read the page now rather than yield a Person without them.
+            # This is the only chance: the pass is issued on the same cycle
+            # a cardholder is first seen, and AccessGrid will not change the
+            # address on a pass it has already issued.
+            #
+            # Not a spare request. `list_credentials` reads the page moments
+            # later anyway; this only moves the first read earlier, and the
+            # cache means later cycles do not pay for it at all.
+            if pid in self._ambiguous and pid not in self._profiles:
+                self._profile_for(pid)
             profile = self._profiles.get(pid)
             if profile:
                 first = profile.get("first") or first
@@ -452,15 +467,25 @@ class MillenniumUltraAdapter:
         # Contact details for everyone the export named, not only the
         # enrolled: cheap to keep, and it means a cardholder enrolled later
         # already has them before their detail page is ever read.
+        #
+        # Only where the name identifies one cardholder. A shared name maps
+        # to every roster entry carrying it, so each row's details were
+        # written against all of them and the last row won — one namesake's
+        # email and phone standing in for the other's, on the cycle the pass
+        # is issued. The export cannot say whose they are, so it says nothing
+        # and `list_people` reads the page instead.
         self._exported_contact = {}
         for person in rows:
-            for pid in by_name.get(
+            ids = by_name.get(
                 export.name_key(person.first_name, person.last_name)
-            ) or []:
-                if person.email or person.phone:
-                    self._exported_contact[pid] = (person.email, person.phone)
+            ) or []
+            if len(ids) != 1:
+                continue
+            if person.email or person.phone:
+                self._exported_contact[ids[0]] = (person.email, person.phone)
 
         candidates: set[str] = set()
+        self._ambiguous = set()
         carrying = unmatched = 0
         ambiguous: list[tuple[str, int]] = []
         for person in rows:
@@ -473,6 +498,7 @@ class MillenniumUltraAdapter:
                 continue
             if len(ids) > 1:
                 ambiguous.append((f"{person.first_name} {person.last_name}", len(ids)))
+                self._ambiguous.update(ids)
             candidates.update(ids)
 
         if unmatched:
