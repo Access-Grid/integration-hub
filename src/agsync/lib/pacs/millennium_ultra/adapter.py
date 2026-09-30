@@ -528,22 +528,26 @@ class MillenniumUltraAdapter:
         if roster is not None:
             candidates = self._enrolled_from_export(roster)
             if candidates is not None:
-                # Nothing else needs reading: a cardholder absent from this
-                # set has no trigger card, and a cardholder we never read is
-                # explicitly not evidence of anything downstream.
-                self._sweep = candidates
-                # Except that a cardholder we have written a card to is not
-                # a stranger, and the name join can miss them — the export
-                # carries no cardholder id, so the match is by name and a
-                # roster entry spelled differently never lands. Missing here
-                # means every phase downstream sees them as absent.
-                missed = sorted(self._ours - candidates)
-                if missed:
-                    logger.warning(
-                        "Millennium: %d cardholder(s) we hold cards on are not in "
-                        "this cycle's sweep: %s — they can only be read from cache",
-                        len(missed), ", ".join(missed),
-                    )
+                # Plus everyone we hold a card on, whom the export cannot
+                # be relied on to name.
+                #
+                # It names cardholders by the format they carry, so somebody
+                # loses their place in it the moment their last trigger card
+                # goes — which is exactly the event we most need to see, and
+                # the only evidence that authorises deleting their pass. It
+                # also joins by name, having no cardholder id to join on, so
+                # a roster entry spelled differently never lands at all.
+                #
+                # Either way the cardholder was carried only by their cached
+                # page, and a restart or any write of ours drops that. Then
+                # they are unread, and phase 3 declines to act on a record it
+                # did not read — correctly, which is what makes it silent.
+                # The pass stays live, the slot stays held, and nothing says
+                # so. The ledger is the reliable statement of who matters:
+                # a card we wrote is a card we are answerable for.
+                self._sweep = candidates | self._ours
+                # Everybody else in the roster has no trigger card and no
+                # card of ours, so reading them would tell us nothing.
                 self._cold = False
                 return
 
