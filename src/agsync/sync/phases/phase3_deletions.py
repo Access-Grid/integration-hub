@@ -56,6 +56,33 @@ MAX_RETIREMENTS_PER_CYCLE = 25
 MAX_EXPIRIES_PER_CYCLE = 25
 
 
+def _forget_what_we_wrote(pacs: PacsAdapter | None, tracked) -> None:
+    """Discard the adapter's record of a credential whose pass we just deleted.
+
+    Our own bookkeeping, never the PACS. Left behind it outlives the pass it
+    describes: for Seos it lists cards that are no longer on the cardholder,
+    which is exactly the signal for "an operator revoked this" — so the next
+    pass issued to that cardholder would be suspended from birth over cards
+    belonging to the one before it.
+
+    The adapter may refuse, and is expected to where a card it wrote is still
+    in the PACS. Failure here must not undo the deletion that just succeeded,
+    so it is reported and swallowed.
+    """
+    if pacs is None or not getattr(pacs, "supports_credential_retirement", False):
+        return
+    forget = getattr(pacs, "forget_credential", None)
+    if forget is None:
+        return
+    try:
+        forget(tracked.pacs_person_id, tracked.pacs_credential_id)
+    except Exception as e:  # noqa: BLE001 — the pass is already gone
+        logger.error(
+            "  Could not clear what we recorded for %s/%s: %s",
+            tracked.pacs_person_id, tracked.pacs_credential_id, e,
+        )
+
+
 def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> int:
     logger.info("Phase 3: Checking for deletions")
 
@@ -116,6 +143,7 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
             tracking.mark_deleted(
                 tracked.pacs_person_id, tracked.pacs_credential_id,
             )
+            _forget_what_we_wrote(pacs, tracked)
             deleted += 1
         except AccessGridError as e:
             msg = str(e).lower()
@@ -123,6 +151,7 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
                 # Already gone — clean up.
                 logger.debug("  AG card %s already gone — removing tracking row", tracked.ag_card_id)
                 tracking.remove(tracked.pacs_person_id, tracked.pacs_credential_id)
+                _forget_what_we_wrote(pacs, tracked)
             else:
                 logger.error("  Failed to delete AG card %s: %s", tracked.ag_card_id, e)
 

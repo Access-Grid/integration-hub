@@ -298,3 +298,16 @@ class PacsAdapter(Protocol):
         still verify that what it is about to remove is the credential it
         wrote, and leave anything else alone.
         """
+
+    def forget_credential(self, person_id: str, credential_id: str) -> bool:
+        """Stop recording what was written for a credential whose pass is gone.
+
+        Called by phase 3 once it has deleted the AccessGrid card, for
+        adapters that keep a record of what they wrote. Nothing is removed
+        from the PACS — this only discards our own bookkeeping, which
+        outlives the pass it describes and misreports the next one.
+
+        The adapter decides whether it is safe, and may refuse: while a card
+        it wrote is still in the PACS, that record may be the only thing
+        identifying the card as ours. Returns whether it forgot.
+        """
