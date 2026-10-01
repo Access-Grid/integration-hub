@@ -296,3 +296,22 @@ def test_clearing_the_cards_forgets_every_credential(
     assert _creds(adapter) == {}
     assert SeosLedger.get(PID, "seos") == []
     assert SeosLedger.get(PID, "seos-card8200") == []
+
+
+def test_an_empty_ledger_entry_does_not_claim_an_id(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Seen on a live install: `11652:seos -> nothing`.
+
+    `retire_credentials` re-records the list after removing a card, so a
+    credential whose last card AccessGrid deleted leaves an empty entry.
+    Counted as a credential it holds "seos" while backing nothing, and the
+    cardholder's own trigger card is then read as asking for a second pass —
+    one card, two passes, two licences.
+    """
+    SeosLedger.record(PID, "seos", [])
+    adapter, _ = _adapter(make_millennium_adapter, millennium_page, set_slot, {
+        1: ("7919", "1", "99", True), 2: None, 3: None,
+    })
+
+    assert set(_creds(adapter)) == {"seos"}

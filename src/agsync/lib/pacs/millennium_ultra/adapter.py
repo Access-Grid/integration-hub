@@ -1155,7 +1155,17 @@ class MillenniumUltraAdapter:
         does *not* know about is an operator asking for one, keyed by the
         card's own id in Millennium.
         """
-        existing = SeosLedger.entries_for_person(pid)
+        # Entries with nothing in them are not passes. `retire_credentials`
+        # re-records the list after removing a card, so a credential whose
+        # last card AccessGrid deleted leaves an empty entry behind. Counted
+        # as a credential it would hold its id while contributing nothing,
+        # and the cardholder's trigger card would then be read as asking for
+        # a *second* pass — one card, two passes.
+        existing = {
+            credential_id: entries
+            for credential_id, entries in SeosLedger.entries_for_person(pid).items()
+            if entries
+        }
         ours = {
             (str(e.get("facility_code")), str(e.get("card_number")))
             for entries in existing.values()
