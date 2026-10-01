@@ -52,7 +52,14 @@ logger = logging.getLogger(__name__)
 # seconds — cheaper per cycle but far more often, which is more total load on
 # the install, not less. The dynamic rule is kept above this floor so a slow
 # PACS is still read less often, which is the property it was for.
-MIN_INTERVAL_S = 300
+#
+# A minute, because the floor is what a holder waits. Nothing reaches the
+# PACS at the moment somebody installs a pass: the credential their watch
+# was given is written on the next cycle, and the card is switched on there
+# too, so five minutes was five minutes of a pass that opens nothing. The
+# measured cycle on the install this was set for is ~16s, so the dynamic
+# rule asks for ~49s and this is what it gets clamped to.
+MIN_INTERVAL_S = 60
 MAX_INTERVAL_S = 600
 INTERVAL_MULTIPLIER = 3
 ERROR_BACKOFF_S = 30

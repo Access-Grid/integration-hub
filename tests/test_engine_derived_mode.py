@@ -118,8 +118,8 @@ def test_a_fast_cycle_still_waits_five_minutes():
             min(MAX_INTERVAL_S, cycle_seconds * INTERVAL_MULTIPLIER),
         )
 
-    assert interval(5) == 300
-    assert interval(60) == 300
+    assert interval(5) == MIN_INTERVAL_S
+    assert interval(60) == 180, "a slower cycle is still read less often"
 
 
 def test_a_slow_cycle_still_backs_off():
@@ -136,5 +136,5 @@ def test_a_slow_cycle_still_backs_off():
             min(MAX_INTERVAL_S, cycle_seconds * INTERVAL_MULTIPLIER),
         )
 
-    assert interval(150) > 300
+    assert interval(150) > MIN_INTERVAL_S
     assert interval(400) == MAX_INTERVAL_S
