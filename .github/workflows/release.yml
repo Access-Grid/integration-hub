@@ -63,6 +63,31 @@ jobs:
           dist\agsync.exe --version
         shell: pwsh
 
+      # A second, much smaller exe: a read-only dump of the tracking table
+      # and the Seos ledger. Shipped alongside because what this install
+      # believes it has issued has so far only been inferable from log
+      # lines, and a rule that decides whether to delete somebody's pass
+      # needs checking against the real rows first.
+      - name: Build agdiag.exe with PyInstaller
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --onefile `
+            --name agdiag `
+            --collect-all agsync `
+            --hidden-import win32timezone `
+            scripts/agdiag_entry.py
+        shell: pwsh
+
+      - name: Verify agdiag runs and withholds secrets
+        env:
+          AG_SYNC_DB_PATH: ${{ runner.temp }}\no-such.db
+        run: |
+          $out = dist\agdiag.exe | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "agdiag exited $LASTEXITCODE" }
+          if ($out -notmatch "diagnostic dump") { throw "unexpected output: $out" }
+        shell: pwsh
+
       - name: Compute release name
         id: rel
         run: |
@@ -75,14 +100,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agsync-windows-${{ steps.rel.outputs.tag }}
-          path: dist/agsync.exe
+          path: |
+            dist/agsync.exe
+            dist/agdiag.exe
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.rel.outputs.tag }}
-          files: dist/agsync.exe
+          files: |
+            dist/agsync.exe
+            dist/agdiag.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
 
