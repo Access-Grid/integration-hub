@@ -271,6 +271,23 @@ class SeosLedger:
         SeosLedger._save_all(data)
 
     @staticmethod
+    def cards_for_person(person_id: str) -> set[tuple[str, str]]:
+        """Every card recorded for a cardholder, across all their credentials.
+
+        One cardholder can hold more than one Seos credential, and a card
+        belonging to any of them is still ours. Asked per credential — which
+        is right for "has this one been revoked" — it is wrong for "is this
+        card somebody's marker", because another credential's card answers no.
+        """
+        prefix = f"{person_id}:"
+        return {
+            (str(e.get("facility_code")), str(e.get("card_number")))
+            for key, entries in SeosLedger._load_all().items()
+            if key.startswith(prefix)
+            for e in entries
+        }
+
+    @staticmethod
     def forget(person_id: str, credential_id: str) -> None:
         data = SeosLedger._load_all()
         if data.pop(SeosLedger._key(person_id, credential_id), None) is not None:
@@ -737,7 +754,11 @@ class MillenniumUltraAdapter:
         # nothing — so leaving it in place would spend one of three slots on
         # a card that will never be used, and a cardholder needs two real
         # ones for a phone and a watch.
-        marker = self._marker_slot(slots, already_written)
+        # Every card of ours on this cardholder, not just this credential's.
+        # A card belonging to another of their credentials is still ours, and
+        # calling it a marker would overwrite a working credential in
+        # preference to an empty slot.
+        marker = self._marker_slot(slots, SeosLedger.cards_for_person(pid))
         # Read before anything is written, so a slot we fill cannot become
         # the source for the next one.
         levels = self._access_levels(form, slots)
@@ -1350,7 +1371,8 @@ def _describe(slots: list[Slot]) -> str:
     return ", ".join(
         f"{s.index}:empty" if s.empty
         else f"{s.index}:{s.facility_code}/{s.card_number} "
-             f"fmt={s.card_format or '-'} {'on' if s.active else 'off'}"
+             f"fmt={s.card_format or '-'} {'on' if s.active else 'off'} "
+             f"id={s.card_id or '-'}"
         for s in slots
     ) or "none"
 
