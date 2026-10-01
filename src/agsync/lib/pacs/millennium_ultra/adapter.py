@@ -1038,23 +1038,30 @@ class MillenniumUltraAdapter:
     # -- internals -------------------------------------------------------
 
     def _forget_if_nothing_remains(self, pid: str, slots: list[Slot]) -> None:
-        """Drop the ledger entry when none of its cards are on the cardholder."""
+        """Drop each ledger entry whose cards are all gone from the cardholder.
+
+        Every credential of theirs, not just the first. A cardholder can hold
+        more than one Seos pass, and clearing their cards clears all of them —
+        an entry left behind would outlive its pass and suspend whatever the
+        next trigger card earns.
+        """
         live = {(s.facility_code, s.card_number) for s in slots if not s.empty}
-        entries = SeosLedger.get(pid, SEOS_CREDENTIAL_ID)
-        if any(
-            (str(e.get("facility_code")), str(e.get("card_number"))) in live
-            for e in entries
-        ):
-            return
-        logger.info(
-            "Millennium: forgetting the cards recorded for cardholder %s (%s) — "
-            "none of them are on the cardholder any more",
-            pid,
-            ", ".join(
-                f"{e.get('facility_code')}/{e.get('card_number')}" for e in entries
-            ),
-        )
-        SeosLedger.forget(pid, SEOS_CREDENTIAL_ID)
+        for credential_id, entries in SeosLedger.entries_for_person(pid).items():
+            if any(
+                (str(e.get("facility_code")), str(e.get("card_number"))) in live
+                for e in entries
+            ):
+                continue
+            logger.info(
+                "Millennium: forgetting the cards recorded for cardholder %s "
+                "under %s (%s) — none of them are on the cardholder any more",
+                pid, credential_id,
+                ", ".join(
+                    f"{e.get('facility_code')}/{e.get('card_number')}"
+                    for e in entries
+                ) or "nothing",
+            )
+            SeosLedger.forget(pid, credential_id)
 
     def _is_trigger(self, slot: Slot) -> bool:
         # A slot only carries a format when it holds a real card, so this is

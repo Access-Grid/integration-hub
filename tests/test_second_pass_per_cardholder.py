@@ -273,3 +273,26 @@ def test_a_second_pass_needs_a_slot_of_its_own(
     })
 
     assert set(_creds(adapter)) == {"seos"}
+
+
+def test_clearing_the_cards_forgets_every_credential(
+    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+):
+    """Not just the first.
+
+    An entry left behind outlives the pass it described, and would suspend
+    whatever the next trigger card earns — the thing the forget exists to
+    prevent, reintroduced for the second pass by looking at only one id.
+    """
+    _pass_a()
+    SeosLedger.record(PID, "seos-card8200", [
+        {"slot": 3, "card_number": "90", "facility_code": "99"},
+    ])
+    # The operator deletes every format-8 card; an unrelated badge remains.
+    adapter, _ = _adapter(make_millennium_adapter, millennium_page, set_slot, {
+        1: ("8300", "5", "45", True, "1"), 2: None, 3: None,
+    })
+
+    assert _creds(adapter) == {}
+    assert SeosLedger.get(PID, "seos") == []
+    assert SeosLedger.get(PID, "seos-card8200") == []
