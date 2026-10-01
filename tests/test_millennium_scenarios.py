@@ -28,10 +28,19 @@ ROSTER = [{"ID": 11587, "IsActive": True, "Name": "Grid, Accessg"}]
 
 
 def _enrolled_page(millennium_page, set_slot, *, written=None, active=True):
-    """A cardholder with a marker in slot 1 and whatever we have written."""
+    """A cardholder with whatever we have written, and their own badge.
+
+    Slot 1 carries the operator's marker only while nothing has been written
+    yet. The marker goes to the front of the free list, so the first write
+    consumes it — a cardholder we have written to has none left, and a
+    trigger-format card we did not write means somebody asking for another
+    pass rather than scenery.
+    """
     page = set_slot(
         millennium_page, 1, card_id="7919", card_number="1",
-        facility_code="99", card_format=TRIGGER, active=True,
+        facility_code="99",
+        card_format=TRIGGER if not written else "1",
+        active=True,
     )
     for index in (2, 3):
         spec = (written or {}).get(index)
@@ -56,11 +65,17 @@ def _posted(client):
     return client.saved[-1][1]
 
 
-def _credential(adapter):
+def _credential(adapter, credential_id="seos"):
+    """One of the cardholder's credentials, by id.
+
+    Selected rather than assumed to be the only one: a cardholder can hold
+    more than one Seos pass now, keyed on the Millennium CardID of the card
+    that asked for it, and an un-consumed marker is read as such a request.
+    """
     list(adapter.list_people())
-    creds = list(adapter.list_credentials("11587"))
-    assert len(creds) == 1
-    return creds[0]
+    creds = {c.id: c for c in adapter.list_credentials("11587")}
+    assert credential_id in creds, f"no {credential_id} credential in {sorted(creds)}"
+    return creds[credential_id]
 
 
 # =====================================================================

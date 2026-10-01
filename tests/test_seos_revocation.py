@@ -21,11 +21,18 @@ def _client(pages):
     return FakeMillenniumClient(roster=ROSTER, pages=pages)
 
 
-def _page(millennium_page, set_slot, *, slot2=None, slot3=None):
-    """A cardholder with a trigger card in slot 1, plus whatever we wrote."""
+def _page(millennium_page, set_slot, *, slot2=None, slot3=None, marker=False):
+    """A cardholder carrying their own badge, plus whatever we wrote.
+
+    Slot 1 is deliberately not the trigger format unless asked for. The
+    marker an operator creates is consumed by the first write — it goes to
+    the front of the free list — so a cardholder we have already written to
+    has none left. A trigger-format card we did not write means something
+    specific now: somebody asking for another pass.
+    """
     page = set_slot(
         millennium_page, 1, card_id="7919", card_number="1234",
-        facility_code="66", card_format=TRIGGER, active=True,
+        facility_code="66", card_format=TRIGGER if marker else OTHER, active=True,
     )
     for index, spec in ((2, slot2), (3, slot3)):
         if spec is None:
@@ -39,11 +46,17 @@ def _page(millennium_page, set_slot, *, slot2=None, slot3=None):
     return page
 
 
-def _status(adapter):
+def _status(adapter, credential_id="seos"):
+    """The status of one of the cardholder's credentials, by id.
+
+    Selected rather than assumed to be the only one: a cardholder can hold
+    more than one Seos pass, and a trigger-format card we did not write is
+    read as a request for another.
+    """
     list(adapter.list_people())
-    creds = list(adapter.list_credentials("11587"))
-    assert len(creds) == 1
-    return creds[0].status
+    creds = {c.id: c for c in adapter.list_credentials("11587")}
+    assert credential_id in creds, f"no {credential_id} credential in {sorted(creds)}"
+    return creds[credential_id].status
 
 
 def _ledger(*numbers, slots=(2, 3)):
@@ -68,9 +81,12 @@ def test_present_and_active_means_active(
 def test_deleting_the_card_suspends_the_pass(
     make_millennium_adapter, millennium_page, set_slot, seos_ledger
 ):
-    # The revocation that has to reach AccessGrid.
-    _ledger("5001")
-    page = _page(millennium_page, set_slot)  # slot 2 emptied
+    # The revocation that has to reach AccessGrid. Two cards were written,
+    # so one being deleted leaves the credential present but broken — with
+    # none of them left there is no trigger card at all, which phase 3 reads
+    # as the credential being gone and deletes the pass outright.
+    _ledger("5001", "5002")
+    page = _page(millennium_page, set_slot, slot3=("5002", True))  # 5001 deleted
     adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
     assert _status(adapter) is CredentialStatus.SUSPENDED
 
@@ -156,7 +172,7 @@ def test_before_anything_is_written_the_pass_is_active(
 ):
     # Nothing in the ledger yet: the pass has just been issued and phase 1
     # is about to write it in. It must not read as revoked.
-    page = _page(millennium_page, set_slot)
+    page = _page(millennium_page, set_slot, marker=True)
     adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
     assert _status(adapter) is CredentialStatus.ACTIVE
 
