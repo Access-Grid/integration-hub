@@ -738,6 +738,9 @@ class MillenniumUltraAdapter:
         # a card that will never be used, and a cardholder needs two real
         # ones for a phone and a watch.
         marker = self._marker_slot(slots, already_written)
+        # Read before anything is written, so a slot we fill cannot become
+        # the source for the next one.
+        levels = self._access_levels(form, slots)
         free = [s.index for s in slots if s.empty]
         if marker is not None:
             free.insert(0, marker.index)
@@ -793,7 +796,9 @@ class MillenniumUltraAdapter:
                     identity.site_code, identity.card_number, pid,
                 )
                 return False
-            self._fill_slot(form, slot, identity, card_id=replacing)
+            self._fill_slot(
+                form, slot, identity, card_id=replacing, access_levels=levels,
+            )
             written.append({
                 "slot": slot,
                 "card_number": str(identity.card_number),
@@ -993,6 +998,36 @@ class MillenniumUltraAdapter:
             and not slot.empty
         )
 
+    def _access_levels(self, form: CardholderForm, slots: list[Slot]) -> str:
+        """The access levels a card we are about to write should carry.
+
+        Taken from the trigger-format cards already on the cardholder: the
+        marker an operator created to ask for a pass, or — once that has been
+        overwritten — the card we wrote in its place, which inherited them.
+        The second is what a watch credential arriving cycles later needs,
+        by which time no marker is left to read.
+
+        Copied verbatim rather than parsed:
+
+            {"0":{"200":{"ALID":2,"AD":null,"ED":null},
+                  "201":{"ALID":1,"AD":null,"ED":null}}}
+
+        Tenant, then the id of the "Access Level N" column the level sits in
+        — 200 to 209 for the ten of them, the same ids the bulk export takes
+        — then the level itself and its own dates. Those keys mean the same
+        thing on every card, which is what makes moving the blob between
+        slots sound. Re-encoding a structure we do not own is how a working
+        access level becomes a subtly broken one.
+        """
+        for slot in slots:
+            if not self._is_trigger(slot):
+                continue
+            levels = form.value(f"Card_{slot.index}_AccessLevels").strip()
+            # An unset field is "{}" here rather than empty.
+            if levels and levels not in ("{}", "[]"):
+                return levels
+        return ""
+
     def _marker_slot(
         self, slots: list[Slot], already_written: set[tuple[str, str]]
     ) -> Slot | None:
@@ -1170,6 +1205,7 @@ class MillenniumUltraAdapter:
         slot: int,
         identity: CredentialIdentity,
         card_id: str = "",
+        access_levels: str = "",
     ) -> None:
         """Turn a slot into a live card.
 
@@ -1195,6 +1231,14 @@ class MillenniumUltraAdapter:
         # Not clearing it either: the form already carries whatever the slot
         # held, so an empty slot stays empty and the marker we overwrite
         # keeps the date an operator gave it.
+        if access_levels:
+            # Which doors the card opens. Every other per-slot field rides
+            # along in the form untouched, and that is enough for the card
+            # that replaces the marker — it inherits the marker's levels by
+            # sitting in its slot. A card going into an empty slot inherits
+            # that slot's nothing, so a holder's phone opened every door and
+            # their watch opened none.
+            form.set_value(f"Card_{slot}_AccessLevels", access_levels)
         form.set_checked(f"Card_{slot}_Active", True)
 
     def _backing_off(self, pid: str) -> bool:
