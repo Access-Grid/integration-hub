@@ -89,6 +89,37 @@ MODE_SEOS = "seos"
 # credential per cardholder, so there is nothing for a position to identify.
 SEOS_CREDENTIAL_ID = "seos"
 
+# The id for a pass beyond a cardholder's first, suffixed with the Millennium
+# CardID of the card that asked for it. The slot cannot serve: cards move
+# between positions, and a moved id reads as a new credential, which phase 1
+# provisions a second pass for — the bug migration 005 was written to stop.
+# The card number cannot either, because provisioning overwrites it. The
+# CardID survives both: it is preserved deliberately when a marker is
+# overwritten, so that Millennium updates the card rather than creating a
+# second one beside it.
+#
+# Cardholders already tracked under the bare "seos" keep it. Nothing is
+# migrated, so nothing has to read the cardholder page to learn an id it
+# never had.
+_SEOS_CREDENTIAL_PREFIX = "seos-card"
+
+
+def _credential_id_for(slot: Slot) -> str:
+    return f"{_SEOS_CREDENTIAL_PREFIX}{slot.card_id}"
+
+
+def _is_seos_credential(credential_id: str) -> bool:
+    return credential_id == SEOS_CREDENTIAL_ID or credential_id.startswith(
+        _SEOS_CREDENTIAL_PREFIX
+    )
+
+
+# Millennium gives three card slots. A pass can hold two cards — a phone and
+# a watch — so two passes is already more than fits comfortably, and a third
+# could not be installed. The cap is what stops an id that moves, or a
+# trigger that matches more cards than it should, issuing a pass per cycle.
+MAX_SEOS_CREDENTIALS = 2
+
 # Seos needs this many *empty* slots before we will provision. A phone and a
 # watch consume one each, and the marker's own slot is the other — we
 # overwrite it, since it holds a placeholder rather than a working card. Of
@@ -269,6 +300,21 @@ class SeosLedger:
         data = SeosLedger._load_all()
         data[SeosLedger._key(person_id, credential_id)] = list(deduped.values())
         SeosLedger._save_all(data)
+
+    @staticmethod
+    def entries_for_person(person_id: str) -> dict[str, list[dict]]:
+        """Every credential recorded for a cardholder, keyed by credential id.
+
+        A cardholder can hold more than one Seos pass, and each has its own
+        entry. Returned together because deciding what a cardholder has, and
+        what is being asked for, needs all of them at once.
+        """
+        prefix = f"{person_id}:"
+        return {
+            key[len(prefix):]: entries
+            for key, entries in SeosLedger._load_all().items()
+            if key.startswith(prefix)
+        }
 
     @staticmethod
     def cards_for_person(person_id: str) -> set[tuple[str, str]]:
@@ -1088,8 +1134,90 @@ class MillenniumUltraAdapter:
     def _seos_credentials(
         self, pid: str, slots: list[Slot], trigger: Slot
     ) -> list[Credential]:
-        credential_id = SEOS_CREDENTIAL_ID
-        ledger = SeosLedger.get(pid, credential_id)
+        """One credential per pass this cardholder holds or has asked for.
+
+        A cardholder used to have exactly one. They need two for the case a
+        watch creates: Wallet will not add a credential to a watch after the
+        pass is installed, and the original link cannot be replayed, so the
+        only way to reach the watch is a second pass that the holder installs
+        on it alone — while the phone's keeps working untouched.
+
+        Two kinds of group, and the ledger separates them. Every entry it
+        holds for this cardholder is a pass we have already issued, keyed by
+        whatever id it was issued under. Every trigger-format card the ledger
+        does *not* know about is an operator asking for one, keyed by the
+        card's own id in Millennium.
+        """
+        existing = SeosLedger.entries_for_person(pid)
+        ours = {
+            (str(e.get("facility_code")), str(e.get("card_number")))
+            for entries in existing.values()
+            for e in entries
+        }
+
+        out: list[Credential] = []
+        for credential_id, ledger in sorted(existing.items()):
+            credential = self._seos_credential(
+                pid, credential_id, ledger, slots, trigger
+            )
+            if credential is not None:
+                out.append(credential)
+
+        # Then anything being asked for. A card we never wrote cannot be one
+        # of ours — ours carry the trigger format, which is exactly why the
+        # ledger has to answer this and not the format.
+        #
+        # A cardholder's first pass keeps the bare "seos" id, as it always
+        # has. Only a second one is keyed on a CardID, so nothing about the
+        # ordinary case starts depending on that id staying put.
+        used = set(existing)
+        for slot in slots:
+            if not self._is_trigger(slot):
+                continue
+            if (slot.facility_code, slot.card_number) in ours:
+                continue
+            if SEOS_CREDENTIAL_ID in used and not slot.card_id:
+                # Nothing to key a second credential on. Millennium assigns a
+                # CardID when a card is saved, so this means a card we are
+                # seeing before it exists properly.
+                logger.warning(
+                    "Millennium: cardholder %s has a trigger card in slot %d "
+                    "with no CardID — cannot issue a second pass against it",
+                    pid, slot.index,
+                )
+                continue
+            if len(out) >= MAX_SEOS_CREDENTIALS:
+                # Rationed for the same reason provisioning is: a trigger
+                # that suddenly matches more cards than it should would
+                # otherwise issue a pass for each, every cycle.
+                logger.warning(
+                    "Millennium: cardholder %s already has %d Seos pass(es) — "
+                    "not issuing another for the card in slot %d (%s/%s)",
+                    pid, len(out), slot.index,
+                    slot.facility_code, slot.card_number,
+                )
+                break
+            credential_id = (
+                SEOS_CREDENTIAL_ID
+                if SEOS_CREDENTIAL_ID not in used
+                else _credential_id_for(slot)
+            )
+            used.add(credential_id)
+            credential = self._seos_credential(
+                pid, credential_id, [], slots, trigger
+            )
+            if credential is not None:
+                out.append(credential)
+        return out
+
+    def _seos_credential(
+        self,
+        pid: str,
+        credential_id: str,
+        ledger: list[dict],
+        slots: list[Slot],
+        trigger: Slot,
+    ) -> Credential | None:
         empty = [s for s in slots if s.empty]
 
         if not ledger and len(empty) < REQUIRED_EMPTY_SLOTS:
@@ -1098,7 +1226,7 @@ class MillenniumUltraAdapter:
                 "found %d",
                 pid, REQUIRED_EMPTY_SLOTS, len(empty),
             )
-            return []
+            return None
 
         # Once written, the state of the cards we wrote drives the pass.
         #
@@ -1162,36 +1290,34 @@ class MillenniumUltraAdapter:
             status = CredentialStatus.SUSPENDED
 
         logger.info(
-            "Millennium: cardholder %s → %s credential (%s); slots %s",
-            pid, status.value,
+            "Millennium: cardholder %s → %s %s credential (%s); slots %s",
+            pid, status.value, credential_id,
             ", ".join(
                 f"{e.get('facility_code')}/{e.get('card_number')}" for e in ledger
             ) or "nothing written yet",
             _describe(slots),
         )
-        return [
-            Credential(
-                id=credential_id,
-                person_id=pid,
-                # Empty on purpose: AccessGrid allocates the facility code and
-                # card number, and phase 1 must not send one of its own.
-                card_number="",
-                site_code="",
-                status=status,
-                # Carried so phase 3 can retire a credential Millennium has
-                # dated out, whatever its Active box still says.
-                activate_date=activate_date,
-                deactivate_date=deactivate_date,
-                trigger_active=True,
-                allocate_identity=True,
-                raw={
+        return Credential(
+            id=credential_id,
+            person_id=pid,
+            # Empty on purpose: AccessGrid allocates the facility code and
+            # card number, and phase 1 must not send one of its own.
+            card_number="",
+            site_code="",
+            status=status,
+            # Carried so phase 3 can retire a credential Millennium has
+            # dated out, whatever its Active box still says.
+            activate_date=activate_date,
+            deactivate_date=deactivate_date,
+            trigger_active=True,
+            allocate_identity=True,
+            raw={
                 "trigger_slot": trigger.index,
                 "written": [
                     f"{e.get('facility_code')}/{e.get('card_number')}" for e in ledger
                 ],
             },
-            )
-        ]
+        )
 
     def _slots_for_credential(
         self, pid: str, credential_id: str, slots: list[Slot] | None = None
@@ -1203,7 +1329,7 @@ class MillenniumUltraAdapter:
         card identity against the current cardholder when we have it, so a
         suspend never lands on whatever happens to sit in the old position.
         """
-        if credential_id == SEOS_CREDENTIAL_ID:
+        if _is_seos_credential(credential_id):
             ledger = SeosLedger.get(pid, credential_id)
             if slots is None:
                 return [int(e["slot"]) for e in ledger]
