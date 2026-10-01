@@ -89,6 +89,32 @@ def _release_card_ids_on_deleted_rows(conn: sqlite3.Connection) -> None:
     )
 
 
+def _drop_abandoned_desfire_rows(conn: sqlite3.Connection) -> None:
+    """Remove tracking rows left behind by a spell in DESFire mode.
+
+    DESFire keys a credential on the slot it sits in — "slot1", "slot2" —
+    while Seos keys it on the cardholder. An install switched between the
+    two, and phase 1's rows from the DESFire era outlived the mode: eleven
+    of them on the install this was written for, against cardholders that
+    are now tracked under "seos".
+
+    Only rows that never became a pass are removed: still 'pending', with
+    no AccessGrid card id. Those two together mean provisioning was never
+    completed, so there is nothing behind the row to lose — and a genuine
+    DESFire install is unaffected, because phase 1 writes the row again on
+    the next cycle from what the PACS actually holds.
+
+    Deliberately narrow. A DESFire row that did get a pass keeps its id,
+    which is the only way back to that pass.
+    """
+    conn.execute(
+        "DELETE FROM ag_credentials "
+        " WHERE pacs_credential_id GLOB 'slot[0-9]*' "
+        "   AND status = 'pending' "
+        "   AND ag_card_id IS NULL"
+    )
+
+
 MIGRATIONS: list[tuple[str, Step]] = [
     (
         "001_init",
@@ -181,6 +207,7 @@ MIGRATIONS: list[tuple[str, Step]] = [
     ("005_seos_credential_id_drops_the_slot", _seos_credential_id_drops_the_slot),
     ("006_pacs_session_is_keyed_by_vendor", _pacs_session_is_keyed_by_vendor),
     ("007_release_card_ids_on_deleted_rows", _release_card_ids_on_deleted_rows),
+    ("008_drop_abandoned_desfire_rows", _drop_abandoned_desfire_rows),
 ]
 
 
