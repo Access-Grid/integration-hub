@@ -267,11 +267,7 @@ class SyncEngine:
                 else:
                     self._status.consecutive_errors = 0
                     self._status.last_error = None
-                    # Dynamic interval based on cycle wall time.
-                    sleep_s = max(
-                        MIN_INTERVAL_S,
-                        min(MAX_INTERVAL_S, (result.duration_ms / 1000.0) * INTERVAL_MULTIPLIER),
-                    )
+                    sleep_s = self._interval_after(result.duration_ms)
                 self._status.cached_interval_s = sleep_s
                 next_run = datetime.now(UTC) + timedelta(seconds=sleep_s)
                 self._status.next_run_iso = next_run.isoformat(timespec="seconds")
@@ -284,6 +280,35 @@ class SyncEngine:
             )
             self._trigger.wait(timeout=sleep_s)
             self._trigger.clear()
+
+    def _interval_after(self, duration_ms: int) -> float:
+        """How long to wait before the next cycle.
+
+        Three times the cycle's wall time, so a PACS that answers slowly is
+        read less often — bounded below by what this one will tolerate and
+        above so the sync never goes quiet for long.
+        """
+        return max(
+            self._min_interval_s(),
+            min(MAX_INTERVAL_S, (duration_ms / 1000.0) * INTERVAL_MULTIPLIER),
+        )
+
+    def _min_interval_s(self) -> float:
+        """The floor for the adapter in use, or the engine's own.
+
+        Read from the adapter this cycle built rather than from settings,
+        so it follows the PACS actually being talked to. Anything unexpected
+        falls back to the default: a scheduling detail must not be able to
+        stop the sync.
+        """
+        if self._pacs is None:
+            return MIN_INTERVAL_S
+        try:
+            configured = self._pacs[1].descriptor().min_interval_s
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not read the PACS's minimum interval: %s", e)
+            return MIN_INTERVAL_S
+        return float(configured) if configured else MIN_INTERVAL_S
 
     def _run_one_cycle(self) -> CycleResult:
         if not self._cycle_lock.acquire(blocking=False):

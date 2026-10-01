@@ -158,6 +158,16 @@ class PacsDescriptor:
     # this replaced, was the cookie names sitting in the connect package as
     # defaults, which made a generic-looking module answer for one PACS.
     browser_login: BrowserLogin | None = None
+    # Shortest gap between cycles this PACS should be asked to tolerate, in
+    # seconds. None leaves it to the engine's own floor.
+    #
+    # How often to sync is a property of the system being read, not of the
+    # schedule: an HTTP API is happy to answer every minute, while Millennium
+    # is an operator's UI whose roster sweep and queued export cost it real
+    # work. Raising the floor globally to protect one of them slows every
+    # install down, and the holder waiting for their pass to start working is
+    # waiting out this number.
+    min_interval_s: int | None = None
 
 
 @dataclass(frozen=True)
