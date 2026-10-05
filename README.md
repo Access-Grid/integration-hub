@@ -9,7 +9,7 @@ into AccessGrid. Runs as a Windows Service on a NUC, exposes a web UI on port 53
 - Avigilon Alta Access (cloud / OpenPath) — production
 - CDVI Atrium (on-prem) — production
 - Millennium Ultra (MGI) — production
-- Lenel OnGuard — stub (interface only)
+- Lenel OnGuard — interface only
 
 ### CDVI Atrium
 
