@@ -26,7 +26,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -35,6 +35,7 @@ from ..ag import build_client as build_ag_client
 from ..lib.pacs import PacsAuthExpired, get_descriptor
 from ..lib.pacs import build_adapter as build_pacs_adapter
 from ..settings_store import AccessGridConfig, PacsConfig
+from . import tracking
 from .phases import (
     phase1_provision,
     phase2_local_to_ag,
@@ -94,6 +95,33 @@ def derived_pacs_params(ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]) ->
     return {**pacs_cfg, "params": params}
 
 
+def _totals(snapshot: Any) -> dict[str, int]:
+    """Counts worth reporting, taken while a cycle already holds the data.
+
+    Gathered here rather than on demand so that anything describing this
+    install — the status report, in particular — can do so from memory
+    instead of querying alongside a running sync. Counts only: no name,
+    email or card number is included, by intent.
+    """
+    counts = {
+        "pacs_people": len(snapshot.people),
+        "tracked_credentials": 0,
+        "active": 0,
+        "pending": 0,
+        "failed": 0,
+    }
+    try:
+        for row in tracking.all_tracked():
+            if row.status in ("deleted", "deduped"):
+                continue
+            counts["tracked_credentials"] += 1
+            if row.status in counts:
+                counts[row.status] += 1
+    except Exception as e:  # noqa: BLE001 — a count must not fail a cycle
+        logger.debug("Could not count tracked credentials: %s", e)
+    return counts
+
+
 @dataclass
 class CycleResult:
     started_at: str
@@ -126,6 +154,21 @@ class EngineStatus:
     ag_reachable: bool = True
     # Set when the PACS session expired: only a human signing in clears it.
     reconnect_required: bool = False
+    # Which PACS this install is wired to, and which direction it resolved
+    # to this cycle. Recorded here rather than read back from settings
+    # because the direction is derived per cycle and never stored.
+    pacs_vendor: str = ""
+    pacs_display_name: str = ""
+    # Whether this adapter writes credentials into the PACS or only reads
+    # them out. Stored as the fact, not as anyone's name for it: the status
+    # report turns it into a direction, and the protocol a PACS speaks and
+    # the direction it runs in are free to diverge.
+    pacs_writes_credentials: bool | None = None
+    # When the PACS last answered a full read, and what that read contained.
+    # Both exist so that anything reporting on this install can describe it
+    # without going near the database.
+    last_pacs_read_iso: str | None = None
+    totals: dict[str, int] = field(default_factory=dict)
 
 
 class SyncEngine:
@@ -215,6 +258,13 @@ class SyncEngine:
                 "pacs_reachable": s.pacs_reachable,
                 "ag_reachable": s.ag_reachable,
                 "reconnect_required": s.reconnect_required,
+                "pacs_vendor": s.pacs_vendor,
+                "pacs_display_name": s.pacs_display_name,
+                "pacs_writes_credentials": s.pacs_writes_credentials,
+                "last_pacs_read_iso": s.last_pacs_read_iso,
+                # Copied, so a caller cannot mutate engine state by holding
+                # on to the result.
+                "totals": dict(s.totals),
             }
 
     def run_cycle_blocking(self) -> CycleResult:
@@ -321,8 +371,13 @@ class SyncEngine:
             return result
 
         pacs_cfg = self._with_derived_mode(ag, ag_cfg, pacs_cfg)
+        self._record_pacs_identity(pacs_cfg)
         try:
             pacs = self._pacs_adapter(pacs_cfg)
+            with self._status_lock:
+                self._status.pacs_writes_credentials = bool(
+                    pacs.supports_credential_writeback
+                )
         except Exception as e:  # noqa: BLE001
             result.error = f"pacs_init: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
@@ -336,6 +391,11 @@ class SyncEngine:
                 self._status.pacs_reachable = bool(snapshot.people)
                 self._status.ag_reachable = True
                 self._status.reconnect_required = False
+                if snapshot.people:
+                    self._status.last_pacs_read_iso = datetime.now(UTC).isoformat(
+                        timespec="seconds"
+                    )
+                self._status.totals = _totals(snapshot)
         except PacsAuthExpired as e:
             return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)
         except Exception as e:  # noqa: BLE001
@@ -424,6 +484,24 @@ class SyncEngine:
         if now and was != now:
             logger.info("Running in %s mode", now)
         return resolved
+
+    def _record_pacs_identity(self, pacs_cfg: dict[str, Any]) -> None:
+        """Note which PACS this is and which direction it resolved to.
+
+        Kept on the status object so that describing this install never
+        needs a settings read — and because the direction is derived fresh
+        each cycle and is not stored anywhere to be read back.
+        """
+        vendor = str(pacs_cfg.get("vendor") or "")
+        try:
+            descriptor = get_descriptor(vendor)
+            display = descriptor.display_name if descriptor else vendor
+        except Exception as e:  # noqa: BLE001 — cosmetic, never fatal
+            logger.debug("Could not name the PACS: %s", e)
+            display = vendor
+        with self._status_lock:
+            self._status.pacs_vendor = vendor
+            self._status.pacs_display_name = display
 
     def _abandon(self, result: CycleResult, start_ms: float) -> CycleResult:
         """Stop a cycle whose configuration changed underneath it."""

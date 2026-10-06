@@ -31,6 +31,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .auth import admin_exists, current_user
+from .config import get_settings
 from .db import init_db
 from .i18n import default_locale, get_translator
 from .logs import install_handler as install_log_handler
@@ -42,6 +43,7 @@ from .routes import logs as logs_route
 from .routes import settings as settings_route
 from .routes import status as status_route
 from .settings_store import is_configured
+from .status import StatusReporter
 from .sync import get_engine
 
 logger = logging.getLogger(__name__)
@@ -101,8 +103,36 @@ async def lifespan(app: FastAPI):
     engine = get_engine()
     if is_configured():
         engine.start()
+    # Started whether or not the hub is configured: "set up but never
+    # finished the wizard" is a state worth being able to see from outside.
+    reporter = _start_status_reporter(engine)
     yield
+    if reporter is not None:
+        reporter.stop()
     engine.stop()
+
+
+def _start_status_reporter(engine) -> StatusReporter | None:
+    """Bring up status reporting, or explain in the log why it is off.
+
+    Failing to start it must never stop the server coming up: the hub's job
+    is to sync, and reporting on itself is strictly secondary.
+    """
+    settings = get_settings()
+    if not settings.status_reporting:
+        logger.info("Status reporting is disabled")
+        return None
+    try:
+        reporter = StatusReporter(
+            engine,
+            interval_s=settings.status_interval_s,
+            base_url=settings.status_base_url,
+        )
+        reporter.start()
+        return reporter
+    except Exception:
+        logger.exception("Could not start status reporting — continuing without it")
+        return None
 
 
 def create_app() -> FastAPI:
