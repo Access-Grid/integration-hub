@@ -48,11 +48,29 @@ BACKOFF_S = (15, 30, 60, 120, 300)
 # A rejected or missing endpoint will not start working because we asked
 # again quickly.
 HARD_BACKOFF_S = 300
+# The longest any path may ask us to wait. Only an explicit Retry-After
+# reaches beyond the backoff schedule, and this is where that stops.
+MAX_WAIT_S = 900
 HARD_FAILURES = frozenset({401, 403, 404})
 
 # The account configuration lives in the encrypted settings table, so it is
 # read rarely rather than on every beat.
 CONFIG_TTL_S = 60.0
+
+
+def _sane_wait(wait_s: float) -> float:
+    """Keep the sleep inside its bounds whatever it was handed.
+
+    A negative or NaN timeout turns `Event.wait` into a busy loop rather
+    than an error, so the value is bounded here instead of trusted.
+    """
+    try:
+        wait = float(wait_s)
+    except (TypeError, ValueError):
+        return float(DEFAULT_INTERVAL_S)
+    if not wait == wait:  # NaN
+        return float(DEFAULT_INTERVAL_S)
+    return max(float(MIN_INTERVAL_S), min(float(MAX_WAIT_S), wait))
 
 
 class StatusReporter:
@@ -108,16 +126,26 @@ class StatusReporter:
     # ----- the loop ---------------------------------------------------
 
     def _run_loop(self) -> None:
-        # The outer guard is belt and braces: `_beat` already swallows
-        # everything, so reaching the except means a bug in the loop itself,
-        # and even then the thread should go quietly rather than print a
-        # traceback into an operator's console.
-        try:
-            while not self._stop.is_set():
+        """Beat until stopped, and survive anything that is not a stop.
+
+        The guard is inside the loop, not around it. Around it, a single
+        unexpected error would end the thread for the lifetime of the
+        process and nothing would restart it — reporting would stop
+        silently, which is the one failure a heartbeat must not have. It
+        logs loudly for the same reason: an invisible debug line is how
+        this kind of thing survives for months.
+        """
+        while not self._stop.is_set():
+            try:
                 wait_s = self._beat()
-                self._stop.wait(timeout=wait_s)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Status reporting stopped: %s", e)
+            except Exception:
+                # `_beat` is written not to raise, so this is a bug rather
+                # than a failed report. Back right off and keep going.
+                logger.exception(
+                    "Status reporting hit an unexpected error — continuing"
+                )
+                wait_s = float(BACKOFF_S[-1])
+            self._stop.wait(timeout=_sane_wait(wait_s))
 
     def _beat(self) -> float:
         """Send one report. Returns how long to wait before the next.
@@ -144,7 +172,7 @@ class StatusReporter:
         except transport.StatusRejected as e:
             self._failures += 1
             if e.retry_after is not None:
-                return max(MIN_INTERVAL_S, min(900.0, e.retry_after))
+                return max(MIN_INTERVAL_S, min(float(MAX_WAIT_S), e.retry_after))
             if e.status_code in HARD_FAILURES:
                 logger.debug(
                     "Status endpoint rejected the report (%d) — backing off",

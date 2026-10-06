@@ -589,6 +589,94 @@ def test_the_engine_is_never_locked_while_sending(monkeypatch):
     beat.join(timeout=5)
 
 
+def test_the_loop_survives_a_beat_that_raises(monkeypatch):
+    """The guard belongs inside the loop, not around it.
+
+    Around it, one unexpected error ends the thread for the life of the
+    process and nothing restarts it — reporting stops silently, which is
+    exactly the failure this whole module exists to detect in others.
+    """
+    calls = []
+
+    def sometimes_explodes():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("a bug, not a failed report")
+        return 15.0
+
+    rep = reporter.StatusReporter(FakeEngine())
+    monkeypatch.setattr(rep, "_beat", sometimes_explodes)
+    # Wake immediately rather than waiting out the interval.
+    monkeypatch.setattr(rep._stop, "wait", lambda timeout=None: False)
+
+    loop = threading.Thread(target=rep._run_loop, daemon=True)
+    loop.start()
+    try:
+        deadline = time.time() + 5
+        while len(calls) < 3 and time.time() < deadline:
+            time.sleep(0.01)
+        assert len(calls) >= 3, "the loop died on the first error"
+    finally:
+        rep._stop.set()
+        monkeypatch.undo()
+        loop.join(timeout=2)
+
+
+def test_an_unexpected_error_is_logged_loudly(monkeypatch, caplog):
+    """A debug line is how a dead heartbeat survives for months."""
+    import logging
+
+    rep = reporter.StatusReporter(FakeEngine())
+    calls = []
+
+    def explode_once():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        rep._stop.set()
+        return 15.0
+
+    monkeypatch.setattr(rep, "_beat", explode_once)
+    monkeypatch.setattr(rep._stop, "wait", lambda timeout=None: False)
+
+    with caplog.at_level(logging.WARNING):
+        rep._run_loop()
+
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), (
+        "an unexpected error must be visible at default log level"
+    )
+
+
+@pytest.mark.parametrize(("given", "expected"), [
+    (15.0, 15.0),
+    (900.0, 900.0),            # an explicit Retry-After must survive intact
+    (-5.0, reporter.MIN_INTERVAL_S),
+    (0.0, reporter.MIN_INTERVAL_S),
+    (float("nan"), reporter.DEFAULT_INTERVAL_S),
+    (float("inf"), reporter.MAX_WAIT_S),
+    ("nonsense", reporter.DEFAULT_INTERVAL_S),
+    (None, reporter.DEFAULT_INTERVAL_S),
+])
+def test_the_sleep_is_bounded_whatever_it_is_handed(given, expected):
+    """A negative or NaN timeout makes Event.wait busy-loop rather than
+    raise, so it is bounded rather than trusted."""
+    assert reporter._sane_wait(given) == expected
+
+
+def test_a_retry_after_is_not_clipped_by_the_sleep_bound(configured, monkeypatch):
+    """The two limits have to agree, or the bound silently overrides the
+    server's own instruction."""
+    monkeypatch.setattr(
+        transport, "send",
+        lambda *a, **k: (_ for _ in ()).throw(
+            transport.StatusRejected(429, retry_after=900)),
+    )
+    asked = configured()._beat()
+
+    assert asked == 900.0
+    assert reporter._sane_wait(asked) == 900.0
+
+
 def test_the_thread_is_a_daemon_and_stops_promptly(monkeypatch):
     """It must never hold the process open at shutdown."""
     monkeypatch.setattr(transport, "send", lambda *a, **k: {})
