@@ -230,6 +230,17 @@ def test_a_failed_cycle_is_not_ok():
     assert report["sync"]["last_cycle"]["error"] == "phase: boom"
 
 
+def test_the_write_counter_is_not_named_after_a_direction():
+    """The report uses "ag_to_pacs" for which way credentials flow, so the
+    count of credentials written cannot share the word."""
+    cycle = _build()["sync"]["last_cycle"]
+
+    assert cycle["credentials_written"] == 2
+    assert "ag_to_pacs" not in cycle
+    # Still a direction elsewhere in the same payload, which is the point.
+    assert _build()["pacs"][0]["direction"] == payload.AG_TO_PACS
+
+
 def test_stuck_rows_raise_a_condition():
     assert "provision_failures" in _build(totals={**TOTALS, "failed": 3})["conditions"]
 

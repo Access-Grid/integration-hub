@@ -117,7 +117,11 @@ def _last_cycle(status: dict[str, Any]) -> dict[str, Any] | None:
         "provisioned": cycle.get("provisioned", 0),
         "status_changes": cycle.get("status_changes", 0),
         "deleted": cycle.get("deleted", 0),
-        "ag_to_pacs": cycle.get("ag_to_pacs", 0),
+        # Reported under a different name than it is held under: the
+        # report also carries "ag_to_pacs" as a *direction*, and one
+        # payload saying it in two senses reads badly cold. The engine's
+        # own field keeps its name.
+        "credentials_written": cycle.get("ag_to_pacs", 0),
         "field_updates": cycle.get("field_updates", 0),
         "retried": cycle.get("retried", 0),
     }
