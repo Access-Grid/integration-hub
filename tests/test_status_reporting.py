@@ -699,8 +699,26 @@ def test_the_interval_is_clamped_at_construction():
     assert reporter.StatusReporter(FakeEngine(), interval_s=99999)._interval_s == 300
 
 
-def test_reporting_is_off_until_the_endpoint_is_confirmed():
-    """Deliberate: an unconfirmed path would 404 from every install."""
+def test_reporting_is_on_by_default():
+    """The quiet failures are the ones worth hearing about, so an install
+    reports unless somebody turns it off."""
     from agsync.config import Settings
 
-    assert Settings(encryption_key="x").status_reporting is False
+    assert Settings(encryption_key="x").status_reporting is True
+
+
+def test_a_missing_endpoint_settles_to_the_long_backoff(configured, monkeypatch):
+    """Why being on by default is safe for an install that cannot reach it.
+
+    An old build pointed at a path that moved, or a host that is simply
+    wrong, has to cost one request every few minutes rather than one every
+    fifteen seconds.
+    """
+    monkeypatch.setattr(
+        transport, "send",
+        lambda *a, **k: (_ for _ in ()).throw(transport.StatusRejected(404)),
+    )
+    rep = configured()
+
+    assert [rep._beat() for _ in range(3)] == [float(reporter.HARD_BACKOFF_S)] * 3
+    assert reporter.HARD_BACKOFF_S >= 300

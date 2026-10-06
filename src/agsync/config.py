@@ -66,11 +66,17 @@ class Settings(BaseSettings):
         description="Sentry DSN. Baked at build time; empty disables Sentry.",
     )
     log_level: str = "INFO"
-    # Reporting this hub's health to AccessGrid. The path is confirmed but
-    # the receiving endpoint is not built yet, so this stays off: every
-    # install in the field would otherwise post into a 404 four times a
-    # minute. Set status_base_url to the staging host to test against it.
-    status_reporting: bool = False
+    # Reporting this hub's health to AccessGrid. On by default: a hub that
+    # has stopped, or whose PACS session has expired and needs a human,
+    # looks exactly like one with nothing to do, and nobody finds out until
+    # somebody notices that nothing synced.
+    #
+    # An install that cannot reach the endpoint costs nothing much: a 404
+    # or a rejection is treated as a hard failure and settles to one
+    # request every five minutes rather than one every fifteen seconds, and
+    # reporting never touches the sync either way. Point status_base_url at
+    # the staging host to report somewhere else.
+    status_reporting: bool = True
     status_base_url: str = "https://api.accessgrid.com"
     status_interval_s: int = 15
 
