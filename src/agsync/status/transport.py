@@ -47,9 +47,14 @@ class StatusRejected(Exception):
 
 
 def sign(body: str, secret: str) -> str:
-    """AccessGrid's payload signature: HMAC-SHA256 over Base64(body)."""
+    """AccessGrid's payload signature: HMAC-SHA256 over Base64(body).
+
+    The secret is stripped: a key that reached configuration through a
+    paste can carry a trailing newline, and the failure that produces is a
+    bare 401 with nothing to distinguish it from a wrong key.
+    """
     return hmac.new(
-        secret.encode("utf-8"),
+        secret.strip().encode("utf-8"),
         base64.b64encode(body.encode("utf-8")),
         hashlib.sha256,
     ).hexdigest()

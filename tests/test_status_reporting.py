@@ -315,6 +315,22 @@ def test_the_signature_is_over_the_exact_body_sent():
     assert seen["sig"] == transport.sign(seen["body"].decode(), "shh")
 
 
+def test_a_pasted_secret_with_whitespace_still_signs():
+    """Confirmed against the dev endpoint: without the strip this is a 401
+    indistinguishable from a wrong key, which is a miserable thing to
+    debug."""
+    body = '{"schema":1}'
+
+    assert transport.sign(body, "shh\n") == transport.sign(body, "shh")
+    assert transport.sign(body, "  shh  ") == transport.sign(body, "shh")
+
+
+def test_the_signature_covers_the_body():
+    """Tampering after signing must not go unnoticed. The dev endpoint
+    answers 401 to exactly this."""
+    assert transport.sign('{"a":1}', "k") != transport.sign('{"a":1} ', "k")
+
+
 def test_no_content_is_not_an_error():
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(204)))
     assert transport.send({}, account_id="a", secret="s",
