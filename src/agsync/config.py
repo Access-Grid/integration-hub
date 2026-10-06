@@ -66,6 +66,12 @@ class Settings(BaseSettings):
         description="Sentry DSN. Baked at build time; empty disables Sentry.",
     )
     log_level: str = "INFO"
+    # Reporting this hub's health to AccessGrid. Off by default until the
+    # receiving endpoint is confirmed: an unconfirmed path would mean every
+    # install in the field posting into a 404 every few seconds.
+    status_reporting: bool = False
+    status_base_url: str = "https://api.accessgrid.com"
+    status_interval_s: int = 15
 
 
 @lru_cache(maxsize=1)
