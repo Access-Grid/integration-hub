@@ -27,6 +27,13 @@ _URLISH = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.I)
 _WINDOWS_PATH = re.compile(r"\b[A-Za-z]:\\\S+")
 _POSIX_PATH = re.compile(r"(?<![\w.])/(?:[\w.-]+/){2,}[\w.-]*")
 
+# Which way credentials flow. Named for the direction rather than the
+# protocol because the two diverge: a DESFire integration that writes into
+# the PACS is "ag_to_pacs" just as a Seos one is, and an adapter answers
+# this for itself through `supports_credential_writeback`.
+AG_TO_PACS = "ag_to_pacs"
+PACS_TO_AG = "pacs_to_ag"
+
 CONNECTED = "connected"
 SESSION_EXPIRED = "session_expired"
 UNREACHABLE = "unreachable"
@@ -69,6 +76,13 @@ def scrub(text: str | None) -> str:
     if len(cleaned) > _MAX_FREE_TEXT:
         cleaned = cleaned[: _MAX_FREE_TEXT - 1].rstrip() + "…"
     return cleaned
+
+
+def _direction(writes_credentials: bool | None) -> str | None:
+    """null until an adapter has been built and asked."""
+    if writes_credentials is None:
+        return None
+    return AG_TO_PACS if writes_credentials else PACS_TO_AG
 
 
 def _connection_status(status: dict[str, Any], configured: bool) -> str:
@@ -139,7 +153,7 @@ def build(
     uptime_s: int,
     vendor: str = "",
     display_name: str = "",
-    mode: str | None = None,
+    writes_credentials: bool | None = None,
     totals: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """The complete report body, ready to sign and send."""
@@ -155,7 +169,7 @@ def build(
         pacs.append({
             "vendor": vendor,
             "display_name": display_name or vendor,
-            "mode": mode,
+            "direction": _direction(writes_credentials),
             "connection_status": connection,
             "last_successful_read_at": _z(status.get("last_pacs_read_iso")),
         })

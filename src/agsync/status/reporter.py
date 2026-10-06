@@ -37,9 +37,9 @@ from .fingerprint import describe
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_S = 15
-# AccessGrid may ask for a different cadence in its response. Clamped, so
-# that a mistaken or hostile value can neither switch reporting off nor turn
-# this into a hot loop.
+# AccessGrid sends no cadence today — 204, no body. The clamp is kept
+# anyway, so that if one ever appears, a mistaken or hostile value can
+# neither switch reporting off nor turn this into a hot loop.
 MIN_INTERVAL_S = 15
 MAX_INTERVAL_S = 300
 
@@ -63,7 +63,7 @@ class StatusReporter:
         engine: Any,
         *,
         interval_s: int = DEFAULT_INTERVAL_S,
-        base_url: str = "https://api.accessgrid.com",
+        base_url: str = transport.PRODUCTION_BASE_URL,
     ) -> None:
         self._engine = engine
         self._interval_s = float(max(MIN_INTERVAL_S, min(MAX_INTERVAL_S, interval_s)))
@@ -212,6 +212,6 @@ class StatusReporter:
             uptime_s=int(time.time() - self._started_at),
             vendor=status.get("pacs_vendor") or "",
             display_name=status.get("pacs_display_name") or "",
-            mode=status.get("pacs_mode"),
+            writes_credentials=status.get("pacs_writes_credentials"),
             totals=status.get("totals") or {},
         )

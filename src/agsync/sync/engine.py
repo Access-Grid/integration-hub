@@ -159,7 +159,11 @@ class EngineStatus:
     # because the direction is derived per cycle and never stored.
     pacs_vendor: str = ""
     pacs_display_name: str = ""
-    pacs_mode: str | None = None
+    # Whether this adapter writes credentials into the PACS or only reads
+    # them out. Stored as the fact, not as anyone's name for it: the status
+    # report turns it into a direction, and the protocol a PACS speaks and
+    # the direction it runs in are free to diverge.
+    pacs_writes_credentials: bool | None = None
     # When the PACS last answered a full read, and what that read contained.
     # Both exist so that anything reporting on this install can describe it
     # without going near the database.
@@ -256,7 +260,7 @@ class SyncEngine:
                 "reconnect_required": s.reconnect_required,
                 "pacs_vendor": s.pacs_vendor,
                 "pacs_display_name": s.pacs_display_name,
-                "pacs_mode": s.pacs_mode,
+                "pacs_writes_credentials": s.pacs_writes_credentials,
                 "last_pacs_read_iso": s.last_pacs_read_iso,
                 # Copied, so a caller cannot mutate engine state by holding
                 # on to the result.
@@ -370,6 +374,10 @@ class SyncEngine:
         self._record_pacs_identity(pacs_cfg)
         try:
             pacs = self._pacs_adapter(pacs_cfg)
+            with self._status_lock:
+                self._status.pacs_writes_credentials = bool(
+                    pacs.supports_credential_writeback
+                )
         except Exception as e:  # noqa: BLE001
             result.error = f"pacs_init: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
@@ -491,11 +499,9 @@ class SyncEngine:
         except Exception as e:  # noqa: BLE001 — cosmetic, never fatal
             logger.debug("Could not name the PACS: %s", e)
             display = vendor
-        mode = (pacs_cfg.get("params") or {}).get("mode")
         with self._status_lock:
             self._status.pacs_vendor = vendor
             self._status.pacs_display_name = display
-            self._status.pacs_mode = mode
 
     def _abandon(self, result: CycleResult, start_ms: float) -> CycleResult:
         """Stop a cycle whose configuration changed underneath it."""

@@ -25,9 +25,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Provisional: the AccessGrid side has not confirmed this path yet, which is
-# why reporting is off by default. One constant to change when they do.
 STATUS_PATH = "/v1/console/integration-hub/status"
+
+# Kept as named constants so choosing an environment cannot come down to a
+# mistyped string, and so neither is baked in at build time.
+PRODUCTION_BASE_URL = "https://api.accessgrid.com"
+STAGING_BASE_URL = "https://staging-api.accessgrid.com"
 
 # Kept comfortably under the shortest reporting interval so a slow endpoint
 # can never cause beats to queue up behind each other.
@@ -73,6 +76,9 @@ def send(
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     """POST one report. Returns the decoded body, or {} when there is none.
+
+    AccessGrid answers 204 with no body today. A body is still decoded if
+    one appears, so that adding a field there needs no client release.
 
     Raises `StatusRejected` for a non-2xx answer and `httpx.HTTPError` for a
     transport failure. Both are the caller's to swallow.

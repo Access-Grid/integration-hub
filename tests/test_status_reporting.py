@@ -133,7 +133,7 @@ def _build(status=None, **kw):
     opts = {
         "instance": fingerprint.describe(), "uptime_s": 48213,
         "vendor": "millennium_ultra", "display_name": "Millennium Ultra",
-        "mode": "seos", "totals": TOTALS,
+        "writes_credentials": True, "totals": TOTALS,
     }
     opts.update(kw)
     return payload.build(merged, **opts)
@@ -183,7 +183,25 @@ def test_an_expired_session_outranks_unreachable():
 
 
 def test_an_unconfigured_hub_says_so():
-    assert _build(vendor="", display_name="", mode=None)["pacs"] == []
+    assert _build(vendor="", display_name="", writes_credentials=None)["pacs"] == []
+
+
+@pytest.mark.parametrize(("writes", "expected"), [
+    (True, payload.AG_TO_PACS),
+    (False, payload.PACS_TO_AG),
+    # Null until an adapter has been built and asked: the first beats after
+    # a restart, and any cycle that failed before constructing one.
+    (None, None),
+])
+def test_direction_comes_from_what_the_adapter_does(writes, expected):
+    """Not from the protocol it speaks.
+
+    A DESFire integration that writes into the PACS runs in the same
+    direction as a Seos one, so the adapter answers this for itself rather
+    than having a protocol name mapped onto it.
+    """
+    assert _build(writes_credentials=writes)["pacs"][0]["direction"] == expected
+
 
 
 @pytest.mark.parametrize(
@@ -311,6 +329,27 @@ def test_a_junk_response_body_is_ignored():
                           base_url="https://x.test", client=client) == {}
 
 
+def test_the_confirmed_endpoint_is_used():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(204)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    transport.send({}, account_id="a", secret="s",
+                   base_url=transport.STAGING_BASE_URL, client=client)
+
+    assert seen["url"] == (
+        "https://staging-api.accessgrid.com/v1/console/integration-hub/status"
+    )
+
+
+def test_both_environments_are_named_not_typed():
+    assert transport.PRODUCTION_BASE_URL == "https://api.accessgrid.com"
+    assert transport.STAGING_BASE_URL == "https://staging-api.accessgrid.com"
+
+
 def test_the_timeout_is_shorter_than_the_shortest_interval():
     """So a slow endpoint can never cause beats to queue behind each other."""
     assert transport.TIMEOUT.read < reporter.MIN_INTERVAL_S
@@ -327,7 +366,7 @@ class FakeEngine:
         self._status = {**HEALTHY, "totals": dict(TOTALS),
                         "pacs_vendor": "millennium_ultra",
                         "pacs_display_name": "Millennium Ultra",
-                        "pacs_mode": "seos"}
+                        "pacs_writes_credentials": True}
         self._status.update(status or {})
         self.reads = 0
 
@@ -355,7 +394,7 @@ def test_a_beat_sends_one_report(configured, monkeypatch):
     assert rep._beat() == reporter.DEFAULT_INTERVAL_S
     assert len(sent) == 1
     assert sent[0]["pacs"][0]["vendor"] == "millennium_ultra"
-    assert sent[0]["pacs"][0]["mode"] == "seos"
+    assert sent[0]["pacs"][0]["direction"] == payload.AG_TO_PACS
 
 
 def test_an_unconfigured_hub_sends_nothing(monkeypatch):
