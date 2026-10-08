@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import socket
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
@@ -45,6 +47,20 @@ def _local_ips() -> list[str]:
     return sorted(out)
 
 
+def _address_fields(descriptor) -> list:
+    """The connection fields that say *where* the PACS is.
+
+    Only `url` kind. Two reasons, both deliberate: no field of that kind is
+    a credential, so nothing secret can be rendered back into the settings
+    page, and it leaves alone the text fields that already have sections of
+    their own. A vendor whose address is a bare host or server name does
+    not appear here yet.
+    """
+    if descriptor is None:
+        return []
+    return [f for f in descriptor.connection_fields if f.kind == "url"]
+
+
 @router.get("/settings")
 def settings_page(
     request: Request,
@@ -83,6 +99,19 @@ def settings_page(
             "pacs_has_trigger_formats": "trigger_card_format" in params,
             # Only shown for a PACS that synthesizes addresses because it
             # stores none of its own.
+            # Whichever address fields this adapter declares, with what is
+            # saved for each. Driven by the descriptor so a new PACS needs
+            # no change here, and narrowed to url-kind fields so a
+            # credential can never be rendered back into the page.
+            "pacs_address_fields": [
+                {
+                    "id": f.id,
+                    "label_key": f.label_key,
+                    "placeholder": f.placeholder,
+                    "value": params.get(f.id, ""),
+                }
+                for f in _address_fields(descriptor)
+            ],
             "pacs_email_domain": params.get("email_domain"),
             "pacs_notify_email": params.get("notify_email", ""),
             "pacs_session_at": session.get("captured_at", "") if session.get("auth_cookie") else "",
@@ -195,6 +224,92 @@ def update_email_domain(
     engine.invalidate_pacs_adapter()
     engine.trigger_now()
     return RedirectResponse(url="/settings?ok=email_domain", status_code=303)
+
+
+@router.post("/settings/pacs-address")
+async def update_pacs_address(
+    request: Request,
+    _user=Depends(require_admin),
+):
+    """Point this install at a different address for the same PACS.
+
+    Until now the address could only be set while running the wizard, so a
+    server that moved — or one mistyped at setup — meant setting the
+    integration up again from scratch.
+
+    Changing it invalidates the captured session. The auth cookie was
+    issued by the old host and means nothing to the new one, and keeping it
+    would be the worst of the options: requests would simply look
+    unauthenticated, which reads downstream as an expired session rather
+    than as a changed address. So the session is cleared and the operator
+    is asked to sign in again, which for a captcha-gated PACS they have to
+    do by hand anyway.
+    """
+    pacs = PacsConfig.load() or {}
+    vendor = pacs.get("vendor", "")
+    descriptor = get_descriptor(vendor) if vendor else None
+    fields = {f.id: f for f in _address_fields(descriptor)}
+    if not fields:
+        return RedirectResponse(url="/settings?err=not_configured", status_code=303)
+
+    form = await request.form()
+    changes: dict[str, str] = {}
+    for field_id in fields:
+        raw = str(form.get(field_id, "")).strip()
+        normalised = _normalise_url(raw)
+        if normalised is None:
+            return RedirectResponse(url="/settings?err=pacs_address", status_code=303)
+        changes[field_id] = normalised
+
+    current = pacs.get("params") or {}
+    if all(current.get(k, "") == v for k, v in changes.items()):
+        # Saving the same address should not cost the operator a reconnect.
+        return RedirectResponse(url="/settings?ok=pacs_address", status_code=303)
+
+    if not PacsConfig.update_params(**changes):
+        return RedirectResponse(url="/settings?err=not_configured", status_code=303)
+
+    # Logged without the old value alongside it: this is the one setting
+    # whose history tells somebody which server used to be trusted.
+    logger.info("PACS address changed to %r", changes)
+    PacsSession.clear(vendor)
+    engine = get_engine()
+    engine.invalidate_pacs_adapter()
+    return RedirectResponse(url="/settings?ok=pacs_address", status_code=303)
+
+
+# Hostnames, dotted IPv4, and the bracketless form of an IPv6 literal that
+# `hostname` hands back. Deliberately not a full RFC check: it is here to
+# refuse what is obviously not an address, not to adjudicate DNS.
+_HOSTISH = re.compile(r"[A-Za-z0-9._:\-]+")
+
+
+def _normalise_url(raw: str) -> str | None:
+    """A reachable http(s) origin, or None if it is not one.
+
+    Returned without a trailing slash because the adapters join paths onto
+    it directly, and `//Account/LogIn` is not the same path.
+    """
+    if not raw or " " in raw:
+        return None
+    # Typing the host alone is the common case, so a missing scheme is
+    # filled in rather than refused. It is filled in before parsing, which
+    # is why the port is then checked: "javascript:alert(1)" has no "://",
+    # so it would become "https://javascript:alert(1)" and parse as a host
+    # with a nonsense port rather than being rejected.
+    if "://" not in raw:
+        raw = "https://" + raw
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    try:
+        _ = parsed.port  # raises when the port is not a number
+    except ValueError:
+        return None
+    host = parsed.hostname or ""
+    if not host or not _HOSTISH.fullmatch(host):
+        return None
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
 
 
 @router.post("/settings/card-fields")
