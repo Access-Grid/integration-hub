@@ -160,5 +160,10 @@
   "wizard.step4.title": "Credenciales del PACS",
   "wizard.step5.subtitle": "El motor de sincronización se iniciará automáticamente. Abre la página de Estado para ver el primer ciclo.",
   "wizard.step5.title": "Configuración completa",
-  "wizard.title": "Configuración inicial"
+  "wizard.title": "Configuración inicial",
+  "settings.pacs_address.title": "Dirección del PACS",
+  "settings.pacs_address.subtitle": "Dónde esta instalación contacta con el PACS. Cámbiela si el servidor ha cambiado de dirección.",
+  "settings.pacs_address.saved": "Dirección del PACS guardada.",
+  "settings.pacs_address.invalid": "Esa dirección no es válida. Use algo como https://hosted8.mgiaccess.com.",
+  "settings.pacs_address.reconnect_warning": "Cambiar la dirección cierra la sesión del PACS: la sesión guardada pertenece al servidor anterior, así que tendrá que conectarse de nuevo."
 }

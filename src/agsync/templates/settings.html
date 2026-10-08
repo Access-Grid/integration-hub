@@ -27,6 +27,12 @@
   {% if ok == 'extra_metadata' %}
     <div class="test-result ok">{{ t('settings.extra_metadata.saved') }}</div>
   {% endif %}
+  {% if ok == 'pacs_address' %}
+    <div class="test-result ok">{{ t('settings.pacs_address.saved') }}</div>
+  {% endif %}
+  {% if err == 'pacs_address' %}
+    <div class="err">{{ t('settings.pacs_address.invalid') }}</div>
+  {% endif %}
   {% if err == 'site_code' %}
     <div class="err">{{ t('settings.site_code.invalid') }}</div>
   {% endif %}
@@ -154,6 +160,24 @@
       });
     })();
   </script>
+
+  {% if pacs_address_fields %}
+  <h2>{{ t('settings.pacs_address.title') }}</h2>
+  <p class="muted">{{ t('settings.pacs_address.subtitle') }}</p>
+  <form action="/settings/pacs-address" method="post">
+    {% for f in pacs_address_fields %}
+      <label>{{ t(f.label_key) }}
+        <input name="{{ f.id }}" type="text" value="{{ f.value }}"
+               {% if f.placeholder %}placeholder="{{ f.placeholder }}"{% endif %}
+               required>
+      </label>
+    {% endfor %}
+    <button type="submit">{{ t('common.save') }}</button>
+  </form>
+  {% if pacs_requires_connect %}
+    <small class="muted">{{ t('settings.pacs_address.reconnect_warning') }}</small>
+  {% endif %}
+  {% endif %}
 
   {% if pacs_email_domain is not none %}
   <h2>{{ t('settings.email_domain.title') }}</h2>
