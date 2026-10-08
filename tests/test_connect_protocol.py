@@ -50,7 +50,7 @@ def test_incomplete_uri_is_rejected():
 
 
 def test_payload_round_trips(key):
-    payload = {"cookies": [{"name": ".AspNet.UltraAuth", "value": "secret"}]}
+    payload = {"cookies": [{"name": "Ultra", "value": "secret"}]}
     assert unseal(key, seal(key, payload)) == payload
 
 
@@ -190,8 +190,8 @@ def test_the_cookie_jar_becomes_the_stored_session():
     `timeoffset`, which Millennium's date fields are parsed against.
     """
     session = _adapter().session_from_cookies({
-        ".AspNet.UltraAuth": "auth-value",
-        "UltraCompanyName": "Acme",
+        "Ultra": "auth-value",
+        "UltraCoreCompanyName": "Acme",
         "timeoffset": "-240",
         "irrelevant": "ignored",
     })
@@ -199,6 +199,31 @@ def test_the_cookie_jar_becomes_the_stored_session():
     assert session["company_name"] == "Acme"
     assert session["time_offset"] == "-240"
     assert "irrelevant" not in session
+
+
+def test_the_antiforgery_cookies_name_is_stored_with_its_value():
+    """ASP.NET Core suffixes it per application.
+
+    Nothing downstream can reconstruct the name, so it has to be carried.
+    A value stored without one would be sent under a guess, which the
+    export endpoints answer with a 502 — the failure that reads as the
+    server being unwell rather than as a rejected request.
+    """
+    session = _adapter().session_from_cookies({
+        "Ultra": "auth-value",
+        ".AspNetCore.Antiforgery._1OIVLT0AFo": "token-value",
+    })
+
+    assert session["request_token"] == "token-value"
+    assert session["request_token_cookie"] == ".AspNetCore.Antiforgery._1OIVLT0AFo"
+
+
+def test_no_antiforgery_cookie_leaves_both_halves_empty():
+    """Rather than a value with no name, which cannot be sent."""
+    session = _adapter().session_from_cookies({"Ultra": "auth-value"})
+
+    assert session["request_token"] == ""
+    assert session["request_token_cookie"] == ""
 
 
 def test_the_connect_package_names_no_vendor():

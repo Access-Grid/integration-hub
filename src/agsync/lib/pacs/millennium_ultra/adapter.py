@@ -71,7 +71,10 @@ from ..base import (
 )
 from . import export
 from .client import (
+    ANTIFORGERY_COOKIE_PREFIX,
     CARD_SLOTS,
+    COMPANY_COOKIE,
+    TIMEOFFSET_COOKIE,
     MillenniumAuthError,
     MillenniumUltraClient,
 )
@@ -352,6 +355,7 @@ class MillenniumUltraAdapter:
         company_name: str = "",
         time_offset: str = "",
         request_token: str = "",
+        request_token_cookie: str = "",
         sweep_budget: int = DEFAULT_SWEEP_BUDGET,
     ):
         session = _stored_session() if not auth_cookie else {}
@@ -364,6 +368,9 @@ class MillenniumUltraAdapter:
         self._client = MillenniumUltraClient(
             base_url=self.base_url,
             request_token=request_token or session.get("request_token", ""),
+            request_token_cookie=(
+                request_token_cookie or session.get("request_token_cookie", "")
+            ),
             auth_cookie=auth_cookie or session.get("auth_cookie", ""),
             company_name=company_name or session.get("company_name", ""),
             time_offset=str(time_offset or session.get("time_offset") or ""),
@@ -893,12 +900,19 @@ class MillenniumUltraAdapter:
         from . import DESCRIPTOR
 
         spec = DESCRIPTOR.browser_login
+        # The anti-forgery cookie's name is suffixed per application, so
+        # it is found by prefix and its name stored beside its value —
+        # nothing downstream can reconstruct it.
+        token_name = next(
+            (n for n in cookies if n.startswith(ANTIFORGERY_COOKIE_PREFIX)), "",
+        )
         return {
             "auth_cookie": cookies.get(spec.required_cookie, ""),
             "base_url": self.base_url,
-            "request_token": cookies.get("__RequestVerificationToken", ""),
-            "company_name": cookies.get("UltraCompanyName", ""),
-            "time_offset": cookies.get("timeoffset", ""),
+            "request_token": cookies.get(token_name, "") if token_name else "",
+            "request_token_cookie": token_name,
+            "company_name": cookies.get(COMPANY_COOKIE, ""),
+            "time_offset": cookies.get(TIMEOFFSET_COOKIE, ""),
         }
 
     def validate_session(self, session: dict) -> tuple[bool, str]:
@@ -910,6 +924,7 @@ class MillenniumUltraAdapter:
                 company_name=session.get("company_name", ""),
                 time_offset=session.get("time_offset", ""),
                 request_token=session.get("request_token", ""),
+                request_token_cookie=session.get("request_token_cookie", ""),
             )
             if not client.first_cardholder_id():
                 return False, "signed in, but no cardholders were readable"

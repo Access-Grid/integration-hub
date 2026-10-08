@@ -138,6 +138,23 @@ def _page_socket(port: int, deadline: float) -> str:
     raise ConnectError("Browser exposed no debuggable page")
 
 
+def _wanted(name: str, patterns: tuple[str, ...]) -> bool:
+    """Does this cookie's name match one the PACS asked for?
+
+    A pattern ending in "*" matches by prefix, which some frameworks
+    require: ASP.NET Core suffixes its anti-forgery cookie per application,
+    so there is no fixed string to compare against. Everything else is an
+    exact match, so a pattern cannot widen by accident.
+    """
+    for pattern in patterns:
+        if pattern.endswith("*"):
+            if name.startswith(pattern[:-1]):
+                return True
+        elif name == pattern:
+            return True
+    return False
+
+
 def capture_session(
     login_url: str,
     key: bytes,
@@ -202,7 +219,9 @@ def capture_session(
             jar, found = settled, final
 
         wanted = (cookie_name, *also)
-        cookies = [c for c in jar if c["name"] in wanted and c.get("value")]
+        cookies = [
+            c for c in jar if _wanted(c["name"], wanted) and c.get("value")
+        ]
         status(f"captured {len(cookies)} cookie(s) — handing the session back")
         return seal(key, {
             "cookies": [
