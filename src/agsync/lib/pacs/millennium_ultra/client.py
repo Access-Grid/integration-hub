@@ -126,11 +126,14 @@ HTTP_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 )
 
-AUTH_COOKIE = ".AspNet.UltraAuth"
-# ASP.NET's anti-forgery cookie. Only the export endpoints check it.
-REQUEST_TOKEN_COOKIE = "__RequestVerificationToken"
-COMPANY_COOKIE = "UltraCompanyName"
+AUTH_COOKIE = "Ultra"
+COMPANY_COOKIE = "UltraCoreCompanyName"
 TIMEOFFSET_COOKIE = "timeoffset"
+# The anti-forgery cookie, which only the export endpoints check. ASP.NET
+# Core suffixes its name per application, so unlike the three above there
+# is no constant for it: the name is captured at sign-in and travels with
+# the session. This prefix is only for recognising it in a cookie jar.
+ANTIFORGERY_COOKIE_PREFIX = ".AspNetCore.Antiforgery."
 
 # Millennium gives every cardholder exactly this many card slots; the detail
 # page declares it as `cardsPerCardholder = 3`.
@@ -190,16 +193,19 @@ class MillenniumUltraClient:
         company_name: str = "",
         time_offset: str = "",
         request_token: str = "",
+        request_token_cookie: str = "",
     ):
         self.base_url = normalize_base_url(base_url)
         if not self.base_url:
             raise MillenniumError("Millennium base URL is not configured")
         cookies = {AUTH_COOKIE: auth_cookie}
-        if request_token:
+        if request_token and request_token_cookie:
+            # Both halves or neither: the name is per-application, so a
+            # value sent under a guessed name is no better than nothing.
             # The export endpoints are the only ones that check it. Missing,
             # they answer 502 rather than 403, which reads as the server
             # being unwell rather than as a rejected request.
-            cookies[REQUEST_TOKEN_COOKIE] = request_token
+            cookies[request_token_cookie] = request_token
         if company_name:
             cookies[COMPANY_COOKIE] = company_name
         if time_offset:
