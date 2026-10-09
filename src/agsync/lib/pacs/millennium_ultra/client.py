@@ -422,9 +422,7 @@ class MillenniumUltraClient:
 
         deadline = time.time() + EXPORT_TIMEOUT_S
         while time.time() < deadline:
-            status = self._post_json(
-                "/Home/GetLongOperationStatus", {"operation": export_mod.OPERATION}
-            )
+            status = self._export_status()
             if not isinstance(status, dict):
                 raise MillenniumError(f"Unreadable export status: {status!r}")
             if status.get("Failed") or (status.get("Error") or ""):
@@ -432,19 +430,54 @@ class MillenniumUltraClient:
                     f"Millennium's export failed: {status.get('Error') or 'no detail'}"
                 )
             if status.get("Completed") and status.get("Success"):
+                # Context still names the archive, and an empty one means
+                # the job finished without producing anything — worth
+                # refusing rather than downloading whatever was left over
+                # from a previous run. The name no longer forms the URL.
                 name = status.get("Context") or ""
                 if not name:
                     raise MillenniumError("Export finished without naming its file")
-                return export_mod.unpack(self._fetch_export_file(str(name)))
+                logger.debug("Millennium's export produced %s", name)
+                return export_mod.unpack(self._fetch_export_file())
             time.sleep(EXPORT_POLL_INTERVAL_S)
 
         raise MillenniumError(
             f"Millennium's export did not finish within {EXPORT_TIMEOUT_S:.0f}s"
         )
 
-    def _fetch_export_file(self, name: str) -> bytes:
-        """The zip the finished job left behind."""
-        response = self._get(f"/DatabaseFunctions/ExportCardholders/GetExportFile/{name}")
+    def _export_status(self) -> Any:
+        """How far along the queued export is.
+
+        A GET under /api on the ASP.NET Core build, where it used to be a
+        POST to /Home/GetLongOperationStatus. The trailing `_` is the UI's
+        own cache-buster, kept because the response is the one thing here
+        that must never be served from a cache: a stale "Completed" would
+        send us to download the previous run's file.
+        """
+        response = self._get(
+            "/api/LongOperationStatus",
+            params={
+                "operationtype": export_mod.OPERATION,
+                "_": str(int(time.time() * 1000)),
+            },
+            ajax=True,
+        )
+        try:
+            return response.json()
+        except ValueError as e:
+            raise MillenniumError(f"Unreadable export status: {e}") from e
+
+    def _fetch_export_file(self) -> bytes:
+        """The zip the finished job left behind.
+
+        Addressed by what kind of export it was, not by the filename the
+        status gave: the Core build serves the caller's most recent export
+        from /WebServices/FileDownload, and has no route that takes a name.
+        """
+        response = self._get(
+            "/WebServices/FileDownload/",
+            params={"FileType": export_mod.OPERATION},
+        )
         return response.content
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> Any:
