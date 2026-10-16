@@ -391,7 +391,7 @@ class MillenniumUltraClient:
             params={
                 f"Card_{slot}_EncodedCardNumber": card_number,
                 f"Card_{slot}_CardID": "",
-                f"Card_{slot}_FaciltyCode": facility_code,
+                f"Card_{slot}_FacilityCode": facility_code,
                 f"Card_{slot}_CardFormat": card_format,
                 "_": str(int(time.time() * 1000)),
             },

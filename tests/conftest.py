@@ -209,7 +209,7 @@ def set_slot():
 
         html = set_input(html, prefix + "CardID", card_id)
         html = set_input(html, prefix + "EncodedCardNumber", "" if card_number is None else card_number)
-        html = set_input(html, prefix + "FaciltyCode", facility_code)
+        html = set_input(html, prefix + "FacilityCode", facility_code)
 
         # Checkbox state is presence of the `checked` attribute.
         box = re.compile(

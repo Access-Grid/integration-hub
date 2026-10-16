@@ -89,7 +89,7 @@ Content-Disposition: form-data; name="Card_3_ExpirationDate"
 
 
 ------WebKitFormBoundaryABoaI7NXhVpaIgxp
-Content-Disposition: form-data; name="Card_3_FaciltyCode"
+Content-Disposition: form-data; name="Card_3_FacilityCode"
 
 
 ------WebKitFormBoundaryABoaI7NXhVpaIgxp
@@ -145,7 +145,7 @@ Content-Disposition: form-data; name="Card_2_ExpirationDate"
 
 08/17/2028 12:00 AM
 ------WebKitFormBoundaryABoaI7NXhVpaIgxp
-Content-Disposition: form-data; name="Card_2_FaciltyCode"
+Content-Disposition: form-data; name="Card_2_FacilityCode"
 
 2
 ------WebKitFormBoundaryABoaI7NXhVpaIgxp
@@ -201,7 +201,7 @@ Content-Disposition: form-data; name="Card_1_ExpirationDate"
 
 08/17/2028 12:00 AM
 ------WebKitFormBoundaryABoaI7NXhVpaIgxp
-Content-Disposition: form-data; name="Card_1_FaciltyCode"
+Content-Disposition: form-data; name="Card_1_FacilityCode"
 
 1
 ------WebKitFormBoundaryABoaI7NXhVpaIgxp
