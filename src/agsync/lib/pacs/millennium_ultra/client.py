@@ -65,6 +65,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .... import failed_saves
 from ..base import PacsAuthExpired
 from . import export as export_mod
 from .html_form import CardholderForm, validation_errors
@@ -593,9 +594,33 @@ class MillenniumUltraClient:
                 "Millennium: the refused payload for cardholder %s was %s",
                 cardholder_id, _describe_payload(form),
             )
+            self._keep_refused_save(cardholder_id, response, body, reasons)
             return False
+        self._keep_refused_save(cardholder_id, response, body, [])
         raise MillenniumError(
             f"Save for cardholder {cardholder_id} -> HTTP {response.status_code}"
+        )
+
+    def _keep_refused_save(
+        self,
+        cardholder_id: str | int,
+        response: httpx.Response,
+        body: bytes,
+        reasons: list[str],
+    ) -> None:
+        """Keep the exchange, not just a sentence about it.
+
+        The log says what was refused and usually why, but the PACS does
+        not always say why — and when it does not, the page it sent back
+        is the only thing left to read.
+        """
+        failed_saves.record(
+            vendor="millennium_ultra",
+            cardholder_id=str(cardholder_id),
+            status_code=response.status_code,
+            reasons=reasons,
+            request=body.decode("utf-8", "replace"),
+            response=response.text,
         )
 
     def delete_card(self, cardholder_id: str | int, card_id: str, token: str) -> bool:

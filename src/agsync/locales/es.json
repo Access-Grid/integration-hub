@@ -172,5 +172,14 @@
   "settings.dry_run.state_dry": "Solo informa. No se está cambiando nada en el PACS ni en AccessGrid.",
   "settings.dry_run.state_live": "Haciendo cambios. Los pases se emitirán, suspenderán y eliminarán según indique el PACS.",
   "settings.dry_run.help": "Déjelo desactivado hasta que el registro de un ciclo muestre los cambios que espera. El registro marca con [DRYRUN] todo lo que habría hecho.",
-  "settings.dry_run.saved": "Modo de sincronización guardado."
+  "settings.dry_run.saved": "Modo de sincronización guardado.",
+  "nav.failed_saves": "Guardados rechazados",
+  "failed_saves.title": "Guardados rechazados",
+  "failed_saves.subtitle": "Guardados de titulares que el PACS rechazó, con lo que se envió y lo que respondió.",
+  "failed_saves.empty": "No se ha rechazado nada.",
+  "failed_saves.clear": "Borrar",
+  "failed_saves.reasons": "Por qué se rechazó",
+  "failed_saves.no_reason": "El PACS no dio ningún motivo: el rechazo no se debió a un campo incorrecto.",
+  "failed_saves.request": "Lo que se envió",
+  "failed_saves.response": "Lo que respondió"
 }
