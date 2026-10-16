@@ -251,6 +251,20 @@ class CardholderForm:
 
     # -- serialization ---------------------------------------------------
 
+    def submitted_pairs(self) -> list[tuple[str, str]]:
+        """Exactly what `to_multipart` would send, as name/value pairs.
+
+        The same traversal and the same omissions — an unchecked checkbox
+        is absent here as it is on the wire — so a log built from this
+        describes the request rather than approximating it. A file part
+        carries no value, and says so.
+        """
+        return [
+            (c.name, "<file>" if c.kind == "file" else c.submitted_value)
+            for c in self.controls
+            if c.submits
+        ]
+
     def to_multipart(self, boundary: str | None = None) -> tuple[str, bytes]:
         """Render the form as a browser would submit it.
 

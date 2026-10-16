@@ -193,3 +193,98 @@ def test_a_flood_of_complaints_is_capped(millennium_page, caplog):
     assert "complaint 0" in caplog.text
     assert f"and {25 - MAX_VALIDATION_ERRORS} more complaint(s)" in caplog.text
     assert "complaint 24" not in caplog.text
+
+
+# =====================================================================
+# And what we sent
+# =====================================================================
+
+
+def test_the_payload_description_matches_the_wire(millennium_page):
+    """The two must not drift.
+
+    A log built from a second traversal would eventually describe a
+    request that is not the one being made, which is worse than no log at
+    all — it is a log that lies about the thing you are debugging.
+    """
+    import re
+
+    from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
+
+    form = CardholderForm.parse(millennium_page)
+    form.set_checked("Card_1_Active", True)
+
+    _content_type, body = form.to_multipart()
+    on_the_wire = re.findall(r'name="([^"]+)"', body.decode("utf-8", "replace"))
+
+    assert [name for name, _ in form.submitted_pairs()] == on_the_wire
+
+
+def test_an_unchecked_box_is_absent_from_both(millennium_page):
+    from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
+
+    form = CardholderForm.parse(millennium_page)
+    form.set_checked("Card_1_Active", False)
+
+    assert "Card_1_Active" not in [n for n, _ in form.submitted_pairs()]
+
+
+def test_the_refused_payload_is_logged(millennium_page, caplog):
+    import logging
+
+    from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
+
+    client = _rejecting_client(f"<form>{FIELD_ERROR}</form>")
+    form = CardholderForm.parse(millennium_page)
+
+    with caplog.at_level(logging.ERROR):
+        client.save_cardholder("12247", form)
+
+    assert "the refused payload for cardholder 12247" in caplog.text
+    assert "Card_1_EncodedCardNumber=" in caplog.text
+
+
+def test_the_antiforgery_token_is_not_logged(millennium_page, caplog):
+    """It is a live credential, not a record of what was sent."""
+    import logging
+
+    from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
+
+    client = _rejecting_client(f"<form>{FIELD_ERROR}</form>")
+    form = CardholderForm.parse(millennium_page)
+    token = form.token
+    assert token, "the fixture should carry one"
+
+    with caplog.at_level(logging.ERROR):
+        client.save_cardholder("12247", form)
+
+    assert token not in caplog.text
+    assert "__RequestVerificationToken='[redacted]'" in caplog.text
+
+
+def test_a_long_value_is_truncated(millennium_page, caplog):
+    import logging
+
+    from agsync.lib.pacs.millennium_ultra.client import MAX_LOGGED_VALUE
+    from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
+
+    client = _rejecting_client(f"<form>{FIELD_ERROR}</form>")
+    form = CardholderForm.parse(millennium_page)
+    form.set_value("Comment1", "x" * 500)
+
+    with caplog.at_level(logging.ERROR):
+        client.save_cardholder("12247", form)
+
+    assert "x" * MAX_LOGGED_VALUE + "…" in caplog.text
+    assert "x" * (MAX_LOGGED_VALUE + 1) not in caplog.text
+
+
+def test_a_payload_that_cannot_be_described_does_not_raise():
+    """It runs on the failure path, where things are already going wrong."""
+    from agsync.lib.pacs.millennium_ultra.client import _describe_payload
+
+    class Broken:
+        def submitted_pairs(self):
+            raise RuntimeError("no controls")
+
+    assert "could not describe" in _describe_payload(Broken())
