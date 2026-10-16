@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
+from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
 from .. import tracking
@@ -142,6 +143,12 @@ def run(
                 tracked.pacs_person_id, tracked.pacs_credential_id,
                 tracked.retry_count + 1, MAX_RETRIES,
             )
+            if dryrun.active():
+                dryrun.would(
+                    "retry provisioning %s/%s",
+                    tracked.pacs_person_id, tracked.pacs_credential_id,
+                )
+                continue
             card = ag.access_cards.provision(**params)
             ag_card_id = getattr(card, "id", None)
             ag_state = (getattr(card, "state", "active") or "active").lower()

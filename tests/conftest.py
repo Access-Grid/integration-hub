@@ -12,6 +12,23 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _allowed_to_act(monkeypatch):
+    """Let the suite exercise what this install does when it may act.
+
+    Dry run is the shipped default, so without this every test asserting
+    that something was written would be asserting against a no-op. The
+    default itself is pinned in test_dry_run.py rather than here, so
+    flipping it cannot go unnoticed.
+    """
+    monkeypatch.setenv("AG_SYNC_DRY_RUN", "false")
+    from agsync.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 def _iso(dt: datetime) -> str:
     return dt.isoformat().replace("+00:00", "Z")
 

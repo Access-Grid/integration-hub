@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
 from .. import tracking
@@ -112,6 +113,9 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
 
         try:
             logger.info("  Deleting AG card %s — %s", tracked.ag_card_id, reason)
+            if dryrun.active():
+                dryrun.would("delete AG card %s — %s", tracked.ag_card_id, reason)
+                continue
             ag.access_cards.delete(card_id=tracked.ag_card_id)
             tracking.mark_deleted(
                 tracked.pacs_person_id, tracked.pacs_credential_id,

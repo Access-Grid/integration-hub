@@ -24,6 +24,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
 from .. import tracking
@@ -187,6 +188,17 @@ def run(
                 params["title"] = title
             if card_classification:
                 params["classification"] = card_classification
+
+            if dryrun.active():
+                # Checked before the pending row is written, not just before
+                # the API call: a dry run that leaves rows behind is not a
+                # dry run, and phase 5 would then retry a provision that
+                # never happened.
+                dryrun.would(
+                    "provision a pass for %s (%s), credential %s",
+                    person.full_name, pid, cred.id,
+                )
+                continue
 
             # Insert tracking row in 'pending' state before the API call so a
             # failed provision still leaves a row for phase 5 to retry.
