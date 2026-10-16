@@ -77,6 +77,7 @@ from .client import (
     COMPANY_COOKIE,
     TIMEOFFSET_COOKIE,
     MillenniumAuthError,
+    MillenniumError,
     MillenniumUltraClient,
 )
 from .html_form import CardholderForm
@@ -1418,7 +1419,7 @@ class MillenniumUltraAdapter:
         """
         form.set_value(f"Card_{slot}_CardID", card_id)
         form.set_value(f"Card_{slot}_EncodedCardNumber", str(identity.card_number))
-        form.set_value(f"Card_{slot}_FaciltyCode", str(identity.site_code))
+        form.set_value(f"Card_{slot}_FacilityCode", str(identity.site_code))
         form.set_value(f"Card_{slot}_CardFormat", self.trigger_card_format)
         if identity.activate_date:
             form.set_value(
@@ -1558,10 +1559,51 @@ def _describe(slots: list[Slot]) -> str:
     ) or "none"
 
 
+# Every per-slot field this adapter reads. Checked rather than assumed,
+# because `form.value()` answers "" for a field that is not on the page and
+# a silently-empty value is indistinguishable from a real one.
+#
+# That is not hypothetical. The move to ASP.NET Core corrected the spelling
+# of FaciltyCode, so every card read with an empty facility code, the
+# ledger's 99/165 stopped matching the slot's ("", "165"), and every pass
+# was read as revoked. The write path already refused to guess — set_value
+# raises for an unknown field — and only the read path was credulous.
+_REQUIRED_SLOT_FIELDS = (
+    "CardID",
+    "EncodedCardNumber",
+    "FacilityCode",
+    "CardFormat",
+    "ActivationDate",
+    "ExpirationDate",
+)
+
+
+def _check_slot_shape(form: CardholderForm, prefix: str) -> None:
+    """Refuse to read a card whose page does not look the way we expect.
+
+    A slot either has its fields or is not rendered at all; a slot with
+    some of them has been renamed under us. Stopping the cycle is the
+    point — the alternative is reading a card as though a field were blank
+    and deciding, downstream, that somebody's pass has been revoked.
+    """
+    present = [n for n in _REQUIRED_SLOT_FIELDS if form.find(prefix + n) is not None]
+    if not present or len(present) == len(_REQUIRED_SLOT_FIELDS):
+        return
+    missing = ", ".join(
+        prefix + n for n in _REQUIRED_SLOT_FIELDS if form.find(prefix + n) is None
+    )
+    raise MillenniumError(
+        f"Millennium's cardholder page is missing {missing} — the page shape "
+        "has changed, and reading it would misreport every card on this "
+        "cardholder"
+    )
+
+
 def _read_slots(form: CardholderForm, offset_seconds: int = 0) -> list[Slot]:
     slots: list[Slot] = []
     for index in CARD_SLOTS:
         prefix = f"Card_{index}_"
+        _check_slot_shape(form, prefix)
         # A slot with no selected format submits the <select>'s first option,
         # which would masquerade as a real format on an empty slot.
         format_control = form.find(f"{prefix}CardFormat")
@@ -1575,7 +1617,7 @@ def _read_slots(form: CardholderForm, offset_seconds: int = 0) -> list[Slot]:
                 index=index,
                 card_id=form.value(f"{prefix}CardID"),
                 card_number=form.value(f"{prefix}EncodedCardNumber"),
-                facility_code=form.value(f"{prefix}FaciltyCode"),
+                facility_code=form.value(f"{prefix}FacilityCode"),
                 card_format=selected,
                 active=form.is_checked(f"{prefix}Active"),
                 activation=parse_datetime(

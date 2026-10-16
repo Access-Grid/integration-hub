@@ -141,7 +141,7 @@ def test_reads_slot_values_and_token(form):
     assert form.value("ID") == "11587"
     assert form.value("Card_2_CardID") == "7922"
     assert form.value("Card_2_EncodedCardNumber") == "2"
-    assert form.value("Card_2_FaciltyCode") == "2"
+    assert form.value("Card_2_FacilityCode") == "2"
     assert form.value("Card_3_CardID") == ""
     assert form.is_checked("Card_2_Active") is False
     assert form.is_checked("Card_1_Tenant_0") is True

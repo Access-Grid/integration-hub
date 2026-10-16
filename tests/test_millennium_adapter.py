@@ -266,7 +266,7 @@ def test_seos_overwrites_the_marker_then_fills_an_empty_slot(
     # that card rather than creating a second one beside it.
     assert b'name="Card_1_CardID"\r\n\r\n7919\r\n' in body
     assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5001\r\n' in body
-    assert b'name="Card_1_FaciltyCode"\r\n\r\n66\r\n' in body
+    assert b'name="Card_1_FacilityCode"\r\n\r\n66\r\n' in body
     assert b'name="Card_1_Active"\r\n\r\ntrue\r\n' in body
     # The placeholder number it replaced is gone.
     assert b'name="Card_1_EncodedCardNumber"\r\n\r\n1234\r\n' not in body
