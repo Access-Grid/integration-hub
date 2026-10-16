@@ -143,6 +143,41 @@ CARD_SLOTS = (1, 2, 3)
 # not so many that one cardholder floods the log.
 MAX_VALIDATION_ERRORS = 10
 
+# What we sent, printed beside why it was refused. Millennium names the
+# field it objects to but not the value it objected to, and the value is
+# usually the whole story — a duplicate card number, a date that came back
+# in a shape it will not parse.
+#
+# This is cardholder data: name, address, phone and email are on the form
+# and will appear in the log. That is a deliberate trade for being able to
+# see a refused save, on an install whose logs stay on the operator's own
+# machine. The anti-forgery token is the one thing held back, because it is
+# a live credential rather than a record.
+_NEVER_LOGGED = frozenset({"__RequestVerificationToken"})
+MAX_LOGGED_VALUE = 120
+MAX_LOGGED_PAYLOAD = 4000
+
+
+def _describe_payload(form: CardholderForm) -> str:
+    """The form as it goes on the wire, field by field."""
+    try:
+        pairs = form.submitted_pairs()
+    except Exception as e:  # noqa: BLE001 — a diagnostic must not raise
+        return f"(could not describe the payload: {e})"
+    parts = []
+    for name, value in pairs:
+        if name in _NEVER_LOGGED:
+            shown = "[redacted]"
+        elif len(value) > MAX_LOGGED_VALUE:
+            shown = value[:MAX_LOGGED_VALUE] + "…"
+        else:
+            shown = value
+        parts.append(f"{name}={shown!r}")
+    text = ", ".join(parts)
+    if len(text) > MAX_LOGGED_PAYLOAD:
+        text = text[:MAX_LOGGED_PAYLOAD] + f"… ({len(parts)} fields in all)"
+    return text
+
 _EXPORT_REQUEST = {
     "format": 1,
     # Millennium's own spelling; correcting it silently disables the flag.
@@ -554,6 +589,10 @@ class MillenniumUltraClient:
                     "other than a bad field",
                     cardholder_id,
                 )
+            logger.error(
+                "Millennium: the refused payload for cardholder %s was %s",
+                cardholder_id, _describe_payload(form),
+            )
             return False
         raise MillenniumError(
             f"Save for cardholder {cardholder_id} -> HTTP {response.status_code}"
