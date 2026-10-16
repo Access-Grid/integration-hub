@@ -292,6 +292,72 @@ class SeosLedger:
         return SeosLedger._load_all().get(SeosLedger._key(person_id, credential_id), [])
 
     @staticmethod
+    def note_active(person_id: str, credential_id: str, states: dict[int, bool]) -> None:
+        """Remember the Active box we last wrote, per card.
+
+        Millennium's checkbox carries no reason. A card we switched off
+        because nobody had installed the pass yet looks exactly like one an
+        operator switched off to revoke somebody, and the install gate
+        reads the second as the first and switches it back on. What we
+        wrote is the only thing that tells them apart.
+        """
+        data = SeosLedger._load_all()
+        key = SeosLedger._key(person_id, credential_id)
+        entries = data.get(key)
+        if not entries:
+            return
+        for entry in entries:
+            try:
+                slot = int(entry.get("slot"))
+            except (TypeError, ValueError):
+                continue
+            if slot in states:
+                entry["active"] = bool(states[slot])
+        data[key] = entries
+        SeosLedger._save_all(data)
+
+    @staticmethod
+    def last_written_active(person_id: str, credential_id: str) -> dict[int, bool]:
+        """Slot -> the Active box we last wrote there.
+
+        A slot is absent whenever we do not actually know: no entry, an
+        entry from before this was recorded, a value that is not a
+        true/false, a slot number that will not parse, or a ledger we
+        could not read at all. Absence means "no opinion", never "off" —
+        reading a missing record as "we set it off" would make the install
+        hand-off refuse itself.
+
+        Only real booleans count. A string "false" is not a False, and
+        coercing one with bool() would read it as True and then refuse to
+        switch a card on that nobody had switched off. The slot number is
+        read the same way: int(1.5) is 1, and a record we had to round to
+        reach is not a record of anything.
+        """
+        out: dict[int, bool] = {}
+        try:
+            entries = SeosLedger.get(person_id, credential_id)
+        except Exception as e:  # noqa: BLE001 — an unreadable ledger is "unknown"
+            logger.warning(
+                "Millennium: could not read what we last set active for %s/%s "
+                "(%s) — treating it as unknown",
+                person_id, credential_id, e,
+            )
+            return out
+        for entry in entries:
+            active = entry.get("active") if isinstance(entry, dict) else None
+            if not isinstance(active, bool):
+                continue
+            slot = entry.get("slot")
+            # bool is an int in Python, and True would read as slot 1.
+            if isinstance(slot, bool) or not isinstance(slot, int | str):
+                continue
+            try:
+                out[int(slot)] = active
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    @staticmethod
     def record(person_id: str, credential_id: str, entries: list[dict]) -> None:
         """Replace the recorded slots, keeping one entry per physical card.
 
@@ -302,8 +368,22 @@ class SeosLedger:
         deduped: dict[tuple[str, str], dict] = {}
         for entry in entries:
             deduped[(str(entry.get("facility_code")), str(entry.get("card_number")))] = entry
+
         data = SeosLedger._load_all()
-        data[SeosLedger._key(person_id, credential_id)] = list(deduped.values())
+        key = SeosLedger._key(person_id, credential_id)
+        # What we last wrote to a card's Active box survives a re-record of
+        # the same card. Recording happens whenever the slots are rewritten,
+        # and dropping the flag there would quietly return the install gate
+        # to overruling whoever unticked it.
+        known = {
+            (str(e.get("facility_code")), str(e.get("card_number"))): e["active"]
+            for e in data.get(key, [])
+            if "active" in e
+        }
+        for card, entry in deduped.items():
+            if "active" not in entry and card in known:
+                entry["active"] = known[card]
+        data[key] = list(deduped.values())
         SeosLedger._save_all(data)
 
     @staticmethod
@@ -719,8 +799,34 @@ class MillenniumUltraAdapter:
             return False
 
         by_index = {s.index: s for s in current}
+        if want_active:
+            # An operator unticking a card is how a pass is revoked here.
+            # Switching it back on because AccessGrid still shows the pass
+            # installed overrules the person holding the console, and does
+            # it silently, every cycle. Only refuse where we have a record
+            # of having set that card on ourselves: without one we cannot
+            # tell a revocation from a card that has simply always been
+            # off, and refusing then would stop the install hand-off.
+            recorded = SeosLedger.last_written_active(pid, credential_id)
+            switched_off = [
+                index for index in slots
+                if recorded.get(index) is True
+                and form.find(f"Card_{index}_Active") is not None
+                and not form.is_checked(f"Card_{index}_Active")
+            ]
+            if switched_off:
+                logger.warning(
+                    "Millennium: cardholder %s credential %s was switched off "
+                    "in Millennium after we last switched it on (slot(s) %s) — "
+                    "leaving it off rather than overruling the operator",
+                    pid, credential_id,
+                    ", ".join(str(i) for i in switched_off),
+                )
+                return False
+
         writable = 0
         changed = False
+        confirmed: list[int] = []
         for index in slots:
             field = f"Card_{index}_Active"
             slot = by_index.get(index)
@@ -736,12 +842,20 @@ class MillenniumUltraAdapter:
                 )
                 continue
             writable += 1
+            confirmed.append(index)
             if form.is_checked(field) != want_active:
                 form.set_checked(field, want_active)
                 changed = True
         if not writable:
             return False
         if not changed:
+            # Already as asked. Recorded anyway: this is how a card that
+            # nobody has touched since the upgrade acquires a record, and
+            # until it has one an operator's untick cannot be recognised.
+            if not dryrun.active():
+                SeosLedger.note_active(
+                    pid, credential_id, dict.fromkeys(confirmed, want_active)
+                )
             return True
         if dryrun.active():
             dryrun.would(
@@ -751,6 +865,9 @@ class MillenniumUltraAdapter:
             return True
         ok = self._client.save_cardholder(pid, form)
         if ok:
+            SeosLedger.note_active(
+                pid, credential_id, dict.fromkeys(confirmed, want_active)
+            )
             self._drop_profile(pid, "changing a card's Active box")
         return ok
 
