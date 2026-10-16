@@ -49,6 +49,39 @@ _AG_TO_CRED_STATUS: dict[str, CredentialStatus] = {
 }
 
 
+# Temporary, and the other half of [SUSPEND-DEBUG] in phase 2. This gate
+# judges a credential by re-reading the pair's halves, while phase 2 acts
+# on the unified pass id recorded against it. When the two disagree, this
+# runs second and wins — writing an operator's unticked box back on.
+SUSPEND_DEBUG = "[SUSPEND-DEBUG]"
+
+
+def _gate_debug(tracked, cards: list, desired, cred) -> None:
+    """What the install gate saw, decided, and is about to do about it."""
+    try:
+        seen = "; ".join(
+            f"{getattr(c, 'id', '?')} state={(getattr(c, 'state', '') or '?').lower()} "
+            f"devices={_devices(c) or '[]'}"
+            for c in cards
+        ) or "none"
+        already = (
+            cred.status is CredentialStatus.ACTIVE
+            if desired is CredentialStatus.ACTIVE
+            else cred.status is not CredentialStatus.ACTIVE
+        )
+        logger.info(
+            "%s %s/%s: install gate read %d card(s) via tracked id %s: %s "
+            "| pacs=%r -> wants %s -> %s",
+            SUSPEND_DEBUG, tracked.pacs_person_id, tracked.pacs_credential_id,
+            len(cards), tracked.ag_card_id, seen, cred.status.value,
+            desired.value,
+            "leaving it alone" if already
+            else f"WRITING {desired.value} to the PACS card",
+        )
+    except Exception as e:  # noqa: BLE001 — diagnostics must never break a cycle
+        logger.info("%s could not describe the install gate: %s", SUSPEND_DEBUG, e)
+
+
 def _desired_card_status(cards: list) -> CredentialStatus:
     """What a PACS card should be, given the pass behind it.
 
@@ -117,6 +150,7 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
             continue
 
         desired = _desired_card_status(cards)
+        _gate_debug(tracked, cards, desired, cred)
         # The adapter reads its own state off the card, where "off" has no
         # reason attached, so an awaited install and a suspension look the
         # same coming back.
