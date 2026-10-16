@@ -24,27 +24,66 @@ Two properties matter:
 from __future__ import annotations
 
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
 PREFIX = "[DRYRUN]"
 
+# Where the operator's choice lives. Deliberately the settings page rather
+# than the environment: the hub runs as a Windows service, so an
+# environment variable means System Properties and a service restart, by
+# somebody who already has the hub's own web UI open in front of them.
+SETTING_KEY = "sync_dry_run"
+
+# A mutation check happens per credential, so the stored value is cached
+# briefly rather than read from SQLite inside the phase loops. Saving the
+# setting clears this, so the page never lies about what is in force; the
+# window only matters if the row is changed behind the application's back.
+_CACHE_TTL_S = 5.0
+_cached: tuple[float, bool] | None = None
+
 
 def active() -> bool:
     """Is this install in dry-run mode?
 
-    Read per call rather than captured, so flipping the setting takes
-    effect on the next cycle instead of the next restart.
+    Anything other than a stored "false" means yes, including an absent
+    row and an unreadable one. The default has to be the safe answer:
+    this is the switch that decides whether a misreading becomes a
+    revoked pass.
     """
-    from .config import get_settings
+    global _cached
+    now = time.monotonic()
+    if _cached is not None and now - _cached[0] < _CACHE_TTL_S:
+        return _cached[1]
 
     try:
-        return bool(get_settings().dry_run)
-    except Exception:  # noqa: BLE001 — unreadable settings must mean "safe"
+        from .settings_store import get
+
+        raw = get(SETTING_KEY)
+    except Exception as e:  # noqa: BLE001 — unreadable settings must mean "safe"
         logger.warning(
-            "%s could not read the dry-run setting — assuming dry run", PREFIX,
+            "%s could not read the dry-run setting (%s) — assuming dry run",
+            PREFIX, e,
         )
-        return True
+        return True  # not cached: a transient failure should not stick
+
+    value = True if raw is None else raw.strip().lower() != "false"
+    _cached = (now, value)
+    return value
+
+
+def set_active(value: bool) -> None:
+    """Record the operator's choice and make it take effect at once."""
+    from .settings_store import set as store
+
+    store(SETTING_KEY, "true" if value else "false")
+    invalidate()
+
+
+def invalidate() -> None:
+    global _cached
+    _cached = None
 
 
 def would(message: str, *args: object) -> None:

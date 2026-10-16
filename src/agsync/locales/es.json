@@ -165,5 +165,12 @@
   "settings.pacs_address.subtitle": "Dónde esta instalación contacta con el PACS. Cámbiela si el servidor ha cambiado de dirección.",
   "settings.pacs_address.saved": "Dirección del PACS guardada.",
   "settings.pacs_address.invalid": "Esa dirección no es válida. Use algo como https://hosted8.mgiaccess.com.",
-  "settings.pacs_address.reconnect_warning": "Cambiar la dirección cierra la sesión del PACS: la sesión guardada pertenece al servidor anterior, así que tendrá que conectarse de nuevo."
+  "settings.pacs_address.reconnect_warning": "Cambiar la dirección cierra la sesión del PACS: la sesión guardada pertenece al servidor anterior, así que tendrá que conectarse de nuevo.",
+  "settings.dry_run.title": "Cambios en el PACS y en AccessGrid",
+  "settings.dry_run.subtitle": "Si esta instalación actúa sobre lo que encuentra, o solo informa de lo que haría.",
+  "settings.dry_run.label": "Permitir que esta instalación haga cambios",
+  "settings.dry_run.state_dry": "Solo informa. No se está cambiando nada en el PACS ni en AccessGrid.",
+  "settings.dry_run.state_live": "Haciendo cambios. Los pases se emitirán, suspenderán y eliminarán según indique el PACS.",
+  "settings.dry_run.help": "Déjelo desactivado hasta que el registro de un ciclo muestre los cambios que espera. El registro marca con [DRYRUN] todo lo que habría hecho.",
+  "settings.dry_run.saved": "Modo de sincronización guardado."
 }

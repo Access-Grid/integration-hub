@@ -8,6 +8,7 @@ from urllib.parse import urlparse, urlunparse
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 
+from .. import dryrun
 from ..ag import test_connection as ag_test
 from ..auth import require_admin
 from ..config import get_settings
@@ -81,6 +82,7 @@ def settings_page(
     return request.app.state.template_response(
         request, "settings.html",
         {
+            "sync_dry_run": dryrun.active(),
             "ag_account": ag.get("account_id", ""),
             "ag_template": ag.get("template_id", ""),
             "ag_site_code": ag.get("site_code", ""),
@@ -224,6 +226,32 @@ def update_email_domain(
     engine.invalidate_pacs_adapter()
     engine.trigger_now()
     return RedirectResponse(url="/settings?ok=email_domain", status_code=303)
+
+
+@router.post("/settings/dry-run")
+def update_dry_run(
+    request: Request,
+    dry_run: str = Form(default=""),
+    _user=Depends(require_admin),
+):
+    """Let this install act, or hold it to reporting what it would do.
+
+    An unchecked checkbox is not submitted at all, so the absent value is
+    the meaningful one here — which is the same reason the stored setting
+    treats anything that is not an explicit "false" as a dry run.
+    """
+    acting = dry_run.strip().lower() in ("on", "true", "1", "yes")
+    dryrun.set_active(not acting)
+    logger.warning(
+        "Sync mode changed: this install will now %s",
+        "act on what it finds" if acting
+        else "report what it would do and change nothing",
+    )
+    # The engine reads the setting per cycle, so there is nothing to
+    # invalidate — but a cycle now rather than in a minute lets the
+    # operator see the consequence while they are still looking.
+    get_engine().trigger_now()
+    return RedirectResponse(url="/settings?ok=dry_run", status_code=303)
 
 
 @router.post("/settings/pacs-address")

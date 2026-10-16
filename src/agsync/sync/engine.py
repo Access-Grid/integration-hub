@@ -356,7 +356,8 @@ class SyncEngine:
             # scroll back to the beginning of the run to find out why.
             logger.info(
                 "%s this cycle will report what it would do and change "
-                "nothing. Set AG_SYNC_DRY_RUN=false to act.", dryrun.PREFIX,
+                "nothing. Settings → %s to let it act.",
+                dryrun.PREFIX, "Changes to the PACS and AccessGrid",
             )
         started_at = datetime.now(UTC).isoformat(timespec="seconds")
         start_ms = time.time()

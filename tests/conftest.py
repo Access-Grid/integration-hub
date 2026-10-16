@@ -18,15 +18,14 @@ def _allowed_to_act(monkeypatch):
 
     Dry run is the shipped default, so without this every test asserting
     that something was written would be asserting against a no-op. The
-    default itself is pinned in test_dry_run.py rather than here, so
-    flipping it cannot go unnoticed.
+    default, and the stored setting behind it, are pinned in test_dry_run.py
+    rather than here, so flipping either cannot go unnoticed.
     """
-    monkeypatch.setenv("AG_SYNC_DRY_RUN", "false")
-    from agsync.config import get_settings
+    from agsync import dryrun
 
-    get_settings.cache_clear()
+    monkeypatch.setattr(dryrun, "active", lambda: False)
     yield
-    get_settings.cache_clear()
+    dryrun.invalidate()
 
 
 def _iso(dt: datetime) -> str:

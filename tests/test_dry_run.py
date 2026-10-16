@@ -41,6 +41,12 @@ from agsync.sync.phases import (
 from agsync.sync.snapshot import Snapshot
 from tests._fakes import FakeMillenniumClient
 
+# Captured at import, before the suite's autouse fixture replaces it, so a
+# test can ask for the real behaviour without reverting every other patch
+# in the test — monkeypatch.undo() would also drop the temporary database
+# and any stubbed engine.
+_REAL_ACTIVE = dryrun.active
+
 TRIGGER = "7"
 PID = "11665"
 ROSTER = [{"ID": PID, "IsActive": True, "Name": "Dorvil, Greg"}]
@@ -49,12 +55,18 @@ ROSTER = [{"ID": PID, "IsActive": True, "Name": "Dorvil, Greg"}]
 @pytest.fixture
 def dry(monkeypatch):
     """Dry run, as shipped. The suite otherwise runs with it off."""
-    monkeypatch.setenv("AG_SYNC_DRY_RUN", "true")
-    from agsync.config import get_settings
-
-    get_settings.cache_clear()
+    monkeypatch.setattr(dryrun, "active", lambda: True)
     yield
-    get_settings.cache_clear()
+    dryrun.invalidate()
+
+
+@pytest.fixture
+def real_dryrun(monkeypatch):
+    """Ask the real `active()`, which reads the stored setting."""
+    monkeypatch.setattr(dryrun, "active", _REAL_ACTIVE)
+    dryrun.invalidate()
+    yield
+    dryrun.invalidate()
 
 
 @pytest.fixture
@@ -75,24 +87,68 @@ def db(tmp_path, monkeypatch):
 # =====================================================================
 
 
-def test_an_install_does_nothing_unless_told_to(monkeypatch):
-    """The shipped default.
+def test_an_install_does_nothing_unless_told_to(db, real_dryrun, monkeypatch):
+    """The shipped default: no stored setting means dry run.
 
     Pinned explicitly because the suite's own fixture turns dry run off —
     without this, flipping the default would change nothing visible here.
     """
-    monkeypatch.delenv("AG_SYNC_DRY_RUN", raising=False)
-    from agsync.config import Settings
 
-    assert Settings(encryption_key="x").dry_run is True
+    assert dryrun.active() is True
 
 
-def test_unreadable_settings_mean_dry_run(monkeypatch):
+def test_the_setting_is_stored_not_read_from_the_environment(db, real_dryrun, monkeypatch):
+    """It lives on the settings page: the hub runs as a Windows service, so
+    an environment variable means a trip to System Properties by somebody
+    who already has the hub's own UI open."""
+    monkeypatch.setenv("AG_SYNC_DRY_RUN", "false")
+    dryrun.invalidate()
+
+    assert dryrun.active() is True, "the environment does not decide this"
+
+    dryrun.set_active(False)
+    assert dryrun.active() is False
+
+
+def test_saving_it_takes_effect_at_once(db, real_dryrun, monkeypatch):
+    """Rather than when a cache happens to expire — an operator who turns
+    it off and sees nothing happen will turn something else off next."""
+    dryrun.set_active(False)
+    assert dryrun.active() is False
+
+    dryrun.set_active(True)
+    assert dryrun.active() is True
+
+
+def test_an_unreadable_setting_means_dry_run(real_dryrun, monkeypatch):
     """The safe reading of "I don't know" is "don't touch anything"."""
-    def explode():
-        raise RuntimeError("settings are unreadable")
+    dryrun.invalidate()
 
-    monkeypatch.setattr("agsync.config.get_settings", explode)
+    def explode(_key):
+        raise RuntimeError("the settings table is unreadable")
+
+    monkeypatch.setattr("agsync.settings_store.get", explode)
+    assert dryrun.active() is True
+
+
+def test_a_failure_is_not_cached(real_dryrun, monkeypatch):
+    """A transient read failure must not pin the install into dry run."""
+    dryrun.invalidate()
+    monkeypatch.setattr(
+        "agsync.settings_store.get",
+        lambda _k: (_ for _ in ()).throw(RuntimeError("transient")),
+    )
+    assert dryrun.active() is True
+
+    monkeypatch.setattr("agsync.settings_store.get", lambda _k: "false")
+    assert dryrun.active() is False, "recovered without waiting for a TTL"
+
+
+@pytest.mark.parametrize("stored", ["true", "True", "yes", "", "nonsense", None])
+def test_only_an_explicit_false_lets_it_act(real_dryrun, monkeypatch, stored):
+    dryrun.invalidate()
+    monkeypatch.setattr("agsync.settings_store.get", lambda _k: stored)
+
     assert dryrun.active() is True
 
 
@@ -307,3 +363,69 @@ def test_no_contact_detail_is_pushed(dry, db, caplog):
 
     assert ag.calls == []
     assert "[DRYRUN] would update AG card card-1" in caplog.text
+
+
+# =====================================================================
+# The settings page
+# =====================================================================
+
+
+@pytest.fixture
+def engine(monkeypatch):
+    from agsync.routes import settings as settings_routes
+
+    calls: list[str] = []
+
+    class _Engine:
+        def trigger_now(self):
+            calls.append("trigger")
+
+    monkeypatch.setattr(settings_routes, "get_engine", lambda: _Engine())
+    return calls
+
+
+def _post(dry_run: str = ""):
+    from agsync.routes import settings as settings_routes
+
+    return settings_routes.update_dry_run(
+        request=None, dry_run=dry_run, _user=None
+    )
+
+
+def test_ticking_the_box_lets_it_act(db, engine, real_dryrun, monkeypatch):
+    result = _post("on")
+
+    assert result.headers["location"] == "/settings?ok=dry_run"
+    assert dryrun.active() is False
+
+
+def test_an_absent_checkbox_means_dry_run(db, engine, real_dryrun, monkeypatch):
+    """The value that matters is the one the browser does not send.
+
+    An unticked checkbox is omitted from the form entirely, so reading the
+    field as "whatever arrived" would leave the install acting forever.
+    """
+    dryrun.set_active(False)
+
+    _post()
+
+    assert dryrun.active() is True
+
+
+def test_the_change_is_visible_on_the_page(db, engine, real_dryrun, monkeypatch):
+    """The page reports what is in force, not what was last submitted."""
+    from agsync.routes import settings as settings_routes
+
+    dryrun.set_active(False)
+    assert settings_routes.dryrun.active() is False
+
+    _post()
+    assert settings_routes.dryrun.active() is True
+
+
+def test_a_cycle_runs_so_the_operator_sees_the_result(db, engine, real_dryrun, monkeypatch):
+    """Turning it off and watching nothing happen for a minute is how
+    somebody decides the setting did not work."""
+    _post("on")
+
+    assert engine == ["trigger"]
