@@ -66,13 +66,6 @@ class Settings(BaseSettings):
         description="Sentry DSN. Baked at build time; empty disables Sentry.",
     )
     log_level: str = "INFO"
-    # Act, or only say what would be done. Defaults to NOT acting: this
-    # install writes to a customer's access control system and mints
-    # credentials that cost money, and a wrong read has already turned
-    # into mass suspension once. An install that is meant to act is told
-    # to; an install that is meant to be safe does not have to be caught
-    # in time.
-    dry_run: bool = True
     # Reporting this hub's health to AccessGrid. On by default: a hub that
     # has stopped, or whose PACS session has expired and needs a human,
     # looks exactly like one with nothing to do, and nobody finds out until

@@ -27,6 +27,9 @@
   {% if ok == 'extra_metadata' %}
     <div class="test-result ok">{{ t('settings.extra_metadata.saved') }}</div>
   {% endif %}
+  {% if ok == 'dry_run' %}
+    <div class="test-result ok">{{ t('settings.dry_run.saved') }}</div>
+  {% endif %}
   {% if ok == 'pacs_address' %}
     <div class="test-result ok">{{ t('settings.pacs_address.saved') }}</div>
   {% endif %}
@@ -160,6 +163,23 @@
       });
     })();
   </script>
+
+  <h2>{{ t('settings.dry_run.title') }}</h2>
+  <p class="muted">{{ t('settings.dry_run.subtitle') }}</p>
+  {% if sync_dry_run %}
+    <div class="test-result ok">{{ t('settings.dry_run.state_dry') }}</div>
+  {% else %}
+    <div class="err">{{ t('settings.dry_run.state_live') }}</div>
+  {% endif %}
+  <form action="/settings/dry-run" method="post" class="inline-form">
+    <label class="radio-row">
+      <input type="checkbox" name="dry_run" value="on"
+             {% if not sync_dry_run %}checked{% endif %}>
+      {{ t('settings.dry_run.label') }}
+    </label>
+    <button type="submit">{{ t('common.save') }}</button>
+  </form>
+  <small class="muted">{{ t('settings.dry_run.help') }}</small>
 
   {% if pacs_address_fields %}
   <h2>{{ t('settings.pacs_address.title') }}</h2>

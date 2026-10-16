@@ -165,5 +165,12 @@
   "settings.pacs_address.subtitle": "Where this install reaches the PACS. Change it if the server has moved.",
   "settings.pacs_address.saved": "PACS address saved.",
   "settings.pacs_address.invalid": "That is not a valid address. Use something like https://hosted8.mgiaccess.com.",
-  "settings.pacs_address.reconnect_warning": "Changing the address signs this install out of the PACS: the saved session belongs to the old server, so you will need to connect again."
+  "settings.pacs_address.reconnect_warning": "Changing the address signs this install out of the PACS: the saved session belongs to the old server, so you will need to connect again.",
+  "settings.dry_run.title": "Changes to the PACS and AccessGrid",
+  "settings.dry_run.subtitle": "Whether this install acts on what it finds, or only reports what it would do.",
+  "settings.dry_run.label": "Let this install make changes",
+  "settings.dry_run.state_dry": "Reporting only. Nothing is being changed in the PACS or in AccessGrid.",
+  "settings.dry_run.state_live": "Making changes. Passes will be issued, suspended and deleted as the PACS dictates.",
+  "settings.dry_run.help": "Leave this off until a sync cycle's log shows the changes you expect. The log marks everything it would have done with [DRYRUN].",
+  "settings.dry_run.saved": "Sync mode saved."
 }
