@@ -67,7 +67,7 @@ import httpx
 
 from ..base import PacsAuthExpired
 from . import export as export_mod
-from .html_form import CardholderForm
+from .html_form import CardholderForm, validation_errors
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +138,10 @@ ANTIFORGERY_COOKIE_PREFIX = ".AspNetCore.Antiforgery."
 # Millennium gives every cardholder exactly this many card slots; the detail
 # page declares it as `cardsPerCardholder = 3`.
 CARD_SLOTS = (1, 2, 3)
+
+# A rejected save can complain about every field at once. Enough to act on,
+# not so many that one cardholder floods the log.
+MAX_VALIDATION_ERRORS = 10
 
 _EXPORT_REQUEST = {
     "format": 1,
@@ -528,10 +532,28 @@ class MillenniumUltraClient:
         if response.is_redirect:
             return True
         if response.status_code == 200:
-            logger.error(
-                "Millennium rejected the save for cardholder %s (validation error)",
-                cardholder_id,
-            )
+            # The rejection and its reasons arrive together — the page is
+            # re-rendered with the complaints written into it — so there is
+            # no second request to make and no excuse for logging only that
+            # something was refused.
+            reasons = validation_errors(response.text)
+            if reasons:
+                logger.error(
+                    "Millennium rejected the save for cardholder %s: %s",
+                    cardholder_id, "; ".join(reasons[:MAX_VALIDATION_ERRORS]),
+                )
+                if len(reasons) > MAX_VALIDATION_ERRORS:
+                    logger.error(
+                        "Millennium: and %d more complaint(s) about cardholder %s",
+                        len(reasons) - MAX_VALIDATION_ERRORS, cardholder_id,
+                    )
+            else:
+                logger.error(
+                    "Millennium rejected the save for cardholder %s and the page "
+                    "carries no validation message — the refusal was something "
+                    "other than a bad field",
+                    cardholder_id,
+                )
             return False
         raise MillenniumError(
             f"Save for cardholder {cardholder_id} -> HTTP {response.status_code}"

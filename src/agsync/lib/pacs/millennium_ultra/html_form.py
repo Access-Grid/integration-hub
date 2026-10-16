@@ -283,3 +283,104 @@ class CardholderForm:
 def _random_boundary() -> str:
     alphabet = string.ascii_letters + string.digits
     return "----WebKitFormBoundary" + "".join(random.choices(alphabet, k=16))
+
+
+# A rejected save comes back as the same page re-rendered, with the reasons
+# written into it. ASP.NET marks them two ways: a summary list at the top of
+# the form, and a message beside each field that failed. In the accepted
+# state those same elements are present but empty and classed "-valid", so
+# the class is what distinguishes a complaint from a placeholder.
+_SUMMARY_CLASS = "validation-summary-errors"
+_FIELD_CLASS = "field-validation-error"
+
+
+class _ValidationParser(HTMLParser):
+    """Collect the validation messages out of a re-rendered form.
+
+    Two shapes, captured differently. A field's complaint is one element
+    whose text is the whole message. A summary is a container of list
+    items, each its own complaint — reading the container as one message
+    would run several problems together into a sentence that is none of
+    them.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.messages: list[str] = []
+        self._capture = 0      # depth inside the element being read
+        self._summary = 0      # depth inside a summary container
+        self._field: str | None = None
+        self._buffer: list[str] = []
+
+    def _start(self, field: str | None) -> None:
+        self._capture = 1
+        self._field = field
+        self._buffer = []
+
+    def _emit(self) -> None:
+        text = " ".join("".join(self._buffer).split())
+        if text:
+            self.messages.append(f"{self._field}: {text}" if self._field else text)
+        self._field = None
+        self._buffer = []
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if self._capture:
+            self._capture += 1          # nested markup is part of the text
+            return
+        if self._summary:
+            if tag == "li":
+                self._start(None)
+            else:
+                self._summary += 1
+            return
+        classes = (dict(attrs).get("class") or "").split()
+        if _SUMMARY_CLASS in classes:
+            self._summary = 1
+        elif _FIELD_CLASS in classes:
+            self._start(dict(attrs).get("data-valmsg-for"))
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._capture:
+            self._capture -= 1
+            if not self._capture:
+                self._emit()
+            return
+        if self._summary:
+            self._summary -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._capture:
+            self._buffer.append(data)
+
+    def flush(self) -> None:
+        """Emit whatever a truncated page left open."""
+        if self._capture:
+            self._emit()
+
+
+def validation_errors(html: str) -> list[str]:
+    """Why Millennium refused a save, in the words it used.
+
+    A rejection is a 200 carrying the form again, so the reasons are only
+    ever in the page. Without reading them the log can say a save was
+    refused and nothing about what to change — which is a cardholder
+    silently not syncing until somebody opens the screen by hand.
+
+    Returns an empty list when the page carries no complaint, which is
+    itself worth reporting: it means the rejection was something other
+    than field validation.
+    """
+    parser = _ValidationParser()
+    try:
+        parser.feed(html)
+        parser.flush()
+    except Exception:  # noqa: BLE001 — a diagnostic must not raise
+        pass
+    # Deduplicated: ASP.NET renders a field's message twice when it is also
+    # in the summary, and the same complaint twice reads like two problems.
+    seen: list[str] = []
+    for message in parser.messages:
+        if message not in seen:
+            seen.append(message)
+    return seen
