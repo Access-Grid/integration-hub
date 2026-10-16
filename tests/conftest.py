@@ -13,6 +13,40 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _never_the_real_database(tmp_path, monkeypatch):
+    """Point every test at a database of its own.
+
+    Without this a test that reaches storage reads the operator's live
+    install: `get_settings()` defaults db_path to it, so `SeosLedger.all()`
+    answers with real cardholders and `AccessGridConfig.load()` with a real
+    API key. That is how test_only_the_cardholders_carrying_a_trigger_card
+    came to depend on run order — it passed only when some earlier test had
+    left the shared connection pointed somewhere harmless.
+
+    The connection has to be dropped properly for the new path to take.
+    `connection` keeps `_initialized` and a thread-local `conn`; there is
+    no `_conn`, so the line several suites use to reset it sets an
+    attribute nobody reads.
+    """
+    from agsync.config import get_settings
+    from agsync.db import connection
+
+    def drop() -> None:
+        conn = getattr(connection._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            del connection._local.conn
+        connection._initialized = False
+
+    monkeypatch.setenv("AG_SYNC_DB_PATH", str(tmp_path / "test.db"))
+    get_settings.cache_clear()
+    drop()
+    yield
+    drop()
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _allowed_to_act(monkeypatch):
     """Let the suite exercise what this install does when it may act.
 

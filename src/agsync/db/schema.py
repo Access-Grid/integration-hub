@@ -208,6 +208,33 @@ MIGRATIONS: list[tuple[str, Step]] = [
     ("006_pacs_session_is_keyed_by_vendor", _pacs_session_is_keyed_by_vendor),
     ("007_release_card_ids_on_deleted_rows", _release_card_ids_on_deleted_rows),
     ("008_drop_abandoned_desfire_rows", _drop_abandoned_desfire_rows),
+    (
+        "009_failed_saves",
+        """
+        -- What the PACS was sent and what it answered, for a save it
+        -- refused. The log can say a cardholder was rejected and even why,
+        -- but "why" is the PACS's own wording and is sometimes absent —
+        -- cardholder 12247 is refused every cycle and the page carries no
+        -- validation message at all. Without the exchange itself there is
+        -- nothing left to look at.
+        --
+        -- Rows are large: a request is the whole cardholder form and a
+        -- response is the whole page back. Kept few and evicted oldest
+        -- first, like the log buffer.
+        CREATE TABLE IF NOT EXISTS failed_saves (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts            TEXT NOT NULL,
+            vendor        TEXT NOT NULL DEFAULT '',
+            cardholder_id TEXT NOT NULL DEFAULT '',
+            status_code   INTEGER,
+            reasons       TEXT NOT NULL DEFAULT '',
+            request       TEXT NOT NULL DEFAULT '',
+            response      TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_failed_saves_ts ON failed_saves(ts);
+        """,
+    ),
 ]
 
 

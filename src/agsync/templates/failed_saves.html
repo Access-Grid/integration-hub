@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>{{ t('failed_saves.title') }}</h1>
+  <p class="muted">{{ t('failed_saves.subtitle') }}</p>
+
+  {% if not rows %}
+    <p class="muted">{{ t('failed_saves.empty') }}</p>
+  {% else %}
+    <form action="/failed-saves/clear" method="post" class="inline-form">
+      <button type="submit">{{ t('failed_saves.clear') }}</button>
+    </form>
+
+    {% for row in rows %}
+      <details class="failed-save">
+        <summary>
+          <strong>{{ row.cardholder_id }}</strong>
+          <span class="muted">{{ row.ts }}</span>
+          {% if row.status_code %}<span class="muted">HTTP {{ row.status_code }}</span>{% endif %}
+        </summary>
+
+        <h3>{{ t('failed_saves.reasons') }}</h3>
+        {% if row.reasons %}
+          <ul>
+            {% for reason in row.reasons.split('\n') %}<li>{{ reason }}</li>{% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">{{ t('failed_saves.no_reason') }}</p>
+        {% endif %}
+
+        <h3>{{ t('failed_saves.request') }}</h3>
+        <pre class="exchange">{{ row.request }}</pre>
+
+        <h3>{{ t('failed_saves.response') }}</h3>
+        <pre class="exchange">{{ row.response }}</pre>
+      </details>
+    {% endfor %}
+  {% endif %}
+{% endblock %}
