@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 
+from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import CredentialStatus
 from .. import tracking
@@ -44,6 +45,13 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                     "  Terminating AG card %s — trigger no longer set on %s/%s",
                     tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
                 )
+                if dryrun.active():
+                    dryrun.would(
+                        "terminate AG card %s for %s/%s",
+                        tracked.ag_card_id, tracked.pacs_person_id,
+                        tracked.pacs_credential_id,
+                    )
+                    continue
                 ag.access_cards.delete(card_id=tracked.ag_card_id)
                 tracking.mark_deleted(
                     tracked.pacs_person_id, tracked.pacs_credential_id,
@@ -101,6 +109,13 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                     tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
                     cred.status.value,
                 )
+                if dryrun.active():
+                    dryrun.would(
+                        "suspend AG card %s for %s/%s",
+                        tracked.ag_card_id, tracked.pacs_person_id,
+                        tracked.pacs_credential_id,
+                    )
+                    continue
                 ag.access_cards.suspend(card_id=tracked.ag_card_id)
                 tracking.update_status(
                     tracked.pacs_person_id, tracked.pacs_credential_id,
@@ -113,6 +128,13 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                     tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
                     cred.status.value,
                 )
+                if dryrun.active():
+                    dryrun.would(
+                        "resume AG card %s for %s/%s",
+                        tracked.ag_card_id, tracked.pacs_person_id,
+                        tracked.pacs_credential_id,
+                    )
+                    continue
                 ag.access_cards.resume(card_id=tracked.ag_card_id)
                 tracking.update_status(
                     tracked.pacs_person_id, tracked.pacs_credential_id,

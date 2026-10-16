@@ -60,6 +60,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from .... import dryrun
 from ..base import (
     ConnectionResult,
     Credential,
@@ -741,6 +742,12 @@ class MillenniumUltraAdapter:
             return False
         if not changed:
             return True
+        if dryrun.active():
+            dryrun.would(
+                "set cardholder %s credential %s to %s",
+                pid, credential_id, "active" if want_active else "inactive",
+            )
+            return True
         ok = self._client.save_cardholder(pid, form)
         if ok:
             self._drop_profile(pid, "changing a card's Active box")
@@ -879,6 +886,16 @@ class MillenniumUltraAdapter:
                 "facility_code": str(identity.site_code),
             })
 
+        if dryrun.active():
+            dryrun.would(
+                "write %d credential(s) into cardholder %s: %s",
+                len(pending), pid,
+                ", ".join(f"{i.site_code}/{i.card_number}" for i in pending),
+            )
+            # The ledger is not recorded either: it would then name cards
+            # that are not on the cardholder, which is how a later cycle
+            # decides a pass has been revoked.
+            return True
         if not self._client.save_cardholder(pid, form):
             return False
         SeosLedger.record(pid, credential_id, written)
@@ -1036,6 +1053,12 @@ class MillenniumUltraAdapter:
                 "AccessGrid deleted it",
                 key[0], key[1], slot.index, pid,
             )
+            if dryrun.active():
+                dryrun.would(
+                    "delete card %s/%s from slot %d of cardholder %s",
+                    key[0], key[1], slot.index, pid,
+                )
+                continue
             if not self._client.delete_card(pid, slot.card_id, token):
                 logger.error(
                     "Millennium: delete refused for card %s/%s on cardholder %s",

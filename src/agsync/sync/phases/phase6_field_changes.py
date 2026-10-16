@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from .. import tracking
 from ..snapshot import Snapshot
@@ -61,6 +62,12 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                     "  Updating AG card %s — %s",
                     tracked.ag_card_id, ", ".join(changes.keys()),
                 )
+                if dryrun.active():
+                    dryrun.would(
+                        "update AG card %s — %s",
+                        tracked.ag_card_id, ", ".join(changes.keys()),
+                    )
+                    continue
                 ag.access_cards.update(card_id=tracked.ag_card_id, **changes)
                 updated += 1
             except AccessGridError as e:

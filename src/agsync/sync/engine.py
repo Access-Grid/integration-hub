@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .. import dryrun
 from ..ag import PROTOCOL_SEOS, template_protocol
 from ..ag import build_client as build_ag_client
 from ..lib.pacs import PacsAuthExpired, get_descriptor
@@ -349,6 +350,14 @@ class SyncEngine:
             self._cycle_lock.release()
 
     def _run_one_cycle_locked(self) -> CycleResult:
+        if dryrun.active():
+            # Said once per cycle rather than at startup: an operator
+            # reading a log that shows nothing happening should not have to
+            # scroll back to the beginning of the run to find out why.
+            logger.info(
+                "%s this cycle will report what it would do and change "
+                "nothing. Set AG_SYNC_DRY_RUN=false to act.", dryrun.PREFIX,
+            )
         started_at = datetime.now(UTC).isoformat(timespec="seconds")
         start_ms = time.time()
         result = CycleResult(started_at=started_at, duration_ms=0)
