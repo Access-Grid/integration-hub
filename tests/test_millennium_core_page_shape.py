@@ -139,3 +139,77 @@ def test_a_slot_that_is_not_rendered_at_all_is_not_an_error(millennium_page):
         page = _strip(page, f"Card_3_{field}")
 
     _check_slot_shape(CardholderForm.parse(page), "Card_3_")
+
+
+# =====================================================================
+# What we send back, against a real Core save
+# =====================================================================
+
+# The Card_1 block of a live update POST to hosted105, captured from the
+# browser on 2026-10-16 (cardholder 12478). The order is the page's own, so
+# this is really an assertion that we echo the form rather than rebuild it
+# from our own idea of the shape.
+CORE_CARD_BLOCK = (
+    "CardID",
+    "PrintedCardNumber",
+    "ActivationDate",
+    "Active",
+    "EncodedCardNumber",
+    "ExpirationDate",
+    "FacilityCode",
+    "CardFormat",
+    "BadgeType",
+    "CardClass",
+    "PinCode",
+    "IssueCode",
+    "CardExpirationCount",
+    "Tenant_0",
+    "AccessLevels",
+)
+
+
+def _submitted_names(form: CardholderForm) -> list[str]:
+    _content_type, body = form.to_multipart()
+    return re.findall(r'name="([^"]+)"', body.decode("utf-8", "replace"))
+
+
+def test_a_saved_card_matches_the_shape_core_sends(form):
+    form.set_checked("Card_1_Active", True)
+
+    names = _submitted_names(form)
+    block = [n.removeprefix("Card_1_") for n in names if n.startswith("Card_1_")]
+
+    assert block == list(CORE_CARD_BLOCK)
+
+
+def test_an_inactive_card_omits_the_checkbox(form):
+    """Unchecked checkboxes are not submitted, which is why Active is the
+    one field whose presence varies between two otherwise identical saves."""
+    form.set_checked("Card_1_Active", False)
+
+    assert "Card_1_Active" not in _submitted_names(form)
+
+
+def test_a_checked_box_is_submitted_as_the_browser_submits_it(form):
+    form.set_checked("Card_1_Active", True)
+
+    _content_type, body = form.to_multipart()
+    text = body.decode("utf-8", "replace")
+    assert re.search(r'name="Card_1_Active"\r\n\r\ntrue\r\n', text)
+
+
+def test_the_antiforgery_token_goes_where_the_page_puts_it(millennium_page):
+    """Core renders it last; the build before it rendered it first. Nothing
+    here should know or care, because the form is echoed in page order."""
+    moved = millennium_page.replace(
+        '<input name="__RequestVerificationToken" type="hidden" value="PAGE-TOKEN" />',
+        "", 1,
+    ).replace(
+        "</form>",
+        '<input name="__RequestVerificationToken" type="hidden" value="PAGE-TOKEN" />'
+        "</form>", 1,
+    )
+
+    names = _submitted_names(CardholderForm.parse(moved))
+
+    assert names[-1] == "__RequestVerificationToken"
