@@ -1559,6 +1559,45 @@ class MillenniumUltraAdapter:
             # that slot's nothing, so a holder's phone opened every door and
             # their watch opened none.
             form.set_value(f"Card_{slot}_AccessLevels", access_levels)
+
+        # Millennium requires both dates on an active card — the page marks
+        # them conditionalrequired on Card_N_Active — and ticking Active
+        # without them is answered with its generic "System is temporarily
+        # unavailable" page rather than a validation message. Every cycle,
+        # for as long as the marker exists, read on this side as a bad
+        # field nobody could name.
+        #
+        # An activation date we can supply: it is ours to choose and the
+        # identity usually carries one. An expiry we cannot. Phase 3
+        # deletes a pass whose card has expired, so inventing one would
+        # revoke a working pass on a date nobody set — see
+        # test_no_expiry_is_invented_for_a_card_millennium_left_blank.
+        #
+        # So a slot with no expiry is written, and left inactive, and said
+        # out loud. One line an operator can act on beats a save refused
+        # forever for a reason nothing reports.
+        activation = f"Card_{slot}_ActivationDate"
+        if not form.value(activation):
+            form.set_value(
+                activation,
+                format_datetime(
+                    identity.activate_date or datetime.now(UTC),
+                    self._offset_seconds,
+                ),
+            )
+        if not form.value(f"Card_{slot}_ExpirationDate"):
+            logger.warning(
+                "Millennium: slot %d holds no expiration date, so card %s/%s "
+                "is written inactive — Millennium refuses an active card "
+                "without one. Give that card an expiry and it activates on "
+                "the next cycle.",
+                slot, identity.site_code, identity.card_number,
+            )
+            # Unticked, not merely left alone: the marker we are
+            # overwriting may already be active, and echoing that back
+            # beside a changed card number is the same invalid save.
+            form.set_checked(f"Card_{slot}_Active", False)
+            return
         form.set_checked(f"Card_{slot}_Active", True)
 
     def _backing_off(self, pid: str) -> bool:
