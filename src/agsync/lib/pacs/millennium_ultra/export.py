@@ -75,6 +75,11 @@ class ExportedCardholder:
     email: str
     phone: str
     slots: tuple[ExportedSlot, ...]
+    # The third of the three columns the import matches a row on. Blank for
+    # every row this install has produced, which is exactly why it is read
+    # and carried rather than assumed away: it is part of the key whether or
+    # not it holds anything. See import_rows.Identity.
+    card_type: str = ""
 
     def carries_format(self, display_name: str) -> bool:
         return any(s.card_format == display_name for s in self.slots)
@@ -122,6 +127,7 @@ def parse(csv_text: str, slots: tuple[int, ...] = (1, 2, 3)) -> list[ExportedCar
             ExportedCardholder(
                 first_name=(row.get("First Name") or "").strip(),
                 last_name=(row.get("Last Name") or "").strip(),
+                card_type=(row.get("Card Type") or "").strip(),
                 employee_id=(row.get("Employee ID") or "").strip(),
                 email=(row.get("E-Mail") or "").strip(),
                 phone=(row.get("Phone") or "").strip(),

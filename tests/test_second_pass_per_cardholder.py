@@ -51,7 +51,9 @@ def _page(millennium_page, set_slot, slots):
 
 def _adapter(make_millennium_adapter, millennium_page, set_slot, slots):
     client = FakeMillenniumClient(
-        roster=ROSTER, pages={PID: _page(millennium_page, set_slot, slots)}
+        roster=ROSTER,
+        pages={PID: _page(millennium_page, set_slot, slots)},
+        export=True,
     )
     adapter = make_millennium_adapter(
         client, mode=MODE_SEOS, trigger_card_format=TRIGGER
@@ -151,14 +153,22 @@ def test_the_first_passes_card_survives_the_second_being_issued(
         CredentialIdentity("99", "90"), CredentialIdentity("99", "91"),
     ]) is True
 
-    form = client.saved[-1][1]
-    assert form.value("Card_2_EncodedCardNumber") == "74", "pass A untouched"
-    assert form.value("Card_2_CardID") == "8100"
-    # The marker is consumed, keeping its CardID so the id stays put, and the
-    # empty slot takes the other half of the pair.
-    assert form.value("Card_3_EncodedCardNumber") == "90"
-    assert form.value("Card_3_CardID") == "8200"
-    assert form.value("Card_1_EncodedCardNumber") == "91"
+    # Pass A is untouched because its slot is not in the file. The import
+    # carries only the slots being written, so "untouched" stops being
+    # something the round-trip has to get right and becomes something the
+    # file cannot express.
+    csv_text = client.imported_csv[-1]
+    assert "Card 2 Encoded Card No." not in csv_text, "pass A untouched"
+    assert "74" not in csv_text
+    # The marker is consumed and the empty slot takes the other half of the
+    # pair. There is no CardID column: a value in Card N's columns is that
+    # slot's card, whichever card happens to be in it.
+    assert "Card 3 Encoded Card No." in csv_text
+    assert "Card 1 Encoded Card No." in csv_text
+    rows = client.imported[-1]
+    assert len(rows) == 1
+    written = {s.index: s.card_number for s in rows[0].slots}
+    assert written == {3: "90", 1: "91"}
 
 
 def test_each_pass_keeps_its_own_record(
@@ -210,9 +220,12 @@ def test_the_status_write_finds_the_right_slots(
         PID, "seos-card8200", CredentialStatus.AWAITING_INSTALL
     ) is True
 
-    form = client.saved[-1][1]
-    assert form.is_checked("Card_3_Active") is False, "B's card goes off"
-    assert form.is_checked("Card_2_Active") is True, "A's card stays on"
+    rows = client.imported[-1]
+    assert len(rows) == 1
+    states = {s.index: s.active for s in rows[0].slots}
+    assert states == {3: False}, "B's card goes off, and only B's is in the file"
+    # A's card stays on by not being mentioned at all.
+    assert "Card 2 Active" not in client.imported_csv[-1]
 
 
 # =====================================================================

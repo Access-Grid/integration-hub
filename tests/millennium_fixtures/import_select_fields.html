@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<!--
+  The field-selection page Millennium answers an import upload with, as
+  captured from hosted105.mgiaccess.com on 2026-10-16.
+
+  Faithful in the two things the parser depends on: the ids on the three
+  <div class="list-group"> lists, and the data-* attributes on each <a>.
+  The uploaded CSV in that capture carried the header row
+  "First Name,Last Name,Card Type,EmployeeID" — the first three auto-paired
+  into #configured_fields against the sentinel data-id="1", and EmployeeID
+  was left loose in #available_fields with data-user-column-id="3".
+
+  Trimmed in one place only: Access Levels 2-10 and their activation and
+  expiration dates are omitted per card. They follow the same pattern as
+  Access Level 1 (ids 200+n, 456+n, 712+n) and the parser does not treat
+  them differently. Everything else is the full list the install returned.
+-->
+<html lang="en">
+    <head>
+        <meta charset="utf-8"/>
+        <title>Import Cardholders - Millennium Ultra</title>
+    </head>
+    <body>
+        <div class="wrapper">
+            <div class="body-content">
+                <div class="container-fluid margin-top-20">
+                    <form method="post" id="myForm" role="form" class="form-horizontal">
+                        <div class="form-group">
+                            <div class="col-xs-7">
+                                <div class="panel panel-default">
+                                    <div class="panel-heading">Data import rules</div>
+                                    <div class="panel-body">
+                                        <div class="radio pull-left checkBoxLine" id="exportFormat">
+                                            <label class="control-label">
+                                                <input type="radio" name="ImportRules" value="1">Do not update matched records - add new only
+                                            </label>
+                                        </div>
+                                        <div class="radio pull-left checkBoxLine" id="exportFormat">
+                                            <label class="control-label">
+                                                <input type="radio" name="ImportRules" value="2">Only update matched records - do not add new
+                                            </label>
+                                        </div>
+                                        <div class="radio pull-left checkBoxLine" id="exportFormat">
+                                            <label class="control-label">
+                                                <input type="radio" name="ImportRules" value="3" checked>Update existing records when matched - plus add new
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="panel panel-default">
+                            <div class="panel-heading">Data fields to import</div>
+                            <div class="panel-body panelNoVerticalPadding">
+                                <div class="row">
+                                    <div class="col-xs-6">
+                                        <label class="control-label">Available User Data Fields</label>
+                                        <div class="list-group fields-list" id="available_fields">
+                                            <a class="list-group-item" href="#" data-left="yes" data-user-column-id="3">EmployeeID</a>
+                                        </div>
+                                    </div>
+                                    <div class="col-xs-6">
+                                        <label class="control-label">System Data Fields</label>
+                                        <div class="list-group fields-list" id="selected_fields">
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="4" data-card="0" data-tenant-id="0">Employee ID</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="5" data-card="0" data-tenant-id="0">Sex</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="6" data-card="0" data-tenant-id="0">Address 1</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="7" data-card="0" data-tenant-id="0">Address 2</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="8" data-card="0" data-tenant-id="0">City</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="9" data-card="0" data-tenant-id="0">State</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="10" data-card="0" data-tenant-id="0">Zip</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="11" data-card="0" data-tenant-id="0">Phone</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="12" data-card="0" data-tenant-id="0">Birthday</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="13" data-card="0" data-tenant-id="0">E-Mail</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="14" data-card="0" data-tenant-id="0">Current Status</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="49" data-card="0" data-tenant-id="0">Car Name 1</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="50" data-card="0" data-tenant-id="0">Car Name 2</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="51" data-card="0" data-tenant-id="0">Car ID</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="52" data-card="0" data-tenant-id="0">Object Name 1</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="53" data-card="0" data-tenant-id="0">Object Name 2</a>
+                                            <a class="list-group-item" href="#" data-screen-number="1" data-id="54" data-card="0" data-tenant-id="0">Object ID</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="27" data-card="0" data-tenant-id="0">Primary Location</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="28" data-card="0" data-tenant-id="0">Department</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="29" data-card="0" data-tenant-id="0">Employee Class</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="30" data-card="0" data-tenant-id="0">Issue Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="31" data-card="0" data-tenant-id="0">Employment Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="32" data-card="0" data-tenant-id="0">Company E-Mail</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="33" data-card="0" data-tenant-id="0">Master Area</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="34" data-card="0" data-tenant-id="0">Internal Phone</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="35" data-card="0" data-tenant-id="0">Supervisor</a>
+                                            <a class="list-group-item" href="#" data-screen-number="3" data-id="36" data-card="0" data-tenant-id="0">Comments</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="37" data-card="0" data-tenant-id="0">ADA Shunt</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="38" data-card="0" data-tenant-id="0">Vehicle Make</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="39" data-card="0" data-tenant-id="0">Vehicle Model</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="40" data-card="0" data-tenant-id="0">Vehicle Color</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="41" data-card="0" data-tenant-id="0">License Plate No.</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="42" data-card="0" data-tenant-id="0">Badge Print Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="43" data-card="0" data-tenant-id="0">Re-issue Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="44" data-card="0" data-tenant-id="0">Parking Designation</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="45" data-card="0" data-tenant-id="0">Parking Floor</a>
+                                            <a class="list-group-item" href="#" data-screen-number="4" data-id="46" data-card="0" data-tenant-id="0">Parking Space</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="15" data-card="1" data-tenant-id="0">Card 1 Printed Card No.</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="16" data-card="1" data-tenant-id="0">Card 1 Encoded Card No.</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="17" data-card="1" data-tenant-id="0">Card 1 Activation Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="18" data-card="1" data-tenant-id="0">Card 1 Expiration Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="19" data-card="1" data-tenant-id="0">Card 1 Active</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="20" data-card="1" data-tenant-id="0">Card 1 Card Format</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="21" data-card="1" data-tenant-id="0">Card 1 Facility Code</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="22" data-card="1" data-tenant-id="0">Card 1 Badge Type</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="23" data-card="1" data-tenant-id="0">Card 1 Card Class</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="24" data-card="1" data-tenant-id="0">Card 1 PIN Code</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="25" data-card="1" data-tenant-id="0">Card 1 Issue Code</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="26" data-card="1" data-tenant-id="0">Card 1 AssaAbloy User Flag</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="200" data-card="1" data-tenant-id="0">Card 1 Access Level 1  [Global]</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="456" data-card="1" data-tenant-id="0">Card 1 Access Level 1 Activation Date  [Global]</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="712" data-card="1" data-tenant-id="0">Card 1 Access Level 1 Expiration Date  [Global]</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="15" data-card="2" data-tenant-id="0">Card 2 Printed Card No.</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="16" data-card="2" data-tenant-id="0">Card 2 Encoded Card No.</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="17" data-card="2" data-tenant-id="0">Card 2 Activation Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="18" data-card="2" data-tenant-id="0">Card 2 Expiration Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="19" data-card="2" data-tenant-id="0">Card 2 Active</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="20" data-card="2" data-tenant-id="0">Card 2 Card Format</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="21" data-card="2" data-tenant-id="0">Card 2 Facility Code</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="22" data-card="2" data-tenant-id="0">Card 2 Badge Type</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="23" data-card="2" data-tenant-id="0">Card 2 Card Class</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="24" data-card="2" data-tenant-id="0">Card 2 PIN Code</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="25" data-card="2" data-tenant-id="0">Card 2 Issue Code</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="26" data-card="2" data-tenant-id="0">Card 2 AssaAbloy User Flag</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="200" data-card="2" data-tenant-id="0">Card 2 Access Level 1  [Global]</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="456" data-card="2" data-tenant-id="0">Card 2 Access Level 1 Activation Date  [Global]</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="712" data-card="2" data-tenant-id="0">Card 2 Access Level 1 Expiration Date  [Global]</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="15" data-card="3" data-tenant-id="0">Card 3 Printed Card No.</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="16" data-card="3" data-tenant-id="0">Card 3 Encoded Card No.</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="17" data-card="3" data-tenant-id="0">Card 3 Activation Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="18" data-card="3" data-tenant-id="0">Card 3 Expiration Date</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="19" data-card="3" data-tenant-id="0">Card 3 Active</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="20" data-card="3" data-tenant-id="0">Card 3 Card Format</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="21" data-card="3" data-tenant-id="0">Card 3 Facility Code</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="22" data-card="3" data-tenant-id="0">Card 3 Badge Type</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="23" data-card="3" data-tenant-id="0">Card 3 Card Class</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="24" data-card="3" data-tenant-id="0">Card 3 PIN Code</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="25" data-card="3" data-tenant-id="0">Card 3 Issue Code</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="26" data-card="3" data-tenant-id="0">Card 3 AssaAbloy User Flag</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="200" data-card="3" data-tenant-id="0">Card 3 Access Level 1  [Global]</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="456" data-card="3" data-tenant-id="0">Card 3 Access Level 1 Activation Date  [Global]</a>
+                                            <a class="list-group-item" href="#" data-screen-number="2" data-id="712" data-card="3" data-tenant-id="0">Card 3 Access Level 1 Expiration Date  [Global]</a>
+                                            <a class="list-group-item" href="#" data-screen-number="0" data-id="769" data-card="0" data-tenant-id="0">Unit Number ONLY</a>
+                                            <a class="list-group-item" href="#" data-screen-number="0" data-id="770" data-card="0" data-tenant-id="0">Resident Type ONLY</a>
+                                            <a class="list-group-item" href="#" data-screen-number="0" data-id="771" data-card="0" data-tenant-id="0">Guest Info</a>
+                                            <a class="list-group-item" href="#" data-screen-number="0" data-id="10001" data-card="0" data-tenant-id="0">Image</a>
+                                            <a class="list-group-item" href="#" data-screen-number="0" data-id="10002" data-card="0" data-tenant-id="0">Sign</a>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="panel panel-default margin-top-20">
+                                    <div class="panel-heading">Import Data Fields</div>
+                                    <div class="panel-body panelNoVerticalPadding">
+                                        <div class="list-group fields-list" id="configured_fields">
+                                            <a class="list-group-item col-xs-6" data-left="yes" href="#" data-user-column-id="0">First Name</a>
+                                            <a class="list-group-item col-xs-6" href="#" data-screen-number="0" data-id="1" data-card="0" data-tenant-id="0"></a>
+                                            <a class="list-group-item col-xs-6" data-left="yes" href="#" data-user-column-id="1">Last Name</a>
+                                            <a class="list-group-item col-xs-6" href="#" data-screen-number="0" data-id="1" data-card="0" data-tenant-id="0"></a>
+                                            <a class="list-group-item col-xs-6" data-left="yes" href="#" data-user-column-id="2">Card Type</a>
+                                            <a class="list-group-item col-xs-6" href="#" data-screen-number="0" data-id="1" data-card="0" data-tenant-id="0"></a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <input data-val="true" id="FileName" name="FileName" type="hidden" value="millenium-import.csv"/>
+                        <input data-val="true" id="FileFormat" name="FileFormat" type="hidden" value="1"/>
+                        <input data-val="true" id="FieldHeaders" name="FieldHeaders" type="hidden" value="true"/>
+                        <input name="__RequestVerificationToken" type="hidden" value="CfDJ8-TEST-TOKEN-SelectFields"/>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

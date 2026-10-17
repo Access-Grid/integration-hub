@@ -66,8 +66,12 @@ class FakeMillenniumClient:
     genuine markup rather than a hand-written approximation.
     """
 
-    def __init__(self, roster=None, pages=None, formats=None):
+    def __init__(self, roster=None, pages=None, formats=None, export=False):
         self._roster = roster or []
+        # Off unless asked for, so a suite about the A-Z sweep keeps getting
+        # the sweep. The adapter only falls back to it when the export is
+        # unavailable, and that fallback is what those tests are about.
+        self._export = export
         self._pages = pages or {}  # cardholder id -> html
         self._formats = formats or [("1", "Wiegand Card"), ("7", "HID 37")]
         self.saved: list[tuple[str, object]] = []
@@ -76,6 +80,11 @@ class FakeMillenniumClient:
         self.number_free = True
         self.deleted: list[tuple[str, str]] = []
         self.delete_result = True
+        # Import rows, and the CSV each call would have uploaded.
+        self.imported: list[list] = []
+        self.imported_csv: list[str] = []
+        self.import_result = True
+        self.import_log = ""
 
     def list_cardholders(self):
         return self._roster
@@ -97,6 +106,101 @@ class FakeMillenniumClient:
             "facility_code": facility_code, "card_format": card_format,
         })
         return self.number_free
+
+    # The real export's columns, in the order the install emits them. The
+    # fixed trio comes first and is what the import matches a row on.
+    _EXPORT_SLOT_COLUMNS = (
+        "Printed Card No.", "Encoded Card No.", "Activation Date",
+        "Expiration Date", "Active", "Card Format", "Facility Code",
+        "Badge Type",
+    )
+
+    def export_cardholders(self):
+        """A CSV in the shape the real export produces, from this fake's own
+        roster and pages.
+
+        Worth deriving rather than stubbing: the adapter builds its "which
+        names identify exactly one cardholder" map out of the export, and the
+        write path refuses to act on a name that map does not carry. A fake
+        that returned nothing would make every write in every test fail for a
+        reason that has nothing to do with what the test is about — and a fake
+        that returned a fixed string would let a genuine name collision pass
+        unnoticed.
+
+        Names come from the roster, parsed the same way the adapter parses
+        them, so the join by name is the real one. Slots come from the
+        served page, so a cardholder carrying the trigger format in the
+        fixture carries it in the export too.
+        """
+        if not self._export:
+            raise RuntimeError("this fake has no export (pass export=True)")
+        import csv as _csv
+        import io as _io
+
+        from agsync.lib.pacs.millennium_ultra.adapter import (
+            DATE_FORMAT,
+            _read_slots,
+            parse_roster_name,
+        )
+        from agsync.lib.pacs.millennium_ultra.client import CARD_SLOTS
+        from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
+
+        labels = dict(self._formats)
+        header = [
+            "First Name", "Last Name", "Card Type", "Employee ID", "Phone",
+            "E-Mail", "Current Status",
+        ]
+        for index in CARD_SLOTS:
+            header += [f"Card {index} {c}" for c in self._EXPORT_SLOT_COLUMNS]
+
+        buffer = _io.StringIO(newline="")
+        writer = _csv.DictWriter(
+            buffer, fieldnames=header, restval="", lineterminator="\r\n"
+        )
+        writer.writeheader()
+        for entry in self._roster:
+            pid = str(entry["ID"])
+            first, last = parse_roster_name(entry.get("Name", ""))
+            record = {"First Name": first, "Last Name": last, "Card Type": ""}
+            html = self._pages.get(pid)
+            if html:
+                for slot in _read_slots(CardholderForm.parse(html), 0):
+                    if slot.empty:
+                        continue
+                    record[f"Card {slot.index} Encoded Card No."] = slot.card_number
+                    record[f"Card {slot.index} Facility Code"] = slot.facility_code
+                    # The export prints the format's display name, not the id.
+                    record[f"Card {slot.index} Card Format"] = labels.get(
+                        slot.card_format, ""
+                    )
+                    record[f"Card {slot.index} Active"] = str(slot.active)
+                    if slot.activation:
+                        record[f"Card {slot.index} Activation Date"] = (
+                            slot.activation.strftime(DATE_FORMAT)
+                        )
+                    if slot.expiration:
+                        record[f"Card {slot.index} Expiration Date"] = (
+                            slot.expiration.strftime(DATE_FORMAT)
+                        )
+            writer.writerow(record)
+        return buffer.getvalue()
+
+    def import_cardholders(self, rows):
+        """Record the rows, and the CSV they render to.
+
+        The CSV is built with the real writer so a test can assert on the
+        file that would go on the wire — which is the whole point of the
+        import path being a pure function of its rows.
+        """
+        from agsync.lib.pacs.millennium_ultra import import_rows as _import_rows
+        from agsync.lib.pacs.millennium_ultra.client import ImportOutcome
+
+        rows = list(rows)
+        self.imported.append(rows)
+        self.imported_csv.append(_import_rows.to_csv(rows) if rows else "")
+        return ImportOutcome(
+            ok=self.import_result, rows=len(rows), log=self.import_log
+        )
 
     def save_cardholder(self, cardholder_id, form):
         self.saved.append((str(cardholder_id), form))
