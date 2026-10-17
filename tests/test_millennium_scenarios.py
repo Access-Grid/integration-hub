@@ -55,14 +55,42 @@ def _enrolled_page(millennium_page, set_slot, *, written=None, active=True):
 
 
 def _adapter(make_millennium_adapter, page, **kw):
-    client = FakeMillenniumClient(roster=ROSTER, pages={"11587": page})
-    return make_millennium_adapter(client, mode=MODE_SEOS, **kw), client
+    client = FakeMillenniumClient(roster=ROSTER, pages={"11587": page}, export=True)
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS, **kw)
+    # The roster read every cycle opens with, and which the write path
+    # depends on: the import addresses a cardholder by name, and this is
+    # where the adapter works out which names are unambiguous.
+    list(adapter.list_people())
+    return adapter, client
 
 
 def _posted(client):
     """The form Millennium was last asked to save."""
     assert client.saved, "expected a save"
     return client.saved[-1][1]
+
+
+def _written_card(client, slot: int):
+    """The card number the last import put in that slot, or None if it was
+    not in the file."""
+    assert client.imported, "expected an import"
+    for written in client.imported[-1][-1].slots:
+        if written.index == slot:
+            return written.card_number
+    return None
+
+
+def _written_active(client, slot: int):
+    """Whether the last import switched that slot's card on or off.
+
+    None means the slot was not in the file at all — which under the import
+    is how a card is left alone, there being no round-trip to preserve.
+    """
+    assert client.imported, "expected an import"
+    for written in client.imported[-1][-1].slots:
+        if written.index == slot:
+            return written.active
+    return None
 
 
 def _credential(adapter, credential_id="seos"):
@@ -153,7 +181,7 @@ def test_s2_millennium_honours_awaiting_install(
     assert adapter.update_credential_status(
         "11587", "seos", CredentialStatus.AWAITING_INSTALL,
     ) is True
-    assert _posted(client).is_checked("Card_2_Active") is False
+    assert _written_active(client, 2) is False
 
 
 def test_s2_the_gate_deactivates_through_the_real_adapter(
@@ -183,7 +211,7 @@ def test_s2_the_gate_deactivates_through_the_real_adapter(
     ag = SimpleNamespace(access_cards=SimpleNamespace(get=lambda cid: uninstalled))
 
     assert phase4_ag_to_local._hold_uninstalled_inactive(snap, adapter, ag) == 1
-    assert _posted(client).is_checked("Card_2_Active") is False
+    assert _written_active(client, 2) is False
 
 
 def test_s3_an_operator_ticking_active_early_is_corrected(
@@ -200,8 +228,8 @@ def test_s3_an_operator_ticking_active_early_is_corrected(
         assert adapter.update_credential_status(
             "11587", "seos", CredentialStatus.AWAITING_INSTALL,
         ) is True
-    assert len(client.saved) == 2
-    assert _posted(client).is_checked("Card_2_Active") is False
+    assert len(client.imported) == 2
+    assert _written_active(client, 2) is False
 
 
 # =====================================================================
@@ -221,9 +249,8 @@ def test_s4_phone_and_watch_land_in_separate_slots(
         CredentialIdentity("66", "1243", datetime(2026, 9, 1, tzinfo=UTC), None),
     ]) is True
 
-    _, body = _posted(client).to_multipart()
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n1238\r\n' in body
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n1243\r\n' in body
+    assert _written_card(client, 1) == "1238"
+    assert _written_card(client, 2) == "1243"
     assert sorted(
         e["card_number"] for e in SeosLedger.get("11587", "seos")
     ) == ["1238", "1243"]
@@ -246,10 +273,12 @@ def test_s4_the_watch_is_written_on_a_later_cycle_than_the_phone(
     assert adapter2.write_back_credentials("11587", "seos", [
         CredentialIdentity("66", "1238"), CredentialIdentity("66", "1243"),
     ]) is True
-    _, body = _posted(client2).to_multipart()
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n1243\r\n' in body
-    # The phone's card is left exactly where it is.
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n1238\r\n' in body
+    assert _written_card(client2, 2) == "1243"
+    # The phone's card is left where it is by not being written at all. Under
+    # the form save this had to be echoed back correctly; the import simply
+    # does not carry that slot.
+    assert _written_card(client2, 1) is None
+    assert "1238" not in client2.imported_csv[-1]
 
 
 # =====================================================================
@@ -260,11 +289,16 @@ def test_s4_the_watch_is_written_on_a_later_cycle_than_the_phone(
 def test_s5_overwriting_the_marker_leaves_the_rest_of_the_record_alone(
     make_millennium_adapter, millennium_page, set_slot, seos_ledger
 ):
-    """The safety property behind the full-form round trip.
+    """The safety property the full-form round trip existed to protect.
 
-    Millennium's save replaces the whole cardholder, so a field we fail to
-    echo is a field we erase. Access levels and user fields belong to the
-    customer and must come back untouched.
+    Millennium's cardholder save replaces the whole record, so a field we
+    failed to echo was a field we erased — which is why the form had to be
+    parsed and replayed in full. The import inverts that: it applies the
+    columns the file carries and leaves the record alone, so the property
+    holds because there is nothing to preserve.
+
+    Asserted on the file rather than on a round-tripped form, because that
+    is now where the guarantee lives.
     """
     page = _enrolled_page(millennium_page, set_slot)
     adapter, client = _adapter(make_millennium_adapter, page)
@@ -272,15 +306,20 @@ def test_s5_overwriting_the_marker_leaves_the_rest_of_the_record_alone(
     from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
     before = CardholderForm.parse(page)
     adapter.write_back_credentials("11587", "seos", [CredentialIdentity("66", "1238")])
-    after = _posted(client)
 
-    untouched = [
-        name for name in ("FirstName", "LastName", "AccessLevelsAsJson", "TenantsAsJson")
+    csv_text = client.imported_csv[-1]
+    customers = [
+        name for name in ("AccessLevelsAsJson", "TenantsAsJson", "Card_1_AccessLevels")
         if before.find(name) is not None
     ]
-    assert untouched, "fixture should carry fields we must not disturb"
-    for name in untouched:
-        assert after.value(name) == before.value(name), name
+    assert customers, "fixture should carry fields we must not disturb"
+    for name in customers:
+        assert name not in csv_text, name
+    # The only columns in the file are the identity the row is matched on and
+    # the slot being written.
+    header = csv_text.split("\r\n")[0].split(",")
+    assert header[:3] == ["First Name", "Last Name", "Card Type"]
+    assert all(c.startswith("Card 1 ") for c in header[3:]), header
 
 
 # =====================================================================
@@ -344,6 +383,7 @@ def test_s9_the_detail_page_name_beats_the_roster_name(
         # says FirstName=Access LastName=Grid.
         roster=[{"ID": 11587, "IsActive": True, "Name": "Stalename, Oldfirst"}],
         pages={"11587": page},
+        export=True,
     )
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
 
@@ -500,7 +540,7 @@ def test_s6_suspending_the_pass_deactivates_the_card(
     cred = _credential(adapter)
 
     assert _gate(adapter, cred, _installed_pass("suspended"), monkeypatch) == 1
-    assert _posted(client).is_checked("Card_2_Active") is False
+    assert _written_active(client, 2) is False
 
 
 def test_s7_resuming_the_pass_reactivates_the_card(
@@ -515,7 +555,7 @@ def test_s7_resuming_the_pass_reactivates_the_card(
     cred = _credential(adapter)
 
     assert _gate(adapter, cred, _installed_pass("active"), monkeypatch) == 1
-    assert _posted(client).is_checked("Card_2_Active") is True
+    assert _written_active(client, 2) is True
 
 
 def test_s6_a_suspended_pass_is_not_reactivated_by_being_installed(
@@ -556,7 +596,7 @@ def test_s6_a_pass_whose_cards_are_all_gone_deactivates_the_card(
 
     dead = _installed_pass("deleted")
     assert _gate(adapter, cred, dead, monkeypatch) == 1
-    assert _posted(client).is_checked("Card_2_Active") is False
+    assert _written_active(client, 2) is False
 
 
 # =====================================================================
@@ -799,8 +839,12 @@ def test_no_expiry_is_invented_for_a_card_millennium_left_blank(
         ),
     ]) is True
 
-    posted = _posted(client)
-    assert posted.value("Card_1_ExpirationDate") == ""
+    # There is no expiration column at all, so there is nothing to stamp a
+    # date into. The card goes in inactive instead, because Millennium
+    # refuses an active card without one.
+    csv_text = client.imported_csv[-1]
+    assert "Expiration" not in csv_text
+    assert _written_active(client, 1) is False
     # And the credential therefore reports no end date, so nothing expires it.
     SeosLedger.record("11587", "seos", [
         {"slot": 1, "card_number": "1238", "facility_code": "66"},
@@ -823,4 +867,8 @@ def test_an_operators_own_expiry_survives_the_overwrite(
     adapter.write_back_credentials("11587", "seos", [
         CredentialIdentity("66", "1238", None, datetime(2027, 9, 1, tzinfo=UTC)),
     ])
-    assert _posted(client).value("Card_1_ExpirationDate") == "12/31/2027 11:00 PM"
+    # It survives by never being mentioned: the import has no expiration
+    # column, so the date an operator set cannot be overwritten by us. And
+    # because the slot has one, the card is written active.
+    assert "Expiration" not in client.imported_csv[-1]
+    assert _written_active(client, 1) is True

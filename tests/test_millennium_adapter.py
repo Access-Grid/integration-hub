@@ -33,6 +33,24 @@ def _client(pages: dict[str, str]) -> FakeMillenniumClient:
     return FakeMillenniumClient(roster=ROSTER, pages=pages)
 
 
+def _writable_client(pages: dict[str, str]) -> FakeMillenniumClient:
+    """A client that can be written to, which means one with an export.
+
+    The import matches a row on the cardholder's name, and the export is
+    what establishes which names identify exactly one record — so without it
+    the adapter declines to write at all. The suites about the A-Z sweep use
+    `_client` instead, because the sweep is what happens when there is no
+    export.
+    """
+    return FakeMillenniumClient(roster=ROSTER, pages=pages, export=True)
+
+
+def _imported(client) -> str:
+    """The CSV the one import of this test would have uploaded."""
+    assert len(client.imported_csv) == 1, client.imported_csv
+    return client.imported_csv[0]
+
+
 def _creds(adapter, person_id="11587"):
     list(adapter.list_people())  # populates the roster the profiles hang off
     return list(adapter.list_credentials(person_id))
@@ -133,15 +151,21 @@ def test_suspend_unchecks_active_and_leaves_the_card(
         card_id="7919", card_number="1234", facility_code="66",
         card_format=TRIGGER, active=True,
     )
-    client = _client({"11587": page})
+    client = _writable_client({"11587": page})
     adapter = make_millennium_adapter(client)
+    list(adapter.list_people())
     assert adapter.update_credential_status("11587", "slot1", CredentialStatus.SUSPENDED)
 
-    _, form = client.saved[0]
-    _, body = form.to_multipart()
-    assert b'name="Card_1_Active"' not in body      # omission is "inactive"
-    assert b'name="Card_1_CardID"\r\n\r\n7919\r\n' in body
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n1234\r\n' in body
+    # The import carries the one cell it means to change. The card's number
+    # and id are not in the file at all, which is a stronger guarantee than
+    # the form save could give: there, every field had to be echoed back
+    # correctly to survive, and here there is nothing to echo.
+    assert client.saved == []
+    csv_text = _imported(client)
+    assert "Card 1 Active" in csv_text
+    assert "False" in csv_text
+    assert "1234" not in csv_text
+    assert "7919" not in csv_text
 
 
 def test_resume_rechecks_active(make_millennium_adapter, millennium_page, set_slot):
@@ -150,11 +174,12 @@ def test_resume_rechecks_active(make_millennium_adapter, millennium_page, set_sl
         card_id="7919", card_number="1234", facility_code="66",
         card_format=TRIGGER, active=False,
     )
-    client = _client({"11587": page})
+    client = _writable_client({"11587": page})
     adapter = make_millennium_adapter(client)
+    list(adapter.list_people())
     assert adapter.update_credential_status("11587", "slot1", CredentialStatus.ACTIVE)
-    _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_1_Active"\r\n\r\ntrue\r\n' in body
+    assert "Card 1 Active" in _imported(client)
+    assert "True" in _imported(client)
 
 
 def test_status_write_is_skipped_when_already_correct(
@@ -165,7 +190,7 @@ def test_status_write_is_skipped_when_already_correct(
         card_id="7919", card_number="1234", facility_code="66",
         card_format=TRIGGER, active=True,
     )
-    client = _client({"11587": page})
+    client = _writable_client({"11587": page})
     adapter = make_millennium_adapter(client)
     assert adapter.update_credential_status("11587", "slot1", CredentialStatus.ACTIVE)
     assert client.saved == []
@@ -184,12 +209,17 @@ def test_access_levels_survive_a_status_write(
         page, 1, card_id="7919", card_number="1234", facility_code="66",
         card_format=TRIGGER, active=True,
     )
-    client = _client({"11587": page})
-    make_millennium_adapter(client).update_credential_status(
-        "11587", "slot1", CredentialStatus.SUSPENDED,
-    )
-    _, body = client.saved[0][1].to_multipart()
-    assert levels.encode() in body
+    client = _writable_client({"11587": page})
+    adapter = make_millennium_adapter(client)
+    list(adapter.list_people())
+    adapter.update_credential_status("11587", "slot1", CredentialStatus.SUSPENDED)
+
+    # They survive by not being mentioned. A column the import does not
+    # carry is a field it does not write, so there is no round-trip for a
+    # status change to get wrong — which is what this used to be about.
+    csv_text = _imported(client)
+    assert "AccessLevels" not in csv_text
+    assert "ALID" not in csv_text
 
 
 # --- Seos: AccessGrid mints, we write in --------------------------------
@@ -351,15 +381,17 @@ def test_seos_suspend_targets_the_written_slots(
         "11587", "seos",
         [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
     )
-    client = _client({"11587": page})
+    client = _writable_client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+    list(adapter.list_people())
     assert adapter.update_credential_status(
         "11587", "seos", CredentialStatus.SUSPENDED,
     )
-    _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_2_Active"' not in body
-    # The trigger card itself is the operator's, and stays as it was.
-    assert b'name="Card_1_Active"\r\n\r\ntrue\r\n' in body
+    csv_text = _imported(client)
+    assert "Card 2 Active" in csv_text
+    # The trigger card itself is the operator's. It is not in the file, so
+    # nothing this write does can reach it.
+    assert "Card 1 Active" not in csv_text
 
 
 # --- setup-time discovery ------------------------------------------------
@@ -437,7 +469,7 @@ def test_status_write_is_refused_for_a_slot_with_no_card(
         "11587", "seos",
         [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
     )
-    client = _client({"11587": page})
+    client = _writable_client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
     assert adapter.update_credential_status(
         "11587", "seos", CredentialStatus.ACTIVE,

@@ -70,7 +70,7 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
-from . import export
+from . import export, import_rows
 from .client import (
     ANTIFORGERY_COOKIE_PREFIX,
     CARD_SLOTS,
@@ -484,6 +484,14 @@ class MillenniumUltraAdapter:
         # The trigger format's display name, resolved once. "" means looked
         # for and not found; None means not looked for yet.
         self._trigger_format_label: str | None = None
+        # How the import names each cardholder, for the ids where that name
+        # is unambiguous. Rebuilt from the export every cycle and empty
+        # whenever the export did not run — see _identity_for.
+        self._import_identity: dict[str, import_rows.Identity] = {}
+        # Whether this cycle read an export at all. Without it the map is
+        # empty for a reason that has nothing to do with any one name, and
+        # saying so saves an operator looking for the wrong problem.
+        self._export_ran = False
         # Cardholders the ledger says we hold cards on, refreshed once per
         # cycle. Diagnostics use it to tell "a stranger we skipped" from
         # "somebody we have written a credential to and then lost sight of",
@@ -512,6 +520,8 @@ class MillenniumUltraAdapter:
 
     def list_people(self) -> Iterable[Person]:
         self._roster = {}
+        self._import_identity = {}
+        self._export_ran = False
         self._read_this_cycle = 0
         self._ours = {key.partition(":")[0] for key in SeosLedger.all()}
         roster = self._client.list_cardholders()
@@ -586,6 +596,8 @@ class MillenniumUltraAdapter:
         is still read and confirmed; this only decides *which* pages to
         read, never what is true about them.
         """
+        self._import_identity = {}
+        self._export_ran = False
         label = self._trigger_format_name()
         if not label:
             return None
@@ -617,6 +629,34 @@ class MillenniumUltraAdapter:
             ) or []:
                 if person.email or person.phone:
                     self._exported_contact[pid] = (person.email, person.phone)
+
+        # The import matches a row to a cardholder on name alone, so the
+        # write path needs to know which names identify exactly one record —
+        # on both sides. One export row and one roster entry for a name means
+        # a row carrying it lands where we read it. Anything else is withheld
+        # entirely rather than resolved to a first match: the import offers no
+        # way to say which of two people was meant, and the cost of guessing
+        # is a working credential on the wrong person's record.
+        self._export_ran = True
+        by_export: dict[tuple[str, str], list] = {}
+        for person in rows:
+            by_export.setdefault(
+                export.name_key(person.first_name, person.last_name), []
+            ).append(person)
+        for key, people in by_export.items():
+            ids = by_name.get(key) or []
+            if len(people) != 1 or len(ids) != 1:
+                continue
+            self._import_identity[ids[0]] = import_rows.Identity(
+                first_name=people[0].first_name,
+                last_name=people[0].last_name,
+                card_type=people[0].card_type,
+            )
+        logger.info(
+            "Millennium: %d of %d cardholder(s) are named unambiguously enough "
+            "to write to by import",
+            len(self._import_identity), len(rows),
+        )
 
         candidates: set[str] = set()
         carrying = unmatched = 0
@@ -863,7 +903,29 @@ class MillenniumUltraAdapter:
                 pid, credential_id, "active" if want_active else "inactive",
             )
             return True
-        ok = self._client.save_cardholder(pid, form)
+
+        # Through the import where we can: it carries one cell per slot
+        # instead of re-posting the whole record, so nothing else about the
+        # cardholder is in the file and nothing else about them can be
+        # touched by it. Where the import cannot address the row by name,
+        # the form save still can, by id.
+        identity = self._identity_for(pid)
+        if identity is None:
+            logger.info(
+                "Millennium: switching cardholder %s's card %s through the "
+                "cardholder form rather than the import",
+                pid, "on" if want_active else "off",
+            )
+            ok = self._client.save_cardholder(pid, form)
+        else:
+            row = import_rows.RowWrite(
+                identity=identity,
+                slots=tuple(
+                    import_rows.SlotWrite(index=index, active=want_active)
+                    for index in confirmed
+                ),
+            )
+            ok = self._client.import_cardholders([row]).ok
         if ok:
             SeosLedger.note_active(
                 pid, credential_id, dict.fromkeys(confirmed, want_active)
@@ -981,10 +1043,42 @@ class MillenniumUltraAdapter:
             )
             return False
 
+        # Which transport carries this write. The import names only the
+        # columns it changes, which is what makes it the safer of the two —
+        # but that same property is why it cannot do every write. Copying a
+        # sibling card's access levels into an empty slot needs the levels
+        # *stated*, and the import's access level columns take level names
+        # where the form gives us only numeric ids. So an install that puts
+        # access levels on its trigger cards keeps the form save for this one
+        # write, and gets exactly today's behaviour.
+        #
+        # The other two conditions are about being able to address the row at
+        # all: a name that identifies one record, and the card format's
+        # display name, which is what the import's drop-down column takes.
+        row_identity = self._identity_for(pid)
+        reasons = []
+        if levels:
+            reasons.append("the card's access levels have to be carried over")
+        if row_identity is None:
+            reasons.append("the cardholder cannot be addressed by name")
+        if not self._trigger_format_name():
+            reasons.append("the trigger format's display name is unknown")
+        use_import = not reasons
+        if not use_import:
+            logger.info(
+                "Millennium: writing cardholder %s through the cardholder form "
+                "rather than the import — %s",
+                pid, "; ".join(reasons),
+            )
+
+        by_index = {s.index: s for s in slots}
+        plan: list[import_rows.SlotWrite] = []
         for identity in pending:
             slot = free.pop(0)
             # Overwriting keeps the existing CardID so Millennium updates
             # that card rather than creating a second one in the same slot.
+            # The import has no CardID column and does not need one: a value
+            # in Card N's columns is that slot's card, whichever card that is.
             replacing = marker.card_id if marker and slot == marker.index else ""
             if not self._client.card_number_is_free(
                 slot, str(identity.card_number), str(identity.site_code),
@@ -995,9 +1089,12 @@ class MillenniumUltraAdapter:
                     identity.site_code, identity.card_number, pid,
                 )
                 return False
-            self._fill_slot(
-                form, slot, identity, card_id=replacing, access_levels=levels,
-            )
+            if use_import:
+                plan.append(self._slot_write(slot, identity, by_index.get(slot)))
+            else:
+                self._fill_slot(
+                    form, slot, identity, card_id=replacing, access_levels=levels,
+                )
             written.append({
                 "slot": slot,
                 "card_number": str(identity.card_number),
@@ -1014,7 +1111,14 @@ class MillenniumUltraAdapter:
             # that are not on the cardholder, which is how a later cycle
             # decides a pass has been revoked.
             return True
-        if not self._client.save_cardholder(pid, form):
+        if use_import:
+            assert row_identity is not None  # established by `reasons`
+            written_ok = self._client.import_cardholders(
+                [import_rows.RowWrite(identity=row_identity, slots=tuple(plan))]
+            ).ok
+        else:
+            written_ok = self._client.save_cardholder(pid, form)
+        if not written_ok:
             return False
         SeosLedger.record(pid, credential_id, written)
         self._drop_profile(pid, "writing credentials")
@@ -1490,6 +1594,101 @@ class MillenniumUltraAdapter:
                     f"{e.get('facility_code')}/{e.get('card_number')}" for e in ledger
                 ],
             },
+        )
+
+    def _identity_for(self, pid: str) -> import_rows.Identity | None:
+        """How the import should name this cardholder, or None to refuse.
+
+        The import has no column for the record id. It matches a row on First
+        Name, Last Name and Card Type, so those values have to come from the
+        same table it matches against — which is what the export is a dump
+        of. Round-tripping the export's own spelling is the only way to be
+        sure a row lands on the record we read it from.
+
+        None has one meaning and it is always the same: *we cannot prove a
+        row would land on the right person*. Either the export did not run
+        this cycle, or that name belongs to more than one record.
+
+        It is a routing answer, not a refusal. The cardholder save addresses
+        a record by its id and cannot land on the wrong person however badly
+        it is built, so None sends the write back through the form — which is
+        what this adapter did for every write until now. Declining outright
+        would leave 42% of this roster unserviceable to protect them from a
+        risk the fallback does not carry.
+        """
+        identity = self._import_identity.get(str(pid))
+        if identity is not None:
+            return identity
+        if not self._export_ran:
+            logger.info(
+                "Millennium: no bulk export this cycle, so cardholder %s cannot "
+                "be addressed by name",
+                pid,
+            )
+        else:
+            logger.info(
+                "Millennium: cardholder %s shares a name with another record, or "
+                "has none the export agrees on — the import matches on name and "
+                "would be guessing which one",
+                pid,
+            )
+        return None
+
+    def _slot_write(
+        self,
+        index: int,
+        identity: CredentialIdentity,
+        current: Slot | None,
+    ) -> import_rows.SlotWrite:
+        """One slot's worth of import columns for a card being written.
+
+        Narrower than the form save by design — a column we do not name is a
+        field the import leaves alone — and that turns two of this adapter's
+        scars into non-events:
+
+        * **The expiry is never sent.** Millennium owns that field, and the
+          form path had to echo it back untouched to avoid stamping a date
+          nobody chose onto the card. Here there is simply no column for it.
+        * **Access levels are never sent**, so a slot keeps its own. Right
+          for the marker we overwrite, which already holds the levels the
+          operator gave it. The caller is responsible for not routing a write
+          through here when levels have to be copied *into* an empty slot —
+          the import cannot express that, as its access level columns take
+          names and the form gives us only ids.
+
+        Active still follows the expiry, for the reason it always has:
+        Millennium refuses an active card with no expiration date, and
+        inventing one would have phase 3 revoke a working pass on a date
+        nobody set.
+        """
+        has_expiry = current is not None and current.expiration is not None
+        if not has_expiry:
+            logger.warning(
+                "Millennium: slot %d holds no expiration date, so card %s/%s is "
+                "written inactive — Millennium refuses an active card without "
+                "one. Give that card an expiry and it activates on the next "
+                "cycle.",
+                index, identity.site_code, identity.card_number,
+            )
+        return import_rows.SlotWrite(
+            index=index,
+            card_number=str(identity.card_number),
+            facility_code=str(identity.site_code),
+            # The display name, not the numeric id the trigger is configured
+            # as: the import's Card Format column is a drop-down and takes
+            # the same text the export prints.
+            card_format=self._trigger_format_name(),
+            # Only when the slot has none of its own. An empty slot needs one
+            # before Millennium will take the card; the marker already has
+            # whatever an operator set.
+            activation=(
+                None
+                if (current is not None and current.activation is not None)
+                else format_datetime(
+                    identity.activate_date or datetime.now(UTC), self._offset_seconds
+                )
+            ),
+            active=has_expiry,
         )
 
     def _slots_for_credential(

@@ -38,7 +38,7 @@ def adapter(make_millennium_adapter, millennium_page, set_slot, seos_ledger):
         )
         for index in (2, 3):
             page = set_slot(page, index, card_id="", card_number="", card_format=None)
-        client = FakeMillenniumClient(roster=ROSTER, pages={PID: page})
+        client = FakeMillenniumClient(roster=ROSTER, pages={PID: page}, export=True)
         built = make_millennium_adapter(
             client, mode=MODE_SEOS, trigger_card_format=TRIGGER
         )
@@ -123,7 +123,7 @@ def test_a_card_we_switched_off_is_ours_to_switch_on(adapter):
     installed, client = adapter(active=False)
 
     assert _set(installed, CredentialStatus.ACTIVE) is True
-    assert client.saved, "the hand-off still happens"
+    assert client.imported, "the hand-off still happens"
 
 
 def test_a_card_with_no_record_is_left_to_the_old_behaviour(adapter):
@@ -133,7 +133,7 @@ def test_a_card_with_no_record_is_left_to_the_old_behaviour(adapter):
     assert SeosLedger.last_written_active(PID, "seos") == {}
 
     assert _set(built, CredentialStatus.ACTIVE) is True
-    assert client.saved
+    assert client.imported
 
 
 def test_switching_off_is_never_refused(adapter):
@@ -146,7 +146,7 @@ def test_switching_off_is_never_refused(adapter):
     ticked_on, client = adapter(active=True)
 
     assert _set(ticked_on, CredentialStatus.AWAITING_INSTALL) is True
-    assert client.saved
+    assert client.imported
 
 
 def test_switching_off_an_already_off_card_is_not_refused(adapter):
@@ -191,7 +191,7 @@ def test_one_card_switched_off_stops_the_whole_credential(
         page = set_slot(page, 2, card_id="8967", card_number="226",
                         facility_code="99", card_format=TRIGGER, active=True)
         page = set_slot(page, 3, card_id="", card_number="", card_format=None)
-        client = FakeMillenniumClient(roster=ROSTER, pages={PID: page})
+        client = FakeMillenniumClient(roster=ROSTER, pages={PID: page}, export=True)
         built = make_millennium_adapter(
             client, mode=MODE_SEOS, trigger_card_format=TRIGGER
         )
@@ -311,7 +311,7 @@ def test_an_unknown_card_is_still_switched_on(adapter, seos_ledger):
     ])
 
     assert _set(built, CredentialStatus.ACTIVE) is True
-    assert client.saved, "the hand-off happened"
+    assert client.imported, "the hand-off happened"
 
 
 def test_a_known_slot_is_unaffected_by_an_unknown_one(seos_ledger):

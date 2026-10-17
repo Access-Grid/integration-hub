@@ -18,7 +18,7 @@ ROSTER = [{"ID": 11587, "IsActive": False, "Name": "Grid, Accessg"}]
 
 
 def _client(pages):
-    return FakeMillenniumClient(roster=ROSTER, pages=pages)
+    return FakeMillenniumClient(roster=ROSTER, pages=pages, export=True)
 
 
 def _page(millennium_page, set_slot, *, slot2=None, slot3=None, marker=False):
@@ -158,13 +158,15 @@ def test_suspending_follows_the_card_not_the_old_slot_number(
     page = _page(millennium_page, set_slot, slot3=("5001", True))
     client = _client({"11587": page})
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+    list(adapter.list_people())  # the import addresses rows by name
 
     assert adapter.update_credential_status(
         "11587", "seos", CredentialStatus.SUSPENDED,
     )
-    _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_3_Active"' not in body     # the card's current slot
-    assert b'name="Card_1_Active"\r\n\r\ntrue\r\n' in body  # trigger untouched
+    csv_text = client.imported_csv[0]
+    assert "Card 3 Active" in csv_text            # the card's current slot
+    assert "False" in csv_text
+    assert "Card 1 Active" not in csv_text        # trigger untouched
 
 
 def test_before_anything_is_written_the_pass_is_active(

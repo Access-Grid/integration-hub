@@ -58,9 +58,12 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
+import string
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
@@ -69,7 +72,9 @@ import httpx
 from .... import failed_saves
 from ..base import PacsAuthExpired
 from . import export as export_mod
+from . import import_rows
 from .html_form import CardholderForm, validation_errors
+from .import_fields import ImportFieldsUnavailable, SelectFieldsPage
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +86,37 @@ HTTP_TIMEOUT = 60.0
 # about the job being slow.
 EXPORT_TIMEOUT_S = 90.0
 EXPORT_POLL_INTERVAL_S = 1.0
+
+# The import is the write path, and it is a queued job like the export.
+# Given the same budget: it is the same machinery on the same install, and
+# the handful of rows a cycle writes is far less work than dumping 2,000.
+IMPORT_TIMEOUT_S = 90.0
+IMPORT_POLL_INTERVAL_S = 1.0
+
+# The job's name in Millennium's long-operation registry, and the only one
+# of the two spellings the import's status endpoint answers to.
+IMPORT_OPERATION = "CardholdersImport"
+
+# Millennium's three import rules, as the radio group on SelectFields
+# numbers them. Only the middle one is ever sent: this integration writes
+# cards onto cardholders an operator already created, and has no business
+# creating records in their system. It is also the rule that makes a failed
+# name match a no-op rather than a brand-new duplicate cardholder.
+RULE_ADD_NEW_ONLY = 1
+RULE_UPDATE_MATCHED_ONLY = 2
+RULE_UPDATE_AND_ADD = 3
+
+# Millennium's file-format enum. 1 is CSV.
+IMPORT_FORMAT_CSV = 1
+
+# The name the upload travels under. Only ever echoed back to us.
+IMPORT_FILENAME = "agsync-import.csv"
+
+# A single cycle writes a handful of cards. An import carrying far more than
+# that has misread something upstream, and unlike a cardholder save — which
+# can only ever damage the one record it addresses — an import applies every
+# row it is given. This is the blast radius, stated once.
+MAX_IMPORT_ROWS = 25
 
 # What to ask the export for. Images are the field that matters by its
 # absence: with them the job 504s outright on this install, which is what
@@ -226,6 +262,37 @@ _EXPORT_REQUEST = {
 # Only A-Z is swept: names starting with a digit, punctuation or an accented
 # character have no bucket of their own on this install.
 LETTER_CODES = tuple(range(ord("A"), ord("Z") + 1))
+
+
+@dataclass(frozen=True)
+class ImportOutcome:
+    """What a finished import run amounted to.
+
+    ``ok`` means **and is only ever set when** the job completed, Millennium
+    called it a success, *and* the import log came back empty.
+
+    That last condition is the load-bearing one, and it is deliberately
+    strict. The rule we send makes a row that matches no cardholder a skip
+    rather than an error, so Millennium reports an import that changed
+    nothing exactly as it reports one that changed everything: Success,
+    Completed, no Error. The log is the only place a skip appears.
+
+    Which way to be wrong is a real choice, so: treating a noisy log as a
+    failure can only cost us a retry, and the next cycle's read of the
+    cardholder reconciles it. Treating it as a success would have the ledger
+    record a card we never wrote — and the ledger is what later decides
+    whether an operator revoked something, so a false entry there reads as a
+    revocation and stops a working pass. One is loud and cheap; the other is
+    silent and takes a week to find.
+
+    An install whose log is chatty on a clean run would therefore show up as
+    writes that never record, every cycle, in the log and in the refused
+    saves tab. Visible and one line to fix, which is the point.
+    """
+
+    ok: bool
+    rows: int
+    log: str = ""
 
 
 class MillenniumError(RuntimeError):
@@ -554,8 +621,19 @@ class MillenniumUltraClient:
         )
         return response.content
 
-    def _post_json(self, path: str, payload: dict[str, Any]) -> Any:
-        """POST JSON the way the UI's own XHRs do, and read JSON back."""
+    def _post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        referer: str = "/DatabaseFunctions/ExportCardholders",
+    ) -> Any:
+        """POST JSON the way the UI's own XHRs do, and read JSON back.
+
+        The Referer is the screen whose button this stands in for. ASP.NET
+        does not check it, but the import and the export are different
+        screens and sending one's address for the other's request is the
+        kind of detail that makes a capture hard to compare against a log.
+        """
         self._pace()
         response = self._http.post(
             self._url(path),
@@ -565,7 +643,7 @@ class MillenniumUltraClient:
                 "Content-Type": "application/json",
                 "X-Requested-With": "XMLHttpRequest",
                 "Origin": self.base_url,
-                "Referer": self._url("/DatabaseFunctions/ExportCardholders"),
+                "Referer": self._url(referer),
             },
         )
         self._check_auth(response)
@@ -575,6 +653,284 @@ class MillenniumUltraClient:
             return response.json()
         except ValueError as e:
             raise MillenniumError(f"POST {path} did not answer JSON") from e
+
+
+    # -- bulk write ------------------------------------------------------
+
+    def import_cardholders(self, rows: list[import_rows.RowWrite]) -> ImportOutcome:
+        """Apply card changes through Millennium's cardholder import.
+
+        Four requests, in the order the UI makes them:
+
+          1. upload the CSV to ``ImportCardholders/SelectFields``, which
+             answers with the page naming the fields it understood;
+          2. start the job with the mapping read off that page;
+          3. poll the long-operation registry until it finishes;
+          4. fetch the log it leaves behind, which is empty on a clean run
+             and is the only place a skipped row is explained.
+
+        Always sent with ``RULE_UPDATE_MATCHED_ONLY``: a row whose name
+        matches nothing is skipped rather than turned into a new cardholder.
+
+        This replaces re-posting the cardholder form, and the difference
+        worth keeping in mind is what each one risks. A save addresses one
+        record and rewrites all of it. An import carries only the columns in
+        the file, but applies them to every row — so the file is capped at
+        :data:`MAX_IMPORT_ROWS`, and the caller is expected to have
+        established that each row's name matches exactly one cardholder.
+        """
+        if not rows:
+            return ImportOutcome(ok=True, rows=0, log="")
+        if len(rows) > MAX_IMPORT_ROWS:
+            raise MillenniumError(
+                f"Refusing to import {len(rows)} rows at once (the cap is "
+                f"{MAX_IMPORT_ROWS}) — a cycle that wants to change this many "
+                "cards has misread something"
+            )
+
+        csv_text = import_rows.to_csv(rows)
+        headers = import_rows.columns_for(rows)
+        logger.info(
+            "Millennium: importing %d row(s), %d column(s): %s",
+            len(rows), len(headers), "; ".join(r.describe() for r in rows),
+        )
+
+        subject = ", ".join(r.identity.describe() for r in rows)
+        page = self._upload_import_file(csv_text, subject=subject)
+        try:
+            mapping = page.mapping(headers)
+        except ImportFieldsUnavailable as e:
+            # Nothing has been applied at this point — the upload only
+            # stages the file — so this is a clean refusal rather than a
+            # half-finished write.
+            self._keep_refused_import(csv_text, str(e), subject=subject)
+            raise MillenniumError(
+                f"Millennium's import cannot carry this file: {e}"
+            ) from e
+
+        started = self._post_json(
+            "/DatabaseFunctions/ImportCardholders/ImportCardholdersNow",
+            {
+                "format": IMPORT_FORMAT_CSV,
+                "rule": RULE_UPDATE_MATCHED_ONLY,
+                "HeaderIncluded": True,
+                # Millennium would otherwise create any card format or
+                # cardholder type our file names but this install does not
+                # have. Every value we send was read back out of the same
+                # install, so one it does not recognise means we have
+                # misread something — and inventing it would make that
+                # permanent, in their configuration rather than ours.
+                "ImportNewDropDownEntries": False,
+                "Filename": IMPORT_FILENAME,
+                "ImportedFields": mapping,
+                "DontReplaceAccessLevel": False,
+            },
+            referer="/DatabaseFunctions/ImportCardholders/SelectFields",
+        )
+        if started is not True:
+            self._keep_refused_import(
+                csv_text, f"refused to start: {started!r}", subject=subject
+            )
+            raise MillenniumError(
+                f"Millennium refused to start the import: {started!r}"
+            )
+
+        return self._await_import(csv_text, len(rows), subject=subject)
+
+    def _import_token(self) -> str:
+        """The anti-forgery token the upload is checked against.
+
+        Read off the import landing page. Unlike the cardholder form this is
+        not a round-trip, so only the one field is wanted.
+        """
+        response = self._get(
+            "/DatabaseFunctions/ImportCardholders", server_error_means_expired=True
+        )
+        match = re.search(
+            r'name="__RequestVerificationToken"[^>]*\bvalue="([^"]+)"', response.text
+        ) or re.search(
+            r'\bvalue="([^"]+)"[^>]*name="__RequestVerificationToken"', response.text
+        )
+        if not match:
+            raise MillenniumError(
+                "Millennium's import page carried no anti-forgery token — it is "
+                "not the import screen, or the session has gone"
+            )
+        return match.group(1)
+
+    def _upload_import_file(
+        self, csv_text: str, subject: str = ""
+    ) -> SelectFieldsPage:
+        """Stage the CSV and read back what Millennium made of it.
+
+        The body is assembled here rather than left to httpx so the parts
+        arrive in the order the browser sends them, with the file first. The
+        server has not been seen to care, but this is the request whose
+        answer the whole mapping is read from, and matching the capture costs
+        nothing.
+        """
+        token = self._import_token()
+        boundary = "----AGSyncFormBoundary" + "".join(
+            random.choices(string.ascii_letters + string.digits, k=16)
+        )
+        parts: list[bytes] = [
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="ImportFile"; '
+            f'filename="{IMPORT_FILENAME}"\r\n'
+            f"Content-Type: text/csv\r\n\r\n".encode()
+            + csv_text.encode()
+            + b"\r\n"
+        ]
+
+        def _field(name: str, value: str) -> None:
+            parts.append(
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n".encode()
+            )
+
+        _field("FileName", IMPORT_FILENAME)
+        _field("FileFormat", str(IMPORT_FORMAT_CSV))
+        _field("FieldHeaders", "true")
+        _field("__RequestVerificationToken", token)
+        parts.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(parts)
+
+        self._pace()
+        response = self._http.post(
+            self._url("/DatabaseFunctions/ImportCardholders/SelectFields"),
+            content=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "text/html",
+                "Origin": self.base_url,
+                "Referer": self._url("/DatabaseFunctions/ImportCardholders"),
+            },
+        )
+        self._check_auth(response)
+        if response.status_code >= 400:
+            raise MillenniumError(
+                f"Millennium would not take the import file -> HTTP "
+                f"{response.status_code}"
+            )
+        try:
+            return SelectFieldsPage.parse(response.text)
+        except ImportFieldsUnavailable as e:
+            self._keep_refused_import(csv_text, str(e), subject=subject)
+            raise MillenniumError(str(e)) from e
+
+    def _await_import(
+        self, csv_text: str, row_count: int, subject: str = ""
+    ) -> ImportOutcome:
+        """Poll the job, then read the log whatever the answer was.
+
+        The log is fetched on success as well as on failure. The rule we send
+        makes an unmatched row a skip rather than an error, so Millennium
+        reports a run that changed nothing as a successful import — which
+        means ``Success: true`` is not on its own evidence that anything was
+        applied, and the log is where that shows up.
+        """
+        deadline = time.time() + IMPORT_TIMEOUT_S
+        while time.time() < deadline:
+            status = self._import_status()
+            if not isinstance(status, dict):
+                raise MillenniumError(f"Unreadable import status: {status!r}")
+            error = status.get("Error") or ""
+            if status.get("Failed") or error:
+                log = self._import_log(status.get("Context") or "")
+                self._keep_refused_import(
+                    csv_text, error or "the job failed", log, subject=subject
+                )
+                raise MillenniumError(
+                    f"Millennium's import failed: {error or 'no detail'}"
+                    + (f" — {log.strip()[:500]}" if log.strip() else "")
+                )
+            if status.get("Completed") and status.get("Success"):
+                log = self._import_log(status.get("Context") or "")
+                if log.strip():
+                    # Not raised — the job itself did not fail — but not
+                    # reported as ok either. See ImportOutcome: a skipped row
+                    # is reported here and nowhere else, so a log we cannot
+                    # read as empty is a write we cannot claim happened.
+                    logger.warning(
+                        "Millennium's import finished with a log, so it is not "
+                        "being treated as applied: %s",
+                        log.strip()[:1000],
+                    )
+                    self._keep_refused_import(
+                        csv_text, "the import log is not empty", log,
+                        subject=subject,
+                    )
+                    return ImportOutcome(ok=False, rows=row_count, log=log)
+                return ImportOutcome(ok=True, rows=row_count, log=log)
+            time.sleep(IMPORT_POLL_INTERVAL_S)
+
+        raise MillenniumError(
+            f"Millennium's import did not finish within {IMPORT_TIMEOUT_S:.0f}s — "
+            "whether it was applied is unknown"
+        )
+
+    def _import_status(self) -> Any:
+        """How far along the queued import is.
+
+        Capitalised ``OperationType`` and a GET, matching the import screen's
+        own XHR. The export's poll sends the name lower-cased to the same
+        route; both are accepted, and each is spelled the way the screen that
+        owns it spells it.
+        """
+        response = self._get(
+            "/api/LongOperationStatus",
+            params={
+                "OperationType": IMPORT_OPERATION,
+                "_": str(int(time.time() * 1000)),
+            },
+            ajax=True,
+        )
+        try:
+            return response.json()
+        except ValueError as e:
+            raise MillenniumError(f"Unreadable import status: {e}") from e
+
+    def _import_log(self, context: str) -> str:
+        """Millennium's account of the run. Empty means it had nothing to say.
+
+        Addressed by the ``Context`` the status carried. A log that cannot be
+        fetched is not a failure of the import — that has already happened by
+        now — so this answers with a sentence about itself rather than
+        raising and losing the outcome.
+        """
+        if not context:
+            return ""
+        try:
+            response = self._get(
+                f"/DatabaseFunctions/ImportCardholders/GetImportLogFile/{context}"
+            )
+        except Exception as e:  # noqa: BLE001 — the write already happened
+            return f"(could not fetch the import log: {e})"
+        return response.text or ""
+
+    def _keep_refused_import(
+        self,
+        csv_text: str,
+        reason: str,
+        log: str = "",
+        subject: str = "",
+    ) -> None:
+        """Keep the file and the complaint where a refused save goes.
+
+        The refused-saves tab heads each entry with a cardholder id, and the
+        id is the one thing an import has no notion of — rows are matched by
+        name. So the names stand in for it, which is also what an operator
+        would search the tab for.
+        """
+        failed_saves.record(
+            vendor="millennium_ultra",
+            cardholder_id=subject or "import",
+            status_code=0,
+            reasons=[reason],
+            request=csv_text,
+            response=log,
+        )
 
     # -- writes ----------------------------------------------------------
 
