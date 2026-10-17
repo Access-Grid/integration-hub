@@ -168,7 +168,10 @@ def test_a_refused_save_is_recorded_by_the_client(db, millennium_page):
     from agsync.lib.pacs.millennium_ultra.client import MillenniumUltraClient
     from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 
-    refusal = '<form><div class="field-validation-error">no good</div></form>'
+    refusal = millennium_page.replace(
+        '<div id="tabHolder">',
+        '<div class="field-validation-error">no good</div><div id="tabHolder">', 1,
+    )
     client = MillenniumUltraClient(
         base_url="https://hosted105.mgiaccess.test", auth_cookie="session"
     )

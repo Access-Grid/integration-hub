@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any
@@ -157,6 +158,39 @@ MAX_VALIDATION_ERRORS = 10
 _NEVER_LOGGED = frozenset({"__RequestVerificationToken"})
 MAX_LOGGED_VALUE = 120
 MAX_LOGGED_PAYLOAD = 4000
+
+
+def _is_cardholder_form(html: str) -> bool:
+    """Is this the cardholder screen coming back, or something else?
+
+    Parsing is the test rather than a phrase: the parser already refuses a
+    page with no form, and a check for English would not survive this
+    install being run in Spanish.
+    """
+    try:
+        CardholderForm.parse(html)
+    except Exception:  # noqa: BLE001 — anything unparseable is "not the form"
+        return False
+    return True
+
+
+_HEADLINE = (
+    r"<h3[^>]*>(.*?)</h3>",
+    r"<h1[^>]*>(.*?)</h1>",
+    r"<title[^>]*>(.*?)</title>",
+)
+
+
+def _page_headline(html: str) -> str:
+    """Whatever the page leads with, for the error message."""
+    for pattern in _HEADLINE:
+        match = re.search(pattern, html, re.S | re.I)
+        if not match:
+            continue
+        text = " ".join(re.sub(r"<[^>]+>", " ", match.group(1)).split())
+        if text:
+            return text[:120]
+    return "a page carrying no cardholder form"
 
 
 def _describe_payload(form: CardholderForm) -> str:
@@ -568,6 +602,17 @@ class MillenniumUltraClient:
         if response.is_redirect:
             return True
         if response.status_code == 200:
+            # A rejection re-renders the form. Anything else behind a 200 —
+            # the server's own error page, a session that has gone — is not
+            # a complaint about the fields, and reading it as one reports a
+            # bad field that does not exist and retries forever.
+            if not _is_cardholder_form(response.text):
+                self._keep_refused_save(cardholder_id, response, body, [])
+                raise MillenniumError(
+                    f"Millennium answered the save for cardholder "
+                    f"{cardholder_id} with {_page_headline(response.text)!r} "
+                    "rather than the cardholder form — the record is unchanged"
+                )
             # The rejection and its reasons arrive together — the page is
             # re-rendered with the complaints written into it — so there is
             # no second request to make and no excuse for logging only that

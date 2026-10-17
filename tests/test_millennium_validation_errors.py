@@ -126,6 +126,12 @@ def test_a_broken_page_does_not_raise():
 # =====================================================================
 
 
+def _rejected_page(millennium_page: str, markup: str) -> str:
+    """The cardholder page as Millennium re-renders it on a rejection:
+    the whole form again, with the complaints written into it."""
+    return millennium_page.replace("<div id=\"tabHolder\">", markup + "<div id=\"tabHolder\">", 1)
+
+
 def _rejecting_client(body: str):
     """A client whose save is refused the way Millennium refuses one: 200,
     carrying the form back rather than a redirect."""
@@ -147,7 +153,7 @@ def test_the_reasons_reach_the_log(millennium_page, caplog):
 
     from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 
-    client = _rejecting_client(f"<form>{SUMMARY_ERRORS}{FIELD_ERROR}</form>")
+    client = _rejecting_client(_rejected_page(millennium_page, SUMMARY_ERRORS + FIELD_ERROR))
     form = CardholderForm.parse(millennium_page)
 
     with caplog.at_level(logging.ERROR):
@@ -165,7 +171,7 @@ def test_a_refusal_with_no_message_says_so(millennium_page, caplog):
 
     from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 
-    client = _rejecting_client("<form><p>Something else went wrong</p></form>")
+    client = _rejecting_client(_rejected_page(millennium_page, "<p>Something else</p>"))
     form = CardholderForm.parse(millennium_page)
 
     with caplog.at_level(logging.ERROR):
@@ -184,7 +190,7 @@ def test_a_flood_of_complaints_is_capped(millennium_page, caplog):
     many = "".join(
         f'<div class="field-validation-error">complaint {i}</div>' for i in range(25)
     )
-    client = _rejecting_client(f"<form>{many}</form>")
+    client = _rejecting_client(_rejected_page(millennium_page, many))
     form = CardholderForm.parse(millennium_page)
 
     with caplog.at_level(logging.ERROR):
@@ -234,7 +240,7 @@ def test_the_refused_payload_is_logged(millennium_page, caplog):
 
     from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 
-    client = _rejecting_client(f"<form>{FIELD_ERROR}</form>")
+    client = _rejecting_client(_rejected_page(millennium_page, FIELD_ERROR))
     form = CardholderForm.parse(millennium_page)
 
     with caplog.at_level(logging.ERROR):
@@ -250,7 +256,7 @@ def test_the_antiforgery_token_is_not_logged(millennium_page, caplog):
 
     from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 
-    client = _rejecting_client(f"<form>{FIELD_ERROR}</form>")
+    client = _rejecting_client(_rejected_page(millennium_page, FIELD_ERROR))
     form = CardholderForm.parse(millennium_page)
     token = form.token
     assert token, "the fixture should carry one"
@@ -268,7 +274,7 @@ def test_a_long_value_is_truncated(millennium_page, caplog):
     from agsync.lib.pacs.millennium_ultra.client import MAX_LOGGED_VALUE
     from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 
-    client = _rejecting_client(f"<form>{FIELD_ERROR}</form>")
+    client = _rejecting_client(_rejected_page(millennium_page, FIELD_ERROR))
     form = CardholderForm.parse(millennium_page)
     form.set_value("Comment1", "x" * 500)
 
