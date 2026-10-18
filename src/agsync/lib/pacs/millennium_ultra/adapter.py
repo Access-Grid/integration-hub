@@ -396,8 +396,47 @@ class SeosLedger:
         return out
 
     @staticmethod
-    def last_written_active(person_id: str, credential_id: str) -> dict[int, bool]:
-        """Slot -> the Active box we last wrote there.
+    def note_observed(updates: dict[tuple[str, str], dict[int, bool]]) -> None:
+        """Record what Millennium's Active boxes actually say.
+
+        The other half of `note_active`, and the half that was missing. That
+        one records what we wrote; this records what we read — and they share
+        a key, because what the box last said is one fact however we came to
+        know it.
+
+        Why it matters: an operator ticking a card on and later unticking it
+        has to read as a change. Without recording the tick, the untick is a
+        transition from "off" to "off", which is indistinguishable from a
+        card that was never on — so the pass is never suspended and nobody
+        is told. Recording only our own writes left exactly that gap.
+
+        Takes every cardholder at once and saves once. The ledger is a single
+        encrypted blob, so recording these one at a time would rewrite the
+        whole thing per cardholder, every cycle.
+        """
+        if not updates:
+            return
+        data = SeosLedger._load_all()
+        touched = False
+        for (person_id, credential_id), states in updates.items():
+            key = SeosLedger._key(person_id, credential_id)
+            entries = data.get(key)
+            if not entries:
+                continue
+            for entry in entries:
+                try:
+                    slot = int(entry.get("slot"))
+                except (TypeError, ValueError):
+                    continue
+                if slot in states and entry.get("active") is not states[slot]:
+                    entry["active"] = bool(states[slot])
+                    touched = True
+        if touched:
+            SeosLedger._save_all(data)
+
+    @staticmethod
+    def last_known_active(person_id: str, credential_id: str) -> dict[int, bool]:
+        """Slot -> what the Active box last said there, read or written.
 
         A slot is absent whenever we do not actually know: no entry, an
         entry from before this was recorded, a value that is not a
@@ -518,6 +557,7 @@ class MillenniumUltraAdapter:
         request_token: str = "",
         request_token_cookie: str = "",
         sweep_budget: int = DEFAULT_SWEEP_BUDGET,
+        slots_per_issue: int = REQUIRED_EMPTY_SLOTS,
     ):
         session = _stored_session() if not auth_cookie else {}
         self.base_url = base_url or session.get("base_url", "")
@@ -537,6 +577,13 @@ class MillenniumUltraAdapter:
             time_offset=str(time_offset or session.get("time_offset") or ""),
         )
         self._sweep_budget = int(sweep_budget)
+        # How many empty card slots one pass from the configured template
+        # will need. Read off the template before anything is issued: an HID
+        # pair takes two of the cardholder's three, where a DESFire pair
+        # shares one card number and takes one. Bounded below at one so an
+        # unreadable template cannot make every cardholder look too full to
+        # issue to.
+        self._slots_per_issue = max(1, int(slots_per_issue))
 
         from . import DESCRIPTOR
 
@@ -581,6 +628,10 @@ class MillenniumUltraAdapter:
         # the order anything happened in.
         self._pending_ledger: dict[tuple[str, int], tuple[str, dict]] = {}
         self._pending_active: dict[tuple[str, int], tuple[str, bool]] = {}
+        # What this cycle read Millennium's Active boxes as saying, by
+        # (cardholder, credential). Recorded in one write at the end of the
+        # cycle; see SeosLedger.note_observed.
+        self._observed: dict[tuple[str, str], dict[int, bool]] = {}
         # Card format id -> display name. The import speaks names where the
         # detail page speaks ids; None means not looked up yet.
         self._format_labels: dict[str, str] | None = None
@@ -616,6 +667,7 @@ class MillenniumUltraAdapter:
         self._pending = {}
         self._pending_ledger = {}
         self._pending_active = {}
+        self._observed = {}
         self._read_this_cycle = 0
         self._ours = {key.partition(":")[0] for key in SeosLedger.all()}
         roster = self._client.list_cardholders()
@@ -930,7 +982,7 @@ class MillenniumUltraAdapter:
             # of having set that card on ourselves: without one we cannot
             # tell a suspension from a card that has simply always been
             # off, and refusing then would stop the install hand-off.
-            recorded = SeosLedger.last_written_active(pid, credential_id)
+            recorded = SeosLedger.last_known_active(pid, credential_id)
             switched_off = [
                 index for index in slots
                 if recorded.get(index) is True
@@ -1647,11 +1699,11 @@ class MillenniumUltraAdapter:
     ) -> Credential | None:
         empty = [s for s in slots if s.empty]
 
-        if not ledger and len(empty) < REQUIRED_EMPTY_SLOTS:
+        if not ledger and len(empty) < self._slots_per_issue:
             logger.info(
-                "Millennium: skipping cardholder %s — Seos needs %d free card slot(s), "
-                "found %d",
-                pid, REQUIRED_EMPTY_SLOTS, len(empty),
+                "Millennium: skipping cardholder %s — a pass from this template "
+                "needs %d free card slot(s), found %d",
+                pid, self._slots_per_issue, len(empty),
             )
             return None
 
@@ -1680,6 +1732,16 @@ class MillenniumUltraAdapter:
             for e in ledger
             if (str(e.get("facility_code")), str(e.get("card_number"))) in live
         ]
+        # What the Active boxes say right now, for the cards this credential
+        # owns. Collected rather than recorded, because the ledger is one
+        # encrypted blob and this runs per cardholder; the cycle writes them
+        # all at once. See SeosLedger.note_observed for why reading them
+        # matters at all.
+        if recorded:
+            self._observed[(pid, credential_id)] = {
+                slot.index: slot.active for slot in recorded
+            }
+
         expires = [s.expiration for s in recorded if s.expiration]
         starts = [s.activation for s in recorded if s.activation]
         deactivate_date = min(expires) if expires else None
@@ -1823,6 +1885,14 @@ class MillenniumUltraAdapter:
         deciding, no phase can observe a change another phase made in the
         same cycle. Every reading in a cycle is of the same state.
         """
+        # First, and whether or not anything is being written: what this
+        # cycle read the Active boxes as saying. Before the writes, so a box
+        # we are about to change is recorded as it was and then overwritten
+        # by `_confirm` — and if the import never lands, the reading stands,
+        # which is correct because Millennium still says it.
+        observed, self._observed = self._observed, {}
+        SeosLedger.note_observed(observed)
+
         pending, self._pending = self._pending, {}
         ledger_writes, self._pending_ledger = self._pending_ledger, {}
         active_writes, self._pending_active = self._pending_active, {}

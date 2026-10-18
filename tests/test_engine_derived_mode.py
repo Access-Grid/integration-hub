@@ -29,9 +29,21 @@ def _ag_cfg():
     return {"account_id": "a", "api_secret": "s", "template_id": "tpl"}
 
 
-def _with_protocol(monkeypatch, protocol):
+def _with_protocol(monkeypatch, protocol, paired=False):
+    """Stand in for the template read.
+
+    The engine now reads the template's whole shape rather than only its
+    protocol, because how many of a cardholder's card slots one pass needs
+    is decided by whether the template is a pair and which technology it
+    uses — and that has to be known before anything is issued.
+    """
+    from agsync.ag import TemplateShape
+
     monkeypatch.setattr(
-        "agsync.sync.engine.template_protocol", lambda client, tid: protocol,
+        "agsync.sync.engine.read_template_shape",
+        lambda client, tid: TemplateShape(
+            protocol=protocol, paired=paired, known=bool(protocol)
+        ),
     )
 
 

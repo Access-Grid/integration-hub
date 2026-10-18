@@ -31,7 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .. import dryrun
-from ..ag import PROTOCOL_SEOS, template_protocol
+from ..ag import PROTOCOL_SEOS, read_template_shape
 from ..ag import build_client as build_ag_client
 from ..lib.pacs import PacsAuthExpired, get_descriptor
 from ..lib.pacs import build_adapter as build_pacs_adapter
@@ -83,16 +83,29 @@ def derived_pacs_params(ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]) ->
     if descriptor is None or not descriptor.derives_mode_from_template:
         return pacs_cfg
 
-    protocol = template_protocol(ag, ag_cfg["template_id"])
+    shape = read_template_shape(ag, ag_cfg["template_id"])
     # An unreadable template must not silently flip a read-only integration
     # into one that writes cards into the PACS.
-    mode = "seos" if protocol == PROTOCOL_SEOS else "desfire"
-    if not protocol:
+    mode = "seos" if shape.protocol == PROTOCOL_SEOS else "desfire"
+    if not shape.known:
         logger.warning(
-            "Could not read the card template's protocol — assuming %s", mode,
+            "Could not read the card template — assuming %s, and reserving "
+            "one card slot per pass", mode,
+        )
+    else:
+        logger.info(
+            "Card template: %s, %s, reserving %d card slot(s) per pass",
+            shape.protocol or "protocol unknown",
+            "a pair" if shape.paired else "single",
+            shape.slots_per_issue,
         )
     params = dict(pacs_cfg.get("params") or {})
     params["mode"] = mode
+    # How many of a cardholder's slots one issue of this template will need.
+    # Known before provisioning rather than discovered after it, so a
+    # cardholder without room is skipped instead of being left with half a
+    # pair written in.
+    params["slots_per_issue"] = shape.slots_per_issue
     return {**pacs_cfg, "params": params}
 
 

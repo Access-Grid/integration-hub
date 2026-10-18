@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from agsync.ag import TemplateShape
 from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, SeosLedger
 from tests._fakes import FakeMillenniumClient
 
@@ -95,7 +96,8 @@ def test_the_page_derives_the_direction_rather_than_reading_stored_params(monkey
     from agsync.sync.engine import derived_pacs_params
 
     monkeypatch.setattr(
-        "agsync.sync.engine.template_protocol", lambda client, tid: "seos",
+        "agsync.sync.engine.read_template_shape",
+        lambda client, tid: TemplateShape(protocol="seos", known=True),
     )
     stored = {"vendor": "millennium_ultra", "params": {"base_url": "https://m.test"}}
     assert "mode" not in stored["params"]

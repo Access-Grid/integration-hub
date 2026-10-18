@@ -67,14 +67,14 @@ def test_switching_a_card_on_is_remembered(adapter):
     built, _ = adapter(active=False)
 
     assert _set(built, CredentialStatus.ACTIVE) is True
-    assert SeosLedger.last_written_active(PID, "seos") == {1: True}
+    assert SeosLedger.last_known_active(PID, "seos") == {1: True}
 
 
 def test_switching_a_card_off_is_remembered(adapter):
     built, _ = adapter(active=True)
 
     assert _set(built, CredentialStatus.AWAITING_INSTALL) is True
-    assert SeosLedger.last_written_active(PID, "seos") == {1: False}
+    assert SeosLedger.last_known_active(PID, "seos") == {1: False}
 
 
 def test_a_card_already_as_asked_is_still_recorded(adapter):
@@ -84,7 +84,7 @@ def test_a_card_already_as_asked_is_still_recorded(adapter):
 
     assert _set(built, CredentialStatus.ACTIVE) is True
     assert client.saved == [], "nothing to change, so nothing was written"
-    assert SeosLedger.last_written_active(PID, "seos") == {1: True}
+    assert SeosLedger.last_known_active(PID, "seos") == {1: True}
 
 
 def test_a_dry_run_records_nothing(adapter, monkeypatch):
@@ -95,7 +95,7 @@ def test_a_dry_run_records_nothing(adapter, monkeypatch):
 
     _set(built, CredentialStatus.AWAITING_INSTALL)
 
-    assert SeosLedger.last_written_active(PID, "seos") == {}
+    assert SeosLedger.last_known_active(PID, "seos") == {}
 
 
 # =====================================================================
@@ -134,7 +134,7 @@ def test_a_card_with_no_record_is_left_to_the_old_behaviour(adapter):
     """An install that has not run this code yet has no record of any
     card. Refusing then would stop every hand-off on the install."""
     built, client = adapter(active=False)
-    assert SeosLedger.last_written_active(PID, "seos") == {}
+    assert SeosLedger.last_known_active(PID, "seos") == {}
 
     assert _set(built, CredentialStatus.ACTIVE) is True
     assert client.imported
@@ -178,7 +178,7 @@ def test_a_dry_run_records_nothing_even_when_there_is_nothing_to_do(
 
     assert _set(built, CredentialStatus.ACTIVE) is True
     assert client.saved == []
-    assert SeosLedger.last_written_active(PID, "seos") == {}
+    assert SeosLedger.last_known_active(PID, "seos") == {}
 
 
 def test_one_card_switched_off_stops_the_whole_credential(
@@ -232,7 +232,7 @@ def test_rewriting_a_cards_slots_keeps_what_we_know_about_it(seos_ledger):
         {"slot": 2, "card_number": "223", "facility_code": "99"},
     ])
 
-    assert SeosLedger.last_written_active(PID, "seos") == {2: True}
+    assert SeosLedger.last_known_active(PID, "seos") == {2: True}
 
 
 def test_a_different_card_in_the_slot_starts_with_no_opinion(seos_ledger):
@@ -247,7 +247,7 @@ def test_a_different_card_in_the_slot_starts_with_no_opinion(seos_ledger):
         {"slot": 1, "card_number": "999", "facility_code": "99"},
     ])
 
-    assert SeosLedger.last_written_active(PID, "seos") == {}
+    assert SeosLedger.last_known_active(PID, "seos") == {}
 
 
 # =====================================================================
@@ -266,11 +266,11 @@ def test_an_entry_from_before_this_was_recorded_is_unknown(seos_ledger):
         {"slot": 1, "card_number": "223", "facility_code": "99"},
     ])
 
-    assert SeosLedger.last_written_active(PID, "seos") == {}
+    assert SeosLedger.last_known_active(PID, "seos") == {}
 
 
 def test_no_entry_at_all_is_unknown(seos_ledger):
-    assert SeosLedger.last_written_active(PID, "seos") == {}
+    assert SeosLedger.last_known_active(PID, "seos") == {}
 
 
 @pytest.mark.parametrize("stored", ["false", "true", "", 0, 1, None, [], {}])
@@ -282,7 +282,7 @@ def test_a_value_that_is_not_a_boolean_is_unknown(seos_ledger, stored):
         {"slot": 1, "card_number": "223", "facility_code": "99", "active": stored},
     ])
 
-    assert SeosLedger.last_written_active(PID, "seos") == {}
+    assert SeosLedger.last_known_active(PID, "seos") == {}
 
 
 @pytest.mark.parametrize("slot", ["x", None, "", 1.5, True, ["1"]])
@@ -291,7 +291,7 @@ def test_a_slot_that_will_not_parse_is_unknown(seos_ledger, slot):
         {"slot": slot, "card_number": "223", "facility_code": "99", "active": True},
     ])
 
-    assert SeosLedger.last_written_active(PID, "seos") == {}
+    assert SeosLedger.last_known_active(PID, "seos") == {}
 
 
 def test_an_unreadable_ledger_is_unknown(monkeypatch, caplog):
@@ -303,7 +303,7 @@ def test_an_unreadable_ledger_is_unknown(monkeypatch, caplog):
     monkeypatch.setattr(SeosLedger, "get", staticmethod(explode))
 
     with caplog.at_level(logging.WARNING):
-        assert SeosLedger.last_written_active(PID, "seos") == {}
+        assert SeosLedger.last_known_active(PID, "seos") == {}
 
     assert "treating it as unknown" in caplog.text
 
@@ -327,4 +327,4 @@ def test_a_known_slot_is_unaffected_by_an_unknown_one(seos_ledger):
         {"slot": 2, "card_number": "226", "facility_code": "99", "active": True},
     ])
 
-    assert SeosLedger.last_written_active(PID, "seos") == {2: True}
+    assert SeosLedger.last_known_active(PID, "seos") == {2: True}
