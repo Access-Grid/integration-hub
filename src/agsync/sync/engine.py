@@ -133,6 +133,11 @@ class CycleResult:
     ag_to_pacs: int = 0
     retried: int = 0
     field_updates: int = 0
+    # Cardholders a batching adapter actually wrote this cycle. Separate
+    # from ag_to_pacs, which counts decisions: on such an adapter a decision
+    # is recorded when a phase makes it and sent later, so the two differ
+    # whenever something was dropped, unchanged, or still pending.
+    pacs_writes: int = 0
     error: str | None = None
     # False for failures that retrying cannot fix and that a human is
     # already being asked about, or for a cycle deliberately abandoned.
@@ -461,6 +466,18 @@ class SyncEngine:
                 card_classification=card_classification,
                 pacs=pacs,
             )
+            # Every phase that writes cards has now decided. An adapter
+            # that batches has been collecting those decisions rather than
+            # sending them, so this is where they go — after phase 5's
+            # retries, before phase 6, which only ever writes to AccessGrid.
+            #
+            # Deliberately not inside the try/except that follows it: a
+            # failure here must not be mistaken for a phase failure, and
+            # `flush_writes` does not raise for an ordinary one. Anything it
+            # could not send is still recorded on the adapter's side and is
+            # retried on the next cycle.
+            if getattr(pacs, "supports_batched_writes", False):
+                result.pacs_writes = pacs.flush_writes()
             result.field_updates = phase6_field_changes.run(snapshot, ag)
         except PacsAuthExpired as e:
             return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)

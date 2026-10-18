@@ -334,6 +334,68 @@ class SeosLedger:
         SeosLedger._save_all(data)
 
     @staticmethod
+    def note_desired(
+        person_id: str, credential_id: str, states: dict[int, bool]
+    ) -> None:
+        """Record what we want a card's Active box to say.
+
+        Written when a phase *decides*, not when the import lands, and that
+        ordering is the whole point. One import goes out at the end of a
+        cycle, and anything can stop it arriving — a dropped precondition, a
+        refused file, a restart. If the decision lived only in memory until
+        then, a dropped row would be forgotten: phase 4 has already noted
+        that it pushed the change, so it would not ask again, and phase 2
+        would then push Millennium's stale state back to AccessGrid and undo
+        the operator. Silently, and permanently.
+
+        Persisted here instead, the next cycle simply notices that what we
+        want and what Millennium says still differ, and sends it again. A
+        lost import costs a cycle rather than a correction.
+
+        Distinct from `note_active`, which records what the box *does* say.
+        Collapsing the two is how a card we switched off ourselves became
+        indistinguishable from one an operator switched off.
+        """
+        data = SeosLedger._load_all()
+        key = SeosLedger._key(person_id, credential_id)
+        entries = data.get(key)
+        if not entries:
+            return
+        for entry in entries:
+            try:
+                slot = int(entry.get("slot"))
+            except (TypeError, ValueError):
+                continue
+            if slot in states:
+                entry["desired_active"] = bool(states[slot])
+        data[key] = entries
+        SeosLedger._save_all(data)
+
+    @staticmethod
+    def desired_active(person_id: str, credential_id: str) -> dict[int, bool]:
+        """Slot -> the Active box we want, for slots we have an opinion on.
+
+        A slot is absent when we have never recorded one, which is not the
+        same as wanting it off.
+        """
+        out: dict[int, bool] = {}
+        for entry in SeosLedger.get(person_id, credential_id):
+            if not isinstance(entry, dict):
+                continue
+            desired = entry.get("desired_active")
+            if not isinstance(desired, bool):
+                continue
+            slot = entry.get("slot")
+            # bool is an int in Python, and True would read as slot 1.
+            if isinstance(slot, bool) or not isinstance(slot, int | str):
+                continue
+            try:
+                out[int(slot)] = desired
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    @staticmethod
     def last_written_active(person_id: str, credential_id: str) -> dict[int, bool]:
         """Slot -> the Active box we last wrote there.
 
@@ -508,6 +570,17 @@ class MillenniumUltraAdapter:
         # text box, and a write against a duplicated one would reach a
         # stranger's record.
         self._duplicate_employee_ids: set[str] = set()
+        # What this cycle has decided and not yet sent, one plan per
+        # cardholder. Cleared at the top of every cycle: an intention left
+        # over from a cycle that was abandoned has already been recorded in
+        # the ledger, so re-planning it from scratch is both correct and
+        # cheaper than carrying it.
+        self._pending: dict[str, plan.CardholderPlan] = {}
+        # Ledger rows to write once the import confirms, keyed (person, slot)
+        # so a confirmed cardholder's records can be found without trusting
+        # the order anything happened in.
+        self._pending_ledger: dict[tuple[str, int], tuple[str, dict]] = {}
+        self._pending_active: dict[tuple[str, int], tuple[str, bool]] = {}
         # Card format id -> display name. The import speaks names where the
         # detail page speaks ids; None means not looked up yet.
         self._format_labels: dict[str, str] | None = None
@@ -540,6 +613,9 @@ class MillenniumUltraAdapter:
     def list_people(self) -> Iterable[Person]:
         self._roster = {}
         self._duplicate_employee_ids = set()
+        self._pending = {}
+        self._pending_ledger = {}
+        self._pending_active = {}
         self._read_this_cycle = 0
         self._ours = {key.partition(":")[0] for key in SeosLedger.all()}
         roster = self._client.list_cardholders()
@@ -930,22 +1006,38 @@ class MillenniumUltraAdapter:
             )
             for index in confirmed
         ]
+        # The desire goes to the ledger *before* anything is queued, so it
+        # survives a cycle whose import never arrives. See note_desired.
+        SeosLedger.note_desired(
+            pid, credential_id, dict.fromkeys(confirmed, want_active)
+        )
         ok = self._apply(
             pid, opinions,
             form_fallback=lambda: self._client.save_cardholder(pid, form),
-            describe=f"has card(s) {', '.join(str(i) for i in confirmed)} "
-                     f"{'active' if want_active else 'inactive'}",
+            describe=(
+                f"should have card(s) {', '.join(str(i) for i in confirmed)} "
+                f"{'active' if want_active else 'inactive'}"
+            ),
+            # From the page this write was planned against, not a second
+            # read of it: one reading, one key, no chance of the two
+            # disagreeing.
+            employee_id=form.value("EmployeeID").strip(),
+            credential_id=credential_id,
         )
-        if ok:
-            # Recorded on "already as asked" too, which `_apply` reports as
-            # done: it is how a card nobody has touched since the upgrade
-            # acquires a record, and until it has one an operator's untick
-            # cannot be recognised.
+        if not ok:
+            return False
+        if pid in self._pending:
+            # Queued. What Millennium *says* is recorded by the flush, once
+            # the import's own summary agrees it was applied.
+            for index in confirmed:
+                self._pending_active[(pid, index)] = (credential_id, want_active)
+        else:
+            # Written through the form, so it has already happened.
             SeosLedger.note_active(
                 pid, credential_id, dict.fromkeys(confirmed, want_active)
             )
             self._drop_profile(pid, "changing a card's Active box")
-        return ok
+        return True
 
     @property
     def supports_status_writeback(self) -> bool:
@@ -1016,8 +1108,13 @@ class MillenniumUltraAdapter:
         # Read before anything is written, so a slot we fill cannot become
         # the source for the next one.
         levels = self._access_levels(form, slots)
-        free = [s.index for s in slots if s.empty]
-        if marker is not None:
+        # Slots this cycle has already promised to another credential are
+        # not free, however empty the page says they are. Both writes read
+        # the same page, so without this they would both pick the same slot
+        # and the merged plan would silently keep only one of the two cards.
+        claimed = self._claimed_slots(pid)
+        free = [s.index for s in slots if s.empty and s.index not in claimed]
+        if marker is not None and marker.index not in claimed:
             free.insert(0, marker.index)
         pending = []
         for identity in identities:
@@ -1155,14 +1252,26 @@ class MillenniumUltraAdapter:
             written_ok = self._apply(
                 pid, opinions,
                 form_fallback=_through_the_form,
-                describe="holds the card(s) this credential needs",
+                describe="should hold the card(s) this credential needs",
+                employee_id=form.value("EmployeeID").strip(),
+                credential_id=credential_id,
             )
         else:
             written_ok = _through_the_form()
         if not written_ok:
             return False
-        SeosLedger.record(pid, credential_id, written)
-        self._drop_profile(pid, "writing credentials")
+        if pid in self._pending:
+            # Queued for this cycle's import. The ledger learns these cards
+            # only once that import's summary confirms them: an entry naming
+            # a card that is not on the cardholder is how a later cycle
+            # decides a pass was suspended.
+            for entry in written:
+                self._pending_ledger[(pid, int(entry["slot"]))] = (
+                    credential_id, entry,
+                )
+        else:
+            SeosLedger.record(pid, credential_id, written)
+            self._drop_profile(pid, "writing credentials")
         logger.info(
             "Millennium: wrote %d credential(s) into cardholder %s: %s",
             len(pending), pid,
@@ -1637,6 +1746,203 @@ class MillenniumUltraAdapter:
             },
         )
 
+    # -- one import per cycle --------------------------------------------
+
+    def _queue(
+        self,
+        pid: str,
+        employee_id: str,
+        opinions: list[plan.SlotOpinion],
+        credential_id: str,
+    ) -> None:
+        """Hold an intention until the end of the cycle.
+
+        Two phases can speak about one cardholder in a cycle — a credential
+        written in phase 1 and held inactive in phase 4 is the ordinary
+        case — so opinions merge into one plan per cardholder rather than
+        queueing separately. `CardholderPlan.want` merges field by field and
+        accumulates preconditions, so neither phase has to know the other
+        ran, and the result does not depend on which spoke first except
+        where they genuinely disagree about the same field.
+        """
+        cardholder = self._pending.get(pid)
+        if cardholder is None:
+            cardholder = plan.CardholderPlan(employee_id=employee_id)
+            self._pending[pid] = cardholder
+        for opinion in opinions:
+            cardholder.want(opinion, credential_id)
+
+    def _claimed_slots(self, pid: str) -> set[int]:
+        """Slots this cycle has already promised to somebody.
+
+        The allocator must not hand one free slot to two credentials. Both
+        would read the same page, see the same empty slot, and pick it — and
+        the second would quietly take the first's place in the merged plan,
+        so one of the two cards would never be written and nothing would say
+        which. Reading the claims back out of the pending plan keeps the two
+        decisions in one place.
+        """
+        cardholder = self._pending.get(pid)
+        return set(cardholder.slots) if cardholder else set()
+
+    @property
+    def supports_batched_writes(self) -> bool:
+        return True
+
+    def flush_writes(self) -> int:
+        """Send one import carrying everything this cycle decided.
+
+        Called once, after the phases, and it is the only place this adapter
+        writes cards. Three things happen in order, and the order is what
+        makes it safe.
+
+        **A reading taken now.** The intentions were formed against pages
+        read earlier in the cycle, possibly minutes ago. Each pending
+        cardholder's page is read again here, which is one request each and
+        typically a handful in total.
+
+        A second bulk export would also do, and for hundreds of changes it
+        would be cheaper — but it would make writing depend on the export
+        job, which has 504'd outright on this install when asked for too
+        much. Detail pages keep the write path working on an install whose
+        export does not, and they are a fresher reading besides: the export
+        is a queued job, and its snapshot is from whenever it ran.
+
+        **A diff against that reading.** Only cells that differ are sent, and
+        a cardholder whose preconditions have moved is dropped whole rather
+        than written in part. Their intention is already recorded in the
+        ledger, so the next cycle re-plans against whatever is actually
+        there.
+
+        **Confirmation before recording.** The ledger learns what Millennium
+        now says only after the import's own summary agrees with what was
+        sent. Nothing here records a write it cannot prove happened.
+
+        One further property falls out of batching, and it is the one worth
+        naming: because nothing is written until every phase has finished
+        deciding, no phase can observe a change another phase made in the
+        same cycle. Every reading in a cycle is of the same state.
+        """
+        pending, self._pending = self._pending, {}
+        ledger_writes, self._pending_ledger = self._pending_ledger, {}
+        active_writes, self._pending_active = self._pending_active, {}
+        if not pending:
+            return 0
+
+        if dryrun.active():
+            # A backstop, not the main guard. Every write method checks the
+            # switch before it decides anything, so in an ordinary dry run
+            # nothing reaches here. It is checked again because this is the
+            # only place the adapter writes cards, and that makes it the one
+            # place a future caller cannot route around.
+            for pid, cardholder in sorted(pending.items()):
+                dryrun.would(
+                    "write cardholder %s (Employee ID %s): %s",
+                    pid, cardholder.employee_id,
+                    "; ".join(
+                        o.describe() for o in cardholder.slots.values()
+                    ) or "nothing",
+                )
+            return 0
+
+        snapshot: dict[str, dict[int, plan.SlotState]] = {}
+        for pid in sorted(pending):
+            try:
+                form = self._client.get_cardholder_form(pid)
+            except MillenniumAuthError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                # Left out of the snapshot, which plan.build reads as "no
+                # evidence about this cardholder" and declines to act on. A
+                # reading we could not take is not evidence that nothing
+                # changed, and the intention is recorded, so it waits.
+                logger.warning(
+                    "Millennium: could not re-read cardholder %s before "
+                    "writing, so their change waits for the next cycle: %s",
+                    pid, e,
+                )
+                continue
+            # The key must still be theirs. An Employee ID that has changed
+            # since the intention was formed would address somebody else.
+            if form.value("EmployeeID").strip() != pending[pid].employee_id:
+                logger.warning(
+                    "Millennium: cardholder %s's Employee ID changed since this "
+                    "cycle planned their write — leaving it for the next cycle",
+                    pid,
+                )
+                continue
+            snapshot[pid] = {
+                s.index: self._slot_state(s)
+                for s in _read_slots(form, self._offset_seconds)
+            }
+
+        diff = plan.build(pending, snapshot, self._parse_date)
+        for dropped in diff.diverged:
+            logger.warning(
+                "Millennium: cardholder %s — %s", dropped.person_id, dropped.reason
+            )
+        for dropped in diff.unchanged:
+            logger.debug(
+                "Millennium: cardholder %s — %s", dropped.person_id, dropped.reason
+            )
+
+        # A cardholder whose slots already say what we wanted still counts as
+        # settled, so their intention is confirmed rather than left to be
+        # re-planned every cycle forever.
+        settled = {d.person_id for d in diff.unchanged} - {
+            d.person_id for d in diff.diverged
+        }
+
+        if not diff.rows:
+            self._confirm(settled, ledger_writes, active_writes)
+            return 0
+
+        outcome = self._client.import_cardholders(diff.rows)
+        if not outcome.ok:
+            logger.error(
+                "Millennium: the import carrying this cycle's %d change(s) was "
+                "not applied. They are still recorded, so the next cycle will "
+                "try again", len(diff.rows),
+            )
+            return 0
+
+        self._confirm(set(diff.written) | settled, ledger_writes, active_writes)
+        for pid in diff.written:
+            self._drop_profile(pid, "writing through the import")
+        logger.info(
+            "Millennium: one import changed %d cardholder(s)", len(diff.rows)
+        )
+        return len(diff.rows)
+
+    def _confirm(
+        self,
+        person_ids: set[str],
+        ledger_writes: dict[tuple[str, int], tuple[str, dict]],
+        active_writes: dict[tuple[str, int], tuple[str, bool]],
+    ) -> None:
+        """Record what Millennium now holds, for the cardholders it applied to.
+
+        Only reached once the import's summary has agreed with what was sent,
+        which is what makes these records evidence rather than hope. Cards
+        are recorded before Active states so a slot always has an entry for
+        `note_active` to update.
+        """
+        by_credential: dict[tuple[str, str], list[dict]] = {}
+        for (pid, _slot), (credential_id, entry) in sorted(ledger_writes.items()):
+            if pid not in person_ids:
+                continue
+            by_credential.setdefault((pid, credential_id), []).append(entry)
+        for (pid, credential_id), entries in by_credential.items():
+            SeosLedger.record(pid, credential_id, entries)
+
+        states: dict[tuple[str, str], dict[int, bool]] = {}
+        for (pid, slot), (credential_id, want) in active_writes.items():
+            if pid not in person_ids:
+                continue
+            states.setdefault((pid, credential_id), {})[slot] = want
+        for (pid, credential_id), slots in states.items():
+            SeosLedger.note_active(pid, credential_id, slots)
+
     def _format_label(self, format_id: str) -> str:
         """A card format's display name, which is what the import writes.
 
@@ -1685,48 +1991,26 @@ class MillenniumUltraAdapter:
         *,
         form_fallback: Callable[[], bool],
         describe: str,
+        employee_id: str,
+        credential_id: str = "",
     ) -> bool:
-        """Write only what differs, against a reading taken as late as possible.
+        """Decide how this write travels, and hold it until the cycle ends.
 
-        This is the whole write path, and it has three jobs in order.
+        Two routes. A cardholder the import can address — one with an
+        Employee ID of their own, not shared with anybody — has their
+        intention queued for the single import at the end of the cycle.
+        Anybody else goes through the cardholder screen immediately, which
+        addresses a record by its own number and so cannot land on the wrong
+        person; that is what this adapter did for every write until now.
 
-        **Route.** The import matches a row by name, so a cardholder whose
-        name does not identify exactly one record goes back through the
-        cardholder form, which addresses a record by id and cannot land on
-        the wrong person.
-
-        **Re-read.** The opinions were formed earlier in the cycle, from a
-        page read before the phases ran. One more read, here, is the last
-        chance to notice that somebody has been in the record since — and it
-        costs one request on a path that runs a handful of times a cycle.
-        Planning against a stale page is how a card an operator added gets
-        overwritten.
-
-        **Diff.** What goes in the file is only the cells that differ from
-        that reading. A slot whose preconditions no longer hold is dropped
-        and re-planned next cycle rather than written over.
-
-        The one window this cannot close is its own: the three requests
-        between building the file and Millennium applying it. There is no
-        conditional write to be had here, so that remains, and it is roughly
-        300ms rather than the several seconds a plan made at the top of the
-        cycle would carry.
+        Returning True means **the intention is recorded**, not that
+        Millennium has it yet. That is an honest claim because the caller's
+        own bookkeeping is safe either way: the desired state is written to
+        the ledger before this returns, so a cycle whose import never
+        arrives simply notices the difference again next time. Reporting
+        failure instead would have phase 4 log an error for a write that is
+        about to succeed.
         """
-        try:
-            form = self._client.get_cardholder_form(pid)
-        except MillenniumAuthError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                "Millennium: could not re-read cardholder %s before writing, so "
-                "nothing was written: %s", pid, e,
-            )
-            return False
-
-        # One read gives both the key the import addresses rows by and the
-        # baseline the diff is taken against. Read off the record itself, so
-        # there is no join between the export and the roster to get wrong.
-        employee_id = form.value("EmployeeID").strip()
         reason = ""
         if not employee_id:
             reason = "they have no Employee ID, which is what the import matches on"
@@ -1742,35 +2026,12 @@ class MillenniumUltraAdapter:
             )
             return form_fallback()
 
-        fresh = _read_slots(form, self._offset_seconds)
-        snapshot = {pid: {s.index: self._slot_state(s) for s in fresh}}
-        cardholder = plan.CardholderPlan(employee_id=employee_id)
-        for opinion in opinions:
-            cardholder.want(opinion)
-        diff = plan.build({pid: cardholder}, snapshot, self._parse_date)
-
-        for dropped in diff.diverged:
-            logger.warning(
-                "Millennium: cardholder %s — %s", dropped.person_id, dropped.reason
-            )
-        for dropped in diff.unchanged:
-            logger.debug(
-                "Millennium: cardholder %s — %s", dropped.person_id, dropped.reason
-            )
-
-        if diff.diverged:
-            # Nothing partial. A plan whose assumptions moved is re-made next
-            # cycle against what is actually there, which is cheap; writing
-            # the half that still fits would leave the record in a state no
-            # phase asked for.
-            return False
-        if not diff.rows:
-            # Millennium already holds every cell we had an opinion about.
-            # Reported as done, because it is: this is also how a card nobody
-            # has touched since the upgrade gets its first ledger entry.
-            logger.info("Millennium: cardholder %s already %s", pid, describe)
-            return True
-        return self._client.import_cardholders(diff.rows).ok
+        self._queue(pid, employee_id, opinions, credential_id)
+        logger.info(
+            "Millennium: queued for this cycle's import — cardholder %s %s",
+            pid, describe,
+        )
+        return True
 
     def _slot_opinion(
         self,

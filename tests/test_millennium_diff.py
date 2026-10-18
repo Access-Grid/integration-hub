@@ -253,9 +253,8 @@ def test_one_diverged_slot_drops_the_whole_cardholder():
     )
 
     assert len(diff.diverged) == 1
-    # The row for slot 2 is built; the caller refuses on any divergence.
-    assert len(diff.rows) == 1
-    assert diff.rows[0].slots[0].index == 2
+    # No row at all for this cardholder — not the half that still fits.
+    assert diff.rows == []
 
 
 def test_a_cardholder_missing_from_the_reading_is_never_written_to():

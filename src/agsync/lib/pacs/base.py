@@ -285,6 +285,30 @@ class PacsAdapter(Protocol):
     @property
     def supports_credential_retirement(self) -> bool: ...
 
+    # Some PACSes are cheaper, and safer, to write once than per cardholder.
+    # An adapter advertising this collects what the phases decide and sends
+    # it in a single operation when `flush_writes` is called, which the
+    # engine does after the last phase that writes.
+    #
+    # The contract that makes this safe is the adapter's, not the engine's:
+    # a write method that returns True on such an adapter is promising the
+    # intention is **recorded durably**, not that the PACS has it yet. The
+    # caller's bookkeeping is written against that promise, so an adapter
+    # that only held intentions in memory would lose a cycle's worth of
+    # changes while its callers believed they had landed.
+    @property
+    def supports_batched_writes(self) -> bool: ...
+
+    def flush_writes(self) -> int:
+        """Send everything this cycle decided. Returns cardholders changed.
+
+        Called once per cycle, after the phases, and only on an adapter that
+        advertises `supports_batched_writes`. Must be safe to call when
+        nothing is pending, and must not raise for an ordinary failure —
+        anything it could not send stays recorded and is retried next cycle.
+        """
+        ...
+
     def retire_credentials(
         self,
         person_id: str,

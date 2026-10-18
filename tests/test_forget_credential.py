@@ -65,6 +65,7 @@ def test_the_entry_goes_when_every_format_8_card_is_deleted(
     )
     _read(adapter)
     adapter.write_back_credentials(PID, "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
     assert SeosLedger.get(PID, "seos")
 
     # The operator deletes the lot, leaving an unrelated card behind.
@@ -86,6 +87,7 @@ def test_a_new_pass_is_not_suspended_by_the_one_before_it(
     )
     _read(adapter)
     adapter.write_back_credentials(PID, "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     # Cleared, so phase 3 deletes the pass and the entry goes with it.
     client._pages[PID] = _page(millennium_page, set_slot, slot1=("1", "900", "50"))
@@ -95,6 +97,7 @@ def test_a_new_pass_is_not_suspended_by_the_one_before_it(
     client._pages[PID] = _page(millennium_page, set_slot)
     _read(adapter)
     adapter.write_back_credentials(PID, "seos", [CredentialIdentity("66", "1250")])
+    adapter.flush_writes()   # the engine does this after the phases
     client._pages[PID] = _page(
         millennium_page, set_slot, slot1=(TRIGGER, "1250", "66")
     )
@@ -118,6 +121,7 @@ def test_a_recorded_card_still_in_a_slot_is_not_forgotten(
     )
     _read(adapter)
     adapter.write_back_credentials(PID, "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     # Our card is still there, but no longer carries the trigger format.
     client._pages[PID] = _page(millennium_page, set_slot, slot1=("1", "1238", "66"))

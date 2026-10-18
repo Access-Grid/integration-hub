@@ -181,6 +181,7 @@ def test_s2_millennium_honours_awaiting_install(
     assert adapter.update_credential_status(
         "11587", "seos", CredentialStatus.AWAITING_INSTALL,
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
     assert _written_active(client, 2) is False
 
 
@@ -211,6 +212,7 @@ def test_s2_the_gate_deactivates_through_the_real_adapter(
     ag = SimpleNamespace(access_cards=SimpleNamespace(get=lambda cid: uninstalled))
 
     assert phase4_ag_to_local._hold_uninstalled_inactive(snap, adapter, ag) == 1
+    adapter.flush_writes()
     assert _written_active(client, 2) is False
 
 
@@ -228,6 +230,7 @@ def test_s3_an_operator_ticking_active_early_is_corrected(
         assert adapter.update_credential_status(
             "11587", "seos", CredentialStatus.AWAITING_INSTALL,
         ) is True
+        adapter.flush_writes()   # the engine does this after the phases
     assert len(client.imported) == 2
     assert _written_active(client, 2) is False
 
@@ -248,6 +251,7 @@ def test_s4_phone_and_watch_land_in_separate_slots(
         CredentialIdentity("66", "1238", datetime(2026, 9, 1, tzinfo=UTC), None),
         CredentialIdentity("66", "1243", datetime(2026, 9, 1, tzinfo=UTC), None),
     ]) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     assert _written_card(client, 1) == "1238"
     assert _written_card(client, 2) == "1243"
@@ -263,6 +267,7 @@ def test_s4_the_watch_is_written_on_a_later_cycle_than_the_phone(
     page = _enrolled_page(millennium_page, set_slot)
     adapter, client = _adapter(make_millennium_adapter, page)
     adapter.write_back_credentials("11587", "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     # Millennium now serves the phone's card back in the marker's slot.
     after = set_slot(
@@ -273,6 +278,7 @@ def test_s4_the_watch_is_written_on_a_later_cycle_than_the_phone(
     assert adapter2.write_back_credentials("11587", "seos", [
         CredentialIdentity("66", "1238"), CredentialIdentity("66", "1243"),
     ]) is True
+    adapter2.flush_writes()   # the engine does this after the phases
     assert _written_card(client2, 2) == "1243"
     # The phone's card is left where it is by not being written at all. Under
     # the form save this had to be echoed back correctly; the import simply
@@ -306,6 +312,7 @@ def test_s5_overwriting_the_marker_leaves_the_rest_of_the_record_alone(
     from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
     before = CardholderForm.parse(page)
     adapter.write_back_credentials("11587", "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     csv_text = client.imported_csv[-1]
     customers = [
@@ -520,7 +527,11 @@ def _gate(adapter, cred, card, monkeypatch):
     snap.credentials_by_person["11587"] = [cred]
     snap.ag_cards_by_sync_ref["ref-1"] = [card]
     ag = SimpleNamespace(access_cards=SimpleNamespace(get=lambda cid: card))
-    return phase4_ag_to_local._hold_uninstalled_inactive(snap, adapter, ag)
+    held = phase4_ag_to_local._hold_uninstalled_inactive(snap, adapter, ag)
+    # The cycle's single import. The phase records what it wants; this is
+    # where it reaches Millennium, the way the engine does it.
+    adapter.flush_writes()
+    return held
 
 
 def test_s6_suspending_the_pass_deactivates_the_card(
@@ -838,6 +849,7 @@ def test_no_expiry_is_invented_for_a_card_millennium_left_blank(
             datetime(2027, 9, 1, tzinfo=UTC),   # AccessGrid's default
         ),
     ]) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     # There is no expiration column at all, so there is nothing to stamp a
     # date into. The card goes in inactive instead, because Millennium
@@ -867,6 +879,7 @@ def test_an_operators_own_expiry_survives_the_overwrite(
     adapter.write_back_credentials("11587", "seos", [
         CredentialIdentity("66", "1238", None, datetime(2027, 9, 1, tzinfo=UTC)),
     ])
+    adapter.flush_writes()   # the engine does this after the phases
     # It survives by never being mentioned: the import has no expiration
     # column, so the date an operator set cannot be overwritten by us.
     csv_text = client.imported_csv[-1]

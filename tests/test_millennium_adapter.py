@@ -155,6 +155,7 @@ def test_suspend_unchecks_active_and_leaves_the_card(
     adapter = make_millennium_adapter(client)
     list(adapter.list_people())
     assert adapter.update_credential_status("11587", "slot1", CredentialStatus.SUSPENDED)
+    adapter.flush_writes()   # the engine does this after the phases
 
     # The import carries the one cell it means to change. The card's number
     # and id are not in the file at all, which is a stronger guarantee than
@@ -181,6 +182,7 @@ def test_resume_rechecks_active(make_millennium_adapter, millennium_page, set_sl
     adapter = make_millennium_adapter(client)
     list(adapter.list_people())
     assert adapter.update_credential_status("11587", "slot1", CredentialStatus.ACTIVE)
+    adapter.flush_writes()   # the engine does this after the phases
     assert "agsync_card_1_active" in _imported(client)
     assert "True" in _imported(client)
 
@@ -196,6 +198,7 @@ def test_status_write_is_skipped_when_already_correct(
     client = _writable_client({"11587": page})
     adapter = make_millennium_adapter(client)
     assert adapter.update_credential_status("11587", "slot1", CredentialStatus.ACTIVE)
+    adapter.flush_writes()   # the engine does this after the phases
     assert client.saved == []
 
 
@@ -216,6 +219,7 @@ def test_access_levels_survive_a_status_write(
     adapter = make_millennium_adapter(client)
     list(adapter.list_people())
     adapter.update_credential_status("11587", "slot1", CredentialStatus.SUSPENDED)
+    adapter.flush_writes()   # the engine does this after the phases
 
     # They survive by not being mentioned. A column the import does not
     # carry is a field it does not write, so there is no round-trip for a
@@ -292,6 +296,7 @@ def test_seos_overwrites_the_marker_then_fills_an_empty_slot(
         CredentialIdentity("66", "5002", datetime(2026, 8, 18, 4, tzinfo=UTC), None),
     ]
     assert adapter.write_back_credentials("11587", "seos", identities) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     # The marker's slot is reused. There is no CardID column and none is
     # needed: a value in a slot's columns is that slot's card, whichever
@@ -325,6 +330,7 @@ def test_seos_write_records_the_slots_it_used(
     adapter.write_back_credentials(
         "11587", "seos", [CredentialIdentity("66", "5001")],
     )
+    adapter.flush_writes()   # the engine does this after the phases
     assert SeosLedger.get("11587", "seos") == [
         {"slot": 1, "card_number": "5001", "facility_code": "66"},
     ]
@@ -347,6 +353,7 @@ def test_seos_write_is_idempotent(
     assert adapter.write_back_credentials(
         "11587", "seos", [CredentialIdentity("66", "5001")],
     ) is False
+    adapter.flush_writes()   # the engine does this after the phases
     assert client.saved == []
 
 
@@ -360,6 +367,7 @@ def test_seos_refuses_a_card_number_already_in_use(
     assert adapter.write_back_credentials(
         "11587", "seos", [CredentialIdentity("66", "5001")],
     ) is False
+    adapter.flush_writes()   # the engine does this after the phases
     assert client.saved == []
 
 
@@ -373,6 +381,7 @@ def test_seos_writes_nothing_when_slots_run_short(
         "11587", "seos",
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is False
+    adapter.flush_writes()   # the engine does this after the phases
     # All or nothing: a partial write would strand the second device.
     assert client.saved == []
 
@@ -395,6 +404,7 @@ def test_seos_suspend_targets_the_written_slots(
     assert adapter.update_credential_status(
         "11587", "seos", CredentialStatus.SUSPENDED,
     )
+    adapter.flush_writes()   # the engine does this after the phases
     csv_text = _imported(client)
     assert "agsync_card_2_active" in csv_text
     # The trigger card itself is the operator's. It is not in the file, so
@@ -482,6 +492,7 @@ def test_status_write_is_refused_for_a_slot_with_no_card(
     assert adapter.update_credential_status(
         "11587", "seos", CredentialStatus.ACTIVE,
     ) is False
+    adapter.flush_writes()   # the engine does this after the phases
     assert client.saved == []
 
 
@@ -520,6 +531,7 @@ def test_a_credential_removed_in_the_pacs_is_never_recreated(
     assert adapter.write_back_credentials(
         "11587", "seos", [CredentialIdentity("66", "5001")],
     ) is False
+    adapter.flush_writes()   # the engine does this after the phases
     assert client.saved == []
     # And it stays remembered, so a later cycle does not rediscover it.
     assert SeosLedger.get("11587", "seos") == [
@@ -544,6 +556,7 @@ def test_a_genuinely_new_device_is_still_written_alongside_a_removed_one(
         "11587", "seos",
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
     assert written_slot(client, 1).card_number == "5002"      # the new one
     assert "5001" not in client.imported_csv[-1]              # not the deleted one
 
@@ -598,6 +611,7 @@ def test_the_marker_is_told_apart_from_our_own_cards(
         "11587", "seos",
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
     # Slot 1 is the marker, so 5002 lands there.
     assert written_slot(client, 1).card_number == "5002"
     # Slot 2 holds a card we issued, and keeps it by not being in the file.
@@ -624,6 +638,7 @@ def test_a_cardholder_with_no_marker_left_writes_into_empty_slots(
         "11587", "seos",
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
     # 5001 already sits in slot 1, so only the new card is written, into the
     # empty slot beside it.
     assert written_slot(client, 2).card_number == "5002"

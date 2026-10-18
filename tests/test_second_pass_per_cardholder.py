@@ -152,6 +152,7 @@ def test_the_first_passes_card_survives_the_second_being_issued(
     assert adapter.write_back_credentials(PID, "seos-card8200", [
         CredentialIdentity("99", "90"), CredentialIdentity("99", "91"),
     ]) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     # Pass A is untouched because its slot is not in the file. The import
     # carries only the slots being written, so "untouched" stops being
@@ -181,6 +182,7 @@ def test_each_pass_keeps_its_own_record(
     adapter.write_back_credentials(
         PID, "seos-card8200", [CredentialIdentity("99", "90")]
     )
+    adapter.flush_writes()   # the engine does this after the phases
 
     assert [e["card_number"] for e in SeosLedger.get(PID, "seos")] == ["74"]
     assert [e["card_number"] for e in SeosLedger.get(PID, "seos-card8200")] == ["90"]
@@ -219,6 +221,7 @@ def test_the_status_write_finds_the_right_slots(
     assert adapter.update_credential_status(
         PID, "seos-card8200", CredentialStatus.AWAITING_INSTALL
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     rows = client.imported[-1]
     assert len(rows) == 1

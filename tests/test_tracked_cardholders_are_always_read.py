@@ -124,6 +124,7 @@ def _own_a_card(adapter, client, pid=PID):
     assert adapter.write_back_credentials(
         pid, "seos", [CredentialIdentity("99", "47")]
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
     list(adapter.list_people())
 
 
@@ -193,6 +194,7 @@ def test_a_write_that_drops_the_cache_no_longer_strands_them(unnamed, caplog):
     with caplog.at_level(logging.INFO):
         # Writing again drops the cached page, as retirement does too.
         adapter.write_back_credentials(PID, "seos", [CredentialIdentity("99", "52")])
+        adapter.flush_writes()   # the engine does this after the phases
         list(adapter.list_people())
         creds = list(adapter.list_credentials(PID))
 
@@ -245,6 +247,7 @@ def test_dropping_a_cached_page_is_still_reported(unnamed, caplog):
 
     with caplog.at_level(logging.INFO):
         adapter.write_back_credentials(PID, "seos", [CredentialIdentity("99", "47")])
+        adapter.flush_writes()   # the engine does this after the phases
 
     assert "dropped the cached page for cardholder 9390" in _messages(caplog)
 
@@ -258,6 +261,7 @@ def test_nothing_new_to_write_says_what_was_on_offer(unnamed, caplog):
         assert adapter.write_back_credentials(
             PID, "seos", [CredentialIdentity("99", "47")]
         ) is False
+        adapter.flush_writes()   # the engine does this after the phases
 
     messages = _messages(caplog)
     assert "nothing new to write for cardholder 9390" in messages

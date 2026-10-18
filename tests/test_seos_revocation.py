@@ -163,6 +163,7 @@ def test_suspending_follows_the_card_not_the_old_slot_number(
     assert adapter.update_credential_status(
         "11587", "seos", CredentialStatus.SUSPENDED,
     )
+    adapter.flush_writes()   # the engine does this after the phases
     csv_text = client.imported_csv[0]
     assert "agsync_card_3_active" in csv_text            # the card's current slot
     assert "False" in csv_text

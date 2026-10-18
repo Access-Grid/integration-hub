@@ -96,6 +96,7 @@ def test_the_card_in_an_empty_slot_gets_the_markers_levels(
     assert adapter.write_back_credentials(PID, "seos", [
         CredentialIdentity("66", "1238"), CredentialIdentity("66", "1243"),
     ]) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     # Slot 1 is the marker's, slot 2 was empty.
     assert _field(client, "Card_1_EncodedCardNumber") == "1238"
@@ -111,6 +112,7 @@ def test_a_watch_written_cycles_later_inherits_them_too(
     page = _marker_page(millennium_page, set_slot)
     adapter, client = _adapter(make_millennium_adapter, page)
     adapter.write_back_credentials(PID, "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     # Millennium serves the phone's card back in the marker's slot, carrying
     # the levels it inherited. No marker remains.
@@ -125,6 +127,7 @@ def test_a_watch_written_cycles_later_inherits_them_too(
     assert adapter2.write_back_credentials(PID, "seos", [
         CredentialIdentity("66", "1238"), CredentialIdentity("66", "1243"),
     ]) is True
+    adapter2.flush_writes()   # the engine does this after the phases
 
     assert _field(client2, "Card_2_EncodedCardNumber") == "1243"
     assert _field(client2, "Card_2_AccessLevels") == LEVELS
@@ -150,6 +153,7 @@ def test_the_blob_is_copied_byte_for_byte(
     adapter.write_back_credentials(PID, "seos", [
         CredentialIdentity("66", "1238"), CredentialIdentity("66", "1243"),
     ])
+    adapter.flush_writes()   # the engine does this after the phases
 
     assert _field(client, "Card_2_AccessLevels") == awkward
 
@@ -165,6 +169,7 @@ def test_a_marker_with_no_levels_writes_none(
     adapter.write_back_credentials(PID, "seos", [
         CredentialIdentity("66", "1238"), CredentialIdentity("66", "1243"),
     ])
+    adapter.flush_writes()   # the engine does this after the phases
 
     # With nothing to carry over, the write goes through the import — and
     # the import has no access level column at all, so "writes none" is
@@ -195,6 +200,7 @@ def test_an_empty_blob_is_skipped_in_favour_of_a_real_one(
     assert adapter.write_back_credentials(
         PID, "seos", [CredentialIdentity("66", "1243")]
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     assert _field(client, "Card_1_EncodedCardNumber") == "1243"
     assert _field(client, "Card_1_AccessLevels") == LEVELS
@@ -216,6 +222,7 @@ def test_an_unrelated_card_keeps_its_own_levels(
     assert adapter.write_back_credentials(PID, "seos", [
         CredentialIdentity("66", "1238"), CredentialIdentity("66", "1243"),
     ]) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     # The marker's slot and the empty one carry the marker's levels; the
     # customer's badge keeps its own.

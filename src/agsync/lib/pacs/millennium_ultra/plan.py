@@ -326,6 +326,13 @@ def build(
                 continue
             changes.append(change)
 
+        if any(d.person_id == person_id for d in diverged):
+            # Nothing partial, for anybody. One slot's assumptions having
+            # moved says the page is not what this plan was made against, and
+            # writing the half that still fits would leave the record in a
+            # state no phase asked for. The whole cardholder waits a cycle;
+            # everybody else in the same import is unaffected.
+            continue
         if not changes:
             continue
         rows.append(RowWrite(employee_id=plan.employee_id, slots=tuple(changes)))

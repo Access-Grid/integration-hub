@@ -145,6 +145,7 @@ def test_a_card_with_no_expiry_is_left_inactive(
         assert adapter.write_back_credentials(
             "11587", "seos", [CredentialIdentity("66", "1238")]
         ) is True
+        adapter.flush_writes()   # the engine does this after the phases
 
     written = _written(client)
     assert written.card_number == "1238", "the card is written"
@@ -166,6 +167,7 @@ def test_the_warning_names_the_card_so_somebody_can_fix_it(
         adapter.write_back_credentials(
             "11587", "seos", [CredentialIdentity("66", "1238")]
         )
+        adapter.flush_writes()   # the engine does this after the phases
 
     assert "66/1238" in caplog.text
 
@@ -179,6 +181,7 @@ def test_a_card_with_an_expiry_is_switched_on_as_before(
     ))
 
     adapter.write_back_credentials("11587", "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     # The marker it replaces is already active, so under a diff there is no
     # Active cell to send — and "ends up on" is expressed as "is never
@@ -200,6 +203,7 @@ def test_a_missing_activation_date_is_supplied(
     adapter, client = writing(page)
 
     adapter.write_back_credentials("11587", "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     written = _written(client)
     assert written.activation, "a date was supplied"
@@ -217,6 +221,7 @@ def test_an_activation_date_already_there_is_left_alone(
     ))
 
     adapter.write_back_credentials("11587", "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     # Left alone by not being mentioned. The import carries no activation
     # column at all here, which is a stronger guarantee than the form save

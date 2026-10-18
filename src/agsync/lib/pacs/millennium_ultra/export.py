@@ -56,6 +56,11 @@ _SLOT_FORMAT = "Card {n} Card Format"
 _SLOT_NUMBER = "Card {n} Encoded Card No."
 _SLOT_FACILITY = "Card {n} Facility Code"
 _SLOT_ACTIVE = "Card {n} Active"
+# The dates the write path diffs against. Carried as the text Millennium
+# printed, because that is what a desired value is compared with — and the
+# comparison decides whether a cell is written at all.
+_SLOT_ACTIVATION = "Card {n} Activation Date"
+_SLOT_EXPIRATION = "Card {n} Expiration Date"
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,8 @@ class ExportedSlot:
     facility_code: str
     card_format: str  # display name, not the id
     active: bool
+    activation: str = ""
+    expiration: str = ""
 
 
 @dataclass(frozen=True)
@@ -118,6 +125,8 @@ def parse(csv_text: str, slots: tuple[int, ...] = (1, 2, 3)) -> list[ExportedCar
                     card_number=number,
                     facility_code=(row.get(_SLOT_FACILITY.format(n=n)) or "").strip(),
                     card_format=card_format,
+                    activation=(row.get(_SLOT_ACTIVATION.format(n=n)) or "").strip(),
+                    expiration=(row.get(_SLOT_EXPIRATION.format(n=n)) or "").strip(),
                     # Millennium writes True/False here rather than 1/0.
                     active=(row.get(_SLOT_ACTIVE.format(n=n)) or "").strip().lower()
                     == "true",

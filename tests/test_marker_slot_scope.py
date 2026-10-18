@@ -92,6 +92,7 @@ def test_another_credentials_card_is_not_a_marker(
     assert adapter.write_back_credentials(
         PID, "seos-card8200", [CredentialIdentity("99", "81")]
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     written = _written(client)
     assert written[2] == "", "pass A's installed card is not in the file at all"
@@ -111,6 +112,7 @@ def test_the_marker_is_still_consumed_rather_than_worked_around(
     adapter, client = _adapter(make_millennium_adapter, page)
 
     adapter.write_back_credentials(PID, "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     written = _written(client)
     assert written[1] == "1238", "written over the marker"
@@ -135,6 +137,7 @@ def test_a_card_from_any_credential_of_theirs_is_ours(
     assert adapter.write_back_credentials(
         PID, "seos-card8200", [CredentialIdentity("99", "81")]
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     written = _written(client)
     assert written[1] == ""
@@ -162,6 +165,7 @@ def test_a_stranger_card_in_the_trigger_format_is_still_a_marker(
     adapter.write_back_credentials(
         PID, "seos-card9001", [CredentialIdentity("99", "81")]
     )
+    adapter.flush_writes()   # the engine does this after the phases
 
     written = _written(client)
     assert written[1] != "", "the unrecorded card is the marker"

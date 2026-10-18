@@ -87,6 +87,7 @@ def test_the_row_is_keyed_on_the_employee_id(cardholder):
     assert adapter.update_credential_status(
         PID, "seos", CredentialStatus.AWAITING_INSTALL
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     assert client.imported[-1][0].employee_id == "22344"
     assert "22344" in client.imported_csv[-1]
@@ -103,6 +104,7 @@ def test_the_key_is_read_off_the_record_not_matched_from_the_export(cardholder):
     _ledger()
 
     adapter.update_credential_status(PID, "seos", CredentialStatus.AWAITING_INSTALL)
+    adapter.flush_writes()   # the engine does this after the phases
 
     assert client.imported[-1][0].employee_id == "99887"
 
@@ -126,6 +128,7 @@ def test_a_blank_employee_id_goes_through_the_cardholder_screen(cardholder, capl
         wrote = adapter.update_credential_status(
             PID, "seos", CredentialStatus.AWAITING_INSTALL
         )
+        adapter.flush_writes()   # the engine does this after the phases
 
     assert client.imported == [], "no row carrying a blank key"
     assert wrote is True
@@ -144,6 +147,7 @@ def test_a_blank_employee_id_also_keeps_credentials_off_the_import(cardholder):
     assert adapter.write_back_credentials(
         PID, "seos", [CredentialIdentity("99", "5001")]
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
     assert client.imported == []
     assert [pid for pid, _ in client.saved] == [PID]
 
@@ -169,6 +173,7 @@ def test_a_duplicated_employee_id_never_reaches_an_import(cardholder, caplog):
         wrote = adapter.update_credential_status(
             PID, "seos", CredentialStatus.AWAITING_INSTALL
         )
+        adapter.flush_writes()   # the engine does this after the phases
 
     assert client.imported == []
     assert wrote is True
@@ -198,6 +203,7 @@ def test_a_duplicate_does_not_survive_into_a_later_cycle(cardholder):
 
     assert adapter._duplicate_employee_ids == set()
     adapter.update_credential_status(PID, "seos", CredentialStatus.AWAITING_INSTALL)
+    adapter.flush_writes()   # the engine does this after the phases
     assert client.imported, "addressable again"
 
 
@@ -222,6 +228,7 @@ def test_a_dry_run_sends_no_import(cardholder, monkeypatch, caplog):
         assert adapter.update_credential_status(
             PID, "seos", CredentialStatus.AWAITING_INSTALL
         ) is True
+        adapter.flush_writes()   # the engine does this after the phases
 
     assert client.imported == []
     assert client.saved == []
@@ -237,5 +244,6 @@ def test_a_dry_run_sends_no_import_for_credentials_either(cardholder, monkeypatc
     assert adapter.write_back_credentials(
         PID, "seos", [CredentialIdentity("99", "5001")]
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
     assert client.imported == []
     assert client.saved == []

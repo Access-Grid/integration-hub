@@ -51,7 +51,11 @@ def adapter(make_millennium_adapter, millennium_page, set_slot, seos_ledger):
 
 
 def _set(adapter, status):
-    return adapter.update_credential_status(PID, "seos", status)
+    ok = adapter.update_credential_status(PID, "seos", status)
+    # The cycle's single import, which the engine sends after the phases.
+    # Until it goes, the decision is recorded but Millennium has not got it.
+    adapter.flush_writes()
+    return ok
 
 
 # =====================================================================
@@ -204,12 +208,14 @@ def test_one_card_switched_off_stops_the_whole_credential(
 
     built, _ = build(slot_1_active=True)
     built.update_credential_status(PID, "seos", CredentialStatus.ACTIVE)
+    built.flush_writes()   # the engine does this after the phases
 
     half_off, client = build(slot_1_active=False)
 
     assert half_off.update_credential_status(
         PID, "seos", CredentialStatus.ACTIVE
     ) is False
+    half_off.flush_writes()   # the engine does this after the phases
     assert client.saved == []
 
 

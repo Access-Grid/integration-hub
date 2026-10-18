@@ -87,8 +87,11 @@ def test_a_slot_filled_between_the_two_reads_is_not_overwritten(
             PID, "seos",
             [CredentialIdentity("66", "1238"), CredentialIdentity("66", "1243")],
         )
+        adapter.flush_writes()   # the engine does this after the phases
 
-    assert wrote is False
+    # The intention is recorded, so the call reports success — but the
+    # flush is what decides, and it declines to send.
+    assert wrote is True
     assert client.imported == [], "nothing was sent"
     assert client.saved == [], "and it did not fall through to a form save"
     assert "somebody filled it in between" in caplog.text
@@ -113,9 +116,10 @@ def test_the_marker_being_replaced_between_the_two_reads_is_noticed(
         wrote = adapter.write_back_credentials(
             PID, "seos", [CredentialIdentity("66", "1238")]
         )
+        adapter.flush_writes()   # the engine does this after the phases
 
-    assert wrote is False
-    assert client.imported == []
+    assert wrote is True, "recorded"
+    assert client.imported == [], "but never sent"
     assert "the card moved or was replaced" in caplog.text
 
 
@@ -126,6 +130,7 @@ def test_an_untouched_record_is_written_normally(cardholder):
     assert adapter.write_back_credentials(
         PID, "seos", [CredentialIdentity("66", "1238")]
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     assert client.page_reads == [PID, PID], "planned, then re-read"
     assert len(client.imported) == 1
@@ -147,6 +152,7 @@ def test_an_edit_elsewhere_on_the_record_does_not_block_the_write(
     assert adapter.write_back_credentials(
         PID, "seos", [CredentialIdentity("66", "1238")]
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
     assert len(client.imported) == 1
 
 
@@ -179,9 +185,10 @@ def test_a_card_swapped_before_a_suspend_is_not_switched_off_in_its_place(
         wrote = adapter.update_credential_status(
             PID, "seos", CredentialStatus.AWAITING_INSTALL
         )
+        adapter.flush_writes()   # the engine does this after the phases
 
-    assert wrote is False
-    assert client.imported == []
+    assert wrote is True, "recorded"
+    assert client.imported == [], "but never sent"
     assert "the card moved or was replaced" in caplog.text
 
 
@@ -199,6 +206,7 @@ def test_a_suspend_on_an_untouched_card_goes_through(cardholder, set_slot):
     assert adapter.update_credential_status(
         PID, "seos", CredentialStatus.AWAITING_INSTALL
     ) is True
+    adapter.flush_writes()   # the engine does this after the phases
 
     change = client.imported[0][0].slots[0]
     assert (change.index, change.active) == (2, False)
@@ -222,14 +230,16 @@ def test_a_failed_re_read_writes_nothing(cardholder, caplog):
 
     client.get_cardholder_form = _fail_second
 
-    with caplog.at_level("ERROR"):
+    with caplog.at_level("WARNING"):
         wrote = adapter.write_back_credentials(
             PID, "seos", [CredentialIdentity("66", "1238")]
         )
+        adapter.flush_writes()   # the engine does this after the phases
 
-    assert wrote is False
-    assert client.imported == []
+    assert wrote is True, "recorded"
+    assert client.imported == [], "but never sent"
     assert "could not re-read" in caplog.text
+    assert "waits for the next cycle" in caplog.text
 
 
 def test_the_write_path_reads_twice_and_only_twice(cardholder):
@@ -237,5 +247,6 @@ def test_the_write_path_reads_twice_and_only_twice(cardholder):
     adapter, client, _ = cardholder()
 
     adapter.write_back_credentials(PID, "seos", [CredentialIdentity("66", "1238")])
+    adapter.flush_writes()   # the engine does this after the phases
 
     assert client.page_reads == [PID, PID]
