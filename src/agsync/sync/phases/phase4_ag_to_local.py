@@ -48,6 +48,24 @@ _AG_TO_CRED_STATUS: dict[str, CredentialStatus] = {
     "suspended": CredentialStatus.SUSPENDED,
 }
 
+# States with no card status to push, deliberately. A holder removing a pass
+# from their phone, or a pass being deleted outright, is not an instruction
+# about whether their card should work — the card belongs to the operator,
+# and switching it off on the strength of a device-side event would revoke
+# somebody's access because they changed phones.
+#
+# They are not nothing, though, and they used to pass without a word. Each
+# is somebody whose pass has stopped working, which an operator will want to
+# know about and act on themselves, so each is said out loud once: on the
+# cycle the state changes, not every cycle after.
+_AG_STATES_WORTH_SAYING = {
+    "unlinked": (
+        "the holder has removed it from their device. Their card in the PACS "
+        "is untouched"
+    ),
+    "deleted": "the pass is gone. Their card in the PACS is untouched",
+}
+
 
 # Temporary, and the other half of [SUSPEND-DEBUG] in phase 2. This gate
 # judges a credential by re-reading the pair's halves, while phase 2 acts
@@ -212,6 +230,13 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
         # AG-side change detected. Translate to a credential status.
         desired = _AG_TO_CRED_STATUS.get(ag_state)
         if desired is None:
+            notice = _AG_STATES_WORTH_SAYING.get(ag_state)
+            if notice:
+                logger.warning(
+                    "  AccessGrid pass %s for %s/%s is now %s — %s",
+                    tracked.ag_card_id, tracked.pacs_person_id,
+                    tracked.pacs_credential_id, ag_state, notice,
+                )
             tracking.update_last_known_ag_state(
                 tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
             )

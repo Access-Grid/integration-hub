@@ -256,7 +256,7 @@ def test_a_third_pass_is_refused(
 
     assert len(creds) == MAX_SEOS_CREDENTIALS
     assert "seos-card8300" not in creds
-    assert "already has 2 Seos pass(es)" in "\n".join(
+    assert "already has 2 working Seos pass(es)" in "\n".join(
         r.getMessage() for r in caplog.records
     )
 

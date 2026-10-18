@@ -1642,6 +1642,21 @@ class MillenniumUltraAdapter:
             if credential is not None:
                 out.append(credential)
 
+        # A pass whose card is gone from Millennium, or sitting inactive,
+        # is not working. Another trigger card on a cardholder in that state
+        # is not somebody with a new device — it is a symptom of whatever
+        # broke the first one, and issuing a second would stack passes on the
+        # fault rather than fix it. Once the dead one is cleaned up its
+        # ledger entry empties, it stops being a pass at all, and the new
+        # trigger card is issued normally.
+        #
+        # A *working* pass is no reason to refuse: a cardholder who replaces
+        # a phone or adds a watch asks for another the same way they asked
+        # for the first, by having a trigger card put on them.
+        broken = [
+            c.id for c in out if c.status is not CredentialStatus.ACTIVE
+        ]
+
         # Then anything being asked for. A card we never wrote cannot be one
         # of ours — ours carry the trigger format, which is exactly why the
         # ledger has to answer this and not the format.
@@ -1665,13 +1680,25 @@ class MillenniumUltraAdapter:
                     pid, slot.index,
                 )
                 continue
-            if len(out) >= MAX_SEOS_CREDENTIALS:
-                # Rationed for the same reason provisioning is: a trigger
-                # that suddenly matches more cards than it should would
-                # otherwise issue a pass for each, every cycle.
+            if broken:
                 logger.warning(
-                    "Millennium: cardholder %s already has %d Seos pass(es) — "
-                    "not issuing another for the card in slot %d (%s/%s)",
+                    "Millennium: cardholder %s has a pass that is not working "
+                    "(%s) — not issuing another for the card in slot %d (%s/%s) "
+                    "until it is. A new device gets a new pass; a broken one "
+                    "gets looked at first",
+                    pid, ", ".join(broken), slot.index,
+                    slot.facility_code, slot.card_number,
+                )
+                break
+            if len(out) >= MAX_SEOS_CREDENTIALS:
+                # A backstop, not the main gate. The health check above is
+                # what decides the ordinary case; this is what stops a
+                # trigger that suddenly matches more cards than it should
+                # from issuing a pass for each of them, every cycle.
+                logger.warning(
+                    "Millennium: cardholder %s already has %d working Seos "
+                    "pass(es) — not issuing another for the card in slot %d "
+                    "(%s/%s)",
                     pid, len(out), slot.index,
                     slot.facility_code, slot.card_number,
                 )
