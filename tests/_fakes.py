@@ -85,6 +85,12 @@ class FakeMillenniumClient:
         self.imported_csv: list[str] = []
         self.import_result = True
         self.import_log = ""
+        # Detail-page reads, and a hook fired on each one. The write path
+        # reads twice — once to plan, once again immediately before the
+        # import — so a test can stand in for an operator editing the record
+        # in between by swapping `_pages` from here.
+        self.page_reads: list[str] = []
+        self.on_read = None
 
     def list_cardholders(self):
         return self._roster
@@ -95,7 +101,11 @@ class FakeMillenniumClient:
     def get_cardholder_form(self, cardholder_id):
         from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 
-        return CardholderForm.parse(self._pages[str(cardholder_id)])
+        pid = str(cardholder_id)
+        self.page_reads.append(pid)
+        if self.on_read is not None:
+            self.on_read(self, pid, len(self.page_reads))
+        return CardholderForm.parse(self._pages[pid])
 
     def card_formats(self, cardholder_id):
         return self._formats

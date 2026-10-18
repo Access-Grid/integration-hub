@@ -868,7 +868,14 @@ def test_an_operators_own_expiry_survives_the_overwrite(
         CredentialIdentity("66", "1238", None, datetime(2027, 9, 1, tzinfo=UTC)),
     ])
     # It survives by never being mentioned: the import has no expiration
-    # column, so the date an operator set cannot be overwritten by us. And
-    # because the slot has one, the card is written active.
-    assert "Expiration" not in client.imported_csv[-1]
-    assert _written_active(client, 1) is True
+    # column, so the date an operator set cannot be overwritten by us.
+    csv_text = client.imported_csv[-1]
+    assert "Expiration" not in csv_text
+    # The card does land in that slot...
+    assert _written_card(client, 1) == "1238"
+    # ...and because the slot already carries an expiry, it ends up active —
+    # expressed here as "the import never switches it off". The marker was
+    # already active, so under a diff there is no Active cell to send at all,
+    # which is the point: a value that already matches is not rewritten.
+    assert _written_active(client, 1) is not False
+    assert "Card 1 Active" not in csv_text

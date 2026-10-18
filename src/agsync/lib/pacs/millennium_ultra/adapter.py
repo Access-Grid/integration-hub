@@ -56,7 +56,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -70,7 +70,7 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
-from . import export, import_rows
+from . import export, import_rows, plan
 from .client import (
     ANTIFORGERY_COOKIE_PREFIX,
     CARD_SLOTS,
@@ -151,8 +151,23 @@ RETRY_MAX_SECONDS = 3600
 # has stopped and starts looking for what broke.
 PROGRESS_EVERY = 200
 
-# Millennium's date/time fields, e.g. "08/17/2028 12:00 AM".
+# Millennium's date/time fields, e.g. "08/17/2028 12:00 AM". What we write.
 DATE_FORMAT = "%m/%d/%Y %I:%M %p"
+
+# What we read, which is not the same thing. The cardholder form renders a
+# date without seconds; the bulk export prints them — "9/11/2026 12:00:00 AM"
+# for the field the form shows as "09/11/2026 12:00 AM". The same instant,
+# two spellings, and the difference matters more than it looks: the write
+# path diffs a desired date against the one the export reports, so a format
+# it cannot read compares as "different" and rewrites the date on every
+# cycle, forever. Each of those rewrites is a chance to get somebody's expiry
+# wrong. Date-only is accepted for the same reason — being able to read a
+# field is never worse than treating it as absent.
+DATE_FORMATS = (
+    DATE_FORMAT,
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y",
+)
 
 # Roster names arrive as "Last, Middle. First" — this install repurposes the
 # middle-name field as a card-type label ("HID", "RFID"), so a cardholder
@@ -235,12 +250,14 @@ def parse_datetime(value: str, offset_seconds: int) -> datetime | None:
     value = (value or "").strip()
     if not value:
         return None
-    try:
-        naive = datetime.strptime(value, DATE_FORMAT)
-    except ValueError:
-        logger.debug("Millennium: unparseable date %r", value)
-        return None
-    return (naive - timedelta(seconds=offset_seconds)).replace(tzinfo=UTC)
+    for shape in DATE_FORMATS:
+        try:
+            naive = datetime.strptime(value, shape)
+        except ValueError:
+            continue
+        return (naive - timedelta(seconds=offset_seconds)).replace(tzinfo=UTC)
+    logger.debug("Millennium: unparseable date %r", value)
+    return None
 
 
 def format_datetime(value: datetime, offset_seconds: int) -> str:
@@ -492,6 +509,9 @@ class MillenniumUltraAdapter:
         # empty for a reason that has nothing to do with any one name, and
         # saying so saves an operator looking for the wrong problem.
         self._export_ran = False
+        # Card format id -> display name. The import speaks names where the
+        # detail page speaks ids; None means not looked up yet.
+        self._format_labels: dict[str, str] | None = None
         # Cardholders the ledger says we hold cards on, refreshed once per
         # cycle. Diagnostics use it to tell "a stranger we skipped" from
         # "somebody we have written a credential to and then lost sight of",
@@ -889,9 +909,15 @@ class MillenniumUltraAdapter:
         if not writable:
             return False
         if not changed:
-            # Already as asked. Recorded anyway: this is how a card that
-            # nobody has touched since the upgrade acquires a record, and
-            # until it has one an operator's untick cannot be recognised.
+            # Already as asked, as of the page we just read. Short-circuited
+            # before any transport is chosen, because the alternative is a
+            # request — and on the fallback path a *full-form* request — to
+            # say nothing. The diff downstream would catch it, but only
+            # after paying for it.
+            #
+            # Recorded anyway: this is how a card that nobody has touched
+            # since the upgrade acquires a record, and until it has one an
+            # operator's untick cannot be recognised.
             if not dryrun.active():
                 SeosLedger.note_active(
                     pid, credential_id, dict.fromkeys(confirmed, want_active)
@@ -904,29 +930,30 @@ class MillenniumUltraAdapter:
             )
             return True
 
-        # Through the import where we can: it carries one cell per slot
-        # instead of re-posting the whole record, so nothing else about the
-        # cardholder is in the file and nothing else about them can be
-        # touched by it. Where the import cannot address the row by name,
-        # the form save still can, by id.
-        identity = self._identity_for(pid)
-        if identity is None:
-            logger.info(
-                "Millennium: switching cardholder %s's card %s through the "
-                "cardholder form rather than the import",
-                pid, "on" if want_active else "off",
+        # One opinion per slot, each naming the card it meant. The card
+        # number is the precondition that matters here: an operator who
+        # swaps the card in a slot between our read and our write would
+        # otherwise have the replacement switched off in the original's
+        # place, which is a revocation nobody asked for.
+        opinions = [
+            plan.SlotOpinion(
+                index=index,
+                active=want_active,
+                assumed_card=(by_index[index].card_number or None),
             )
-            ok = self._client.save_cardholder(pid, form)
-        else:
-            row = import_rows.RowWrite(
-                identity=identity,
-                slots=tuple(
-                    import_rows.SlotWrite(index=index, active=want_active)
-                    for index in confirmed
-                ),
-            )
-            ok = self._client.import_cardholders([row]).ok
+            for index in confirmed
+        ]
+        ok = self._apply(
+            pid, opinions,
+            form_fallback=lambda: self._client.save_cardholder(pid, form),
+            describe=f"has card(s) {', '.join(str(i) for i in confirmed)} "
+                     f"{'active' if want_active else 'inactive'}",
+        )
         if ok:
+            # Recorded on "already as asked" too, which `_apply` reports as
+            # done: it is how a card nobody has touched since the upgrade
+            # acquires a record, and until it has one an operator's untick
+            # cannot be recognised.
             SeosLedger.note_active(
                 pid, credential_id, dict.fromkeys(confirmed, want_active)
             )
@@ -1052,15 +1079,15 @@ class MillenniumUltraAdapter:
         # access levels on its trigger cards keeps the form save for this one
         # write, and gets exactly today's behaviour.
         #
-        # The other two conditions are about being able to address the row at
-        # all: a name that identifies one record, and the card format's
-        # display name, which is what the import's drop-down column takes.
-        row_identity = self._identity_for(pid)
+        # The card format is the other: its column is a drop-down taking a
+        # display name, which we may not have resolved.
+        #
+        # A name that does not identify exactly one record is the third
+        # reason, and `_apply` owns that one — the routing is the same
+        # either way, so it is decided in one place.
         reasons = []
         if levels:
             reasons.append("the card's access levels have to be carried over")
-        if row_identity is None:
-            reasons.append("the cardholder cannot be addressed by name")
         if not self._trigger_format_name():
             reasons.append("the trigger format's display name is unknown")
         use_import = not reasons
@@ -1072,7 +1099,7 @@ class MillenniumUltraAdapter:
             )
 
         by_index = {s.index: s for s in slots}
-        plan: list[import_rows.SlotWrite] = []
+        opinions: list[plan.SlotOpinion] = []
         for identity in pending:
             slot = free.pop(0)
             # Overwriting keeps the existing CardID so Millennium updates
@@ -1090,7 +1117,9 @@ class MillenniumUltraAdapter:
                 )
                 return False
             if use_import:
-                plan.append(self._slot_write(slot, identity, by_index.get(slot)))
+                opinions.append(
+                    self._slot_opinion(slot, identity, by_index.get(slot))
+                )
             else:
                 self._fill_slot(
                     form, slot, identity, card_id=replacing, access_levels=levels,
@@ -1111,13 +1140,38 @@ class MillenniumUltraAdapter:
             # that are not on the cardholder, which is how a later cycle
             # decides a pass has been revoked.
             return True
+        def _through_the_form() -> bool:
+            """The same change, carried by the cardholder form.
+
+            Reached either because the import cannot express this write or
+            because the cardholder cannot be addressed by name. When the
+            import was the plan, nothing has been written into `form` yet,
+            so the slots are filled here before it is posted.
+            """
+            if use_import:
+                for opinion in opinions:
+                    source = next(
+                        i for i in pending
+                        if str(i.card_number) == opinion.card_number
+                    )
+                    self._fill_slot(
+                        form, opinion.index, source,
+                        card_id=(
+                            marker.card_id
+                            if marker and opinion.index == marker.index else ""
+                        ),
+                        access_levels=levels,
+                    )
+            return self._client.save_cardholder(pid, form)
+
         if use_import:
-            assert row_identity is not None  # established by `reasons`
-            written_ok = self._client.import_cardholders(
-                [import_rows.RowWrite(identity=row_identity, slots=tuple(plan))]
-            ).ok
+            written_ok = self._apply(
+                pid, opinions,
+                form_fallback=_through_the_form,
+                describe="holds the card(s) this credential needs",
+            )
         else:
-            written_ok = self._client.save_cardholder(pid, form)
+            written_ok = _through_the_form()
         if not written_ok:
             return False
         SeosLedger.record(pid, credential_id, written)
@@ -1596,6 +1650,132 @@ class MillenniumUltraAdapter:
             },
         )
 
+    def _format_label(self, format_id: str) -> str:
+        """A card format's display name, which is what the import writes.
+
+        The detail page's `<select>` carries the numeric id; the export and
+        the import both speak the name. Diffing one against the other would
+        report every card's format as changed on every cycle, so the pair is
+        resolved here — once, since formats are install configuration.
+        """
+        if self._format_labels is None:
+            self._format_labels = {}
+            try:
+                self._format_labels = {str(fid): label for fid, label in self.card_formats()}
+            except Exception as e:  # noqa: BLE001 — a diff is not worth a cycle
+                logger.debug("Millennium: could not read the format list: %s", e)
+        return self._format_labels.get(str(format_id), "")
+
+    def _slot_state(self, slot: Slot) -> plan.SlotState:
+        """One slot as a baseline to diff against.
+
+        Text rather than parsed values, in the shapes Millennium itself
+        uses, because this is the thing an opinion is compared with — and
+        the comparison is what decides whether a cell is written at all.
+        """
+        return plan.SlotState(
+            card_number=slot.card_number,
+            facility_code=slot.facility_code,
+            card_format=self._format_label(slot.card_format),
+            activation=(
+                format_datetime(slot.activation, self._offset_seconds)
+                if slot.activation else ""
+            ),
+            expiration=(
+                format_datetime(slot.expiration, self._offset_seconds)
+                if slot.expiration else ""
+            ),
+            active=slot.active,
+        )
+
+    def _parse_date(self, value: str):
+        return parse_datetime(value, self._offset_seconds)
+
+    def _apply(
+        self,
+        pid: str,
+        opinions: list[plan.SlotOpinion],
+        *,
+        form_fallback: Callable[[], bool],
+        describe: str,
+    ) -> bool:
+        """Write only what differs, against a reading taken as late as possible.
+
+        This is the whole write path, and it has three jobs in order.
+
+        **Route.** The import matches a row by name, so a cardholder whose
+        name does not identify exactly one record goes back through the
+        cardholder form, which addresses a record by id and cannot land on
+        the wrong person.
+
+        **Re-read.** The opinions were formed earlier in the cycle, from a
+        page read before the phases ran. One more read, here, is the last
+        chance to notice that somebody has been in the record since — and it
+        costs one request on a path that runs a handful of times a cycle.
+        Planning against a stale page is how a card an operator added gets
+        overwritten.
+
+        **Diff.** What goes in the file is only the cells that differ from
+        that reading. A slot whose preconditions no longer hold is dropped
+        and re-planned next cycle rather than written over.
+
+        The one window this cannot close is its own: the three requests
+        between building the file and Millennium applying it. There is no
+        conditional write to be had here, so that remains, and it is roughly
+        300ms rather than the several seconds a plan made at the top of the
+        cycle would carry.
+        """
+        identity = self._identity_for(pid)
+        if identity is None:
+            logger.info(
+                "Millennium: writing cardholder %s through the cardholder form "
+                "rather than the import — they cannot be addressed by name",
+                pid,
+            )
+            return form_fallback()
+
+        try:
+            fresh = _read_slots(
+                self._client.get_cardholder_form(pid), self._offset_seconds
+            )
+        except MillenniumAuthError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "Millennium: could not re-read cardholder %s before writing, so "
+                "nothing was written: %s", pid, e,
+            )
+            return False
+
+        snapshot = {pid: {s.index: self._slot_state(s) for s in fresh}}
+        cardholder = plan.CardholderPlan(identity=identity)
+        for opinion in opinions:
+            cardholder.want(opinion)
+        diff = plan.build({pid: cardholder}, snapshot, self._parse_date)
+
+        for dropped in diff.diverged:
+            logger.warning(
+                "Millennium: cardholder %s — %s", dropped.person_id, dropped.reason
+            )
+        for dropped in diff.unchanged:
+            logger.debug(
+                "Millennium: cardholder %s — %s", dropped.person_id, dropped.reason
+            )
+
+        if diff.diverged:
+            # Nothing partial. A plan whose assumptions moved is re-made next
+            # cycle against what is actually there, which is cheap; writing
+            # the half that still fits would leave the record in a state no
+            # phase asked for.
+            return False
+        if not diff.rows:
+            # Millennium already holds every cell we had an opinion about.
+            # Reported as done, because it is: this is also how a card nobody
+            # has touched since the upgrade gets its first ledger entry.
+            logger.info("Millennium: cardholder %s already %s", pid, describe)
+            return True
+        return self._client.import_cardholders(diff.rows).ok
+
     def _identity_for(self, pid: str) -> import_rows.Identity | None:
         """How the import should name this cardholder, or None to refuse.
 
@@ -1634,12 +1814,12 @@ class MillenniumUltraAdapter:
             )
         return None
 
-    def _slot_write(
+    def _slot_opinion(
         self,
         index: int,
         identity: CredentialIdentity,
         current: Slot | None,
-    ) -> import_rows.SlotWrite:
+    ) -> plan.SlotOpinion:
         """One slot's worth of import columns for a card being written.
 
         Narrower than the form save by design — a column we do not name is a
@@ -1670,7 +1850,8 @@ class MillenniumUltraAdapter:
                 "cycle.",
                 index, identity.site_code, identity.card_number,
             )
-        return import_rows.SlotWrite(
+        empty = current is None or current.empty
+        return plan.SlotOpinion(
             index=index,
             card_number=str(identity.card_number),
             facility_code=str(identity.site_code),
@@ -1689,6 +1870,14 @@ class MillenniumUltraAdapter:
                 )
             ),
             active=has_expiry,
+            # The precondition. An empty slot was chosen *because* it was
+            # empty, so it must still be; the marker was chosen because it
+            # held a placeholder, so that placeholder must still be there.
+            # Either way a slot somebody filled in the meantime is left
+            # alone and the write re-planned next cycle — which is the
+            # difference between a stale plan being safe and being narrow.
+            assumed_empty=empty,
+            assumed_card=None if empty else (current.card_number or None),
         )
 
     def _slots_for_credential(
