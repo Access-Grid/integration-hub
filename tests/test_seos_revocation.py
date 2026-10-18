@@ -164,9 +164,9 @@ def test_suspending_follows_the_card_not_the_old_slot_number(
         "11587", "seos", CredentialStatus.SUSPENDED,
     )
     csv_text = client.imported_csv[0]
-    assert "Card 3 Active" in csv_text            # the card's current slot
+    assert "agsync_card_3_active" in csv_text            # the card's current slot
     assert "False" in csv_text
-    assert "Card 1 Active" not in csv_text        # trigger untouched
+    assert "agsync_card_1_active" not in csv_text        # trigger untouched
 
 
 def test_before_anything_is_written_the_pass_is_active(

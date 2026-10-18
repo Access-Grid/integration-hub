@@ -158,13 +158,13 @@ def test_the_first_passes_card_survives_the_second_being_issued(
     # something the round-trip has to get right and becomes something the
     # file cannot express.
     csv_text = client.imported_csv[-1]
-    assert "Card 2 Encoded Card No." not in csv_text, "pass A untouched"
+    assert "agsync_card_2_encoded_card_no" not in csv_text, "pass A untouched"
     assert "74" not in csv_text
     # The marker is consumed and the empty slot takes the other half of the
     # pair. There is no CardID column: a value in Card N's columns is that
     # slot's card, whichever card happens to be in it.
-    assert "Card 3 Encoded Card No." in csv_text
-    assert "Card 1 Encoded Card No." in csv_text
+    assert "agsync_card_3_encoded_card_no" in csv_text
+    assert "agsync_card_1_encoded_card_no" in csv_text
     rows = client.imported[-1]
     assert len(rows) == 1
     written = {s.index: s.card_number for s in rows[0].slots}
@@ -225,7 +225,7 @@ def test_the_status_write_finds_the_right_slots(
     states = {s.index: s.active for s in rows[0].slots}
     assert states == {3: False}, "B's card goes off, and only B's is in the file"
     # A's card stays on by not being mentioned at all.
-    assert "Card 2 Active" not in client.imported_csv[-1]
+    assert "agsync_card_2_active" not in client.imported_csv[-1]
 
 
 # =====================================================================

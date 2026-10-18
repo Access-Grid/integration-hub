@@ -70,7 +70,7 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
-from . import export, import_rows, plan
+from . import export, plan
 from .client import (
     ANTIFORGERY_COOKIE_PREFIX,
     CARD_SLOTS,
@@ -314,7 +314,7 @@ class SeosLedger:
 
         Millennium's checkbox carries no reason. A card we switched off
         because nobody had installed the pass yet looks exactly like one an
-        operator switched off to revoke somebody, and the install gate
+        operator switched off to suspend somebody, and the install gate
         reads the second as the first and switches it back on. What we
         wrote is the only thing that tells them apart.
         """
@@ -501,14 +501,13 @@ class MillenniumUltraAdapter:
         # The trigger format's display name, resolved once. "" means looked
         # for and not found; None means not looked for yet.
         self._trigger_format_label: str | None = None
-        # How the import names each cardholder, for the ids where that name
-        # is unambiguous. Rebuilt from the export every cycle and empty
-        # whenever the export did not run — see _identity_for.
-        self._import_identity: dict[str, import_rows.Identity] = {}
-        # Whether this cycle read an export at all. Without it the map is
-        # empty for a reason that has nothing to do with any one name, and
-        # saying so saves an operator looking for the wrong problem.
-        self._export_ran = False
+        # Employee IDs that name more than one cardholder in this cycle's
+        # export. Meant to stay empty: the field is unique across cardholders
+        # on this install, and the import matches rows on it. Verified anyway
+        # because the invariant is maintained by operators typing into a free
+        # text box, and a write against a duplicated one would reach a
+        # stranger's record.
+        self._duplicate_employee_ids: set[str] = set()
         # Card format id -> display name. The import speaks names where the
         # detail page speaks ids; None means not looked up yet.
         self._format_labels: dict[str, str] | None = None
@@ -540,8 +539,7 @@ class MillenniumUltraAdapter:
 
     def list_people(self) -> Iterable[Person]:
         self._roster = {}
-        self._import_identity = {}
-        self._export_ran = False
+        self._duplicate_employee_ids = set()
         self._read_this_cycle = 0
         self._ours = {key.partition(":")[0] for key in SeosLedger.all()}
         roster = self._client.list_cardholders()
@@ -616,8 +614,7 @@ class MillenniumUltraAdapter:
         is still read and confirmed; this only decides *which* pages to
         read, never what is true about them.
         """
-        self._import_identity = {}
-        self._export_ran = False
+        self._duplicate_employee_ids = set()
         label = self._trigger_format_name()
         if not label:
             return None
@@ -650,33 +647,23 @@ class MillenniumUltraAdapter:
                 if person.email or person.phone:
                     self._exported_contact[pid] = (person.email, person.phone)
 
-        # The import matches a row to a cardholder on name alone, so the
-        # write path needs to know which names identify exactly one record —
-        # on both sides. One export row and one roster entry for a name means
-        # a row carrying it lands where we read it. Anything else is withheld
-        # entirely rather than resolved to a first match: the import offers no
-        # way to say which of two people was meant, and the cost of guessing
-        # is a working credential on the wrong person's record.
-        self._export_ran = True
-        by_export: dict[tuple[str, str], list] = {}
+        # The import matches a row on Employee ID, which is unique across
+        # cardholders here. This is the cheap confirmation of that, and the
+        # only thing it ever needs to produce is the empty set.
+        seen: dict[str, int] = {}
         for person in rows:
-            by_export.setdefault(
-                export.name_key(person.first_name, person.last_name), []
-            ).append(person)
-        for key, people in by_export.items():
-            ids = by_name.get(key) or []
-            if len(people) != 1 or len(ids) != 1:
-                continue
-            self._import_identity[ids[0]] = import_rows.Identity(
-                first_name=people[0].first_name,
-                last_name=people[0].last_name,
-                card_type=people[0].card_type,
+            employee_id = (person.employee_id or "").strip()
+            if employee_id:
+                seen[employee_id] = seen.get(employee_id, 0) + 1
+        self._duplicate_employee_ids = {k for k, n in seen.items() if n > 1}
+        if self._duplicate_employee_ids:
+            logger.error(
+                "Millennium: %d Employee ID(s) name more than one cardholder "
+                "(%s). The import matches rows on that field, so nothing will "
+                "be written to them until the duplicates are resolved",
+                len(self._duplicate_employee_ids),
+                ", ".join(sorted(self._duplicate_employee_ids)[:10]),
             )
-        logger.info(
-            "Millennium: %d of %d cardholder(s) are named unambiguously enough "
-            "to write to by import",
-            len(self._import_identity), len(rows),
-        )
 
         candidates: set[str] = set()
         carrying = unmatched = 0
@@ -816,7 +803,7 @@ class MillenniumUltraAdapter:
                 # answer; left recorded, the cards would suspend whatever
                 # pass a new trigger card earned next, because a recorded
                 # card missing from the cardholder is how an operator's
-                # revocation is detected.
+                # suspension is detected.
                 #
                 # Safe precisely here and nowhere else: our own cards carry
                 # the trigger format, so a cardholder with no trigger slot
@@ -860,12 +847,12 @@ class MillenniumUltraAdapter:
 
         by_index = {s.index: s for s in current}
         if want_active:
-            # An operator unticking a card is how a pass is revoked here.
+            # An operator unticking a card is how a pass is suspended here.
             # Switching it back on because AccessGrid still shows the pass
             # installed overrules the person holding the console, and does
             # it silently, every cycle. Only refuse where we have a record
             # of having set that card on ourselves: without one we cannot
-            # tell a revocation from a card that has simply always been
+            # tell a suspension from a card that has simply always been
             # off, and refusing then would stop the install hand-off.
             recorded = SeosLedger.last_written_active(pid, credential_id)
             switched_off = [
@@ -934,7 +921,7 @@ class MillenniumUltraAdapter:
         # number is the precondition that matters here: an operator who
         # swaps the card in a slot between our read and our write would
         # otherwise have the replacement switched off in the original's
-        # place, which is a revocation nobody asked for.
+        # place, which is a suspension nobody asked for.
         opinions = [
             plan.SlotOpinion(
                 index=index,
@@ -1138,7 +1125,7 @@ class MillenniumUltraAdapter:
             )
             # The ledger is not recorded either: it would then name cards
             # that are not on the cardholder, which is how a later cycle
-            # decides a pass has been revoked.
+            # decides a pass has been suspended.
             return True
         def _through_the_form() -> bool:
             """The same change, carried by the cardholder form.
@@ -1725,19 +1712,8 @@ class MillenniumUltraAdapter:
         300ms rather than the several seconds a plan made at the top of the
         cycle would carry.
         """
-        identity = self._identity_for(pid)
-        if identity is None:
-            logger.info(
-                "Millennium: writing cardholder %s through the cardholder form "
-                "rather than the import — they cannot be addressed by name",
-                pid,
-            )
-            return form_fallback()
-
         try:
-            fresh = _read_slots(
-                self._client.get_cardholder_form(pid), self._offset_seconds
-            )
+            form = self._client.get_cardholder_form(pid)
         except MillenniumAuthError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -1747,8 +1723,28 @@ class MillenniumUltraAdapter:
             )
             return False
 
+        # One read gives both the key the import addresses rows by and the
+        # baseline the diff is taken against. Read off the record itself, so
+        # there is no join between the export and the roster to get wrong.
+        employee_id = form.value("EmployeeID").strip()
+        reason = ""
+        if not employee_id:
+            reason = "they have no Employee ID, which is what the import matches on"
+        elif employee_id in self._duplicate_employee_ids:
+            reason = (
+                f"Employee ID {employee_id} names more than one cardholder, so "
+                "an import row carrying it could reach the wrong record"
+            )
+        if reason:
+            logger.info(
+                "Millennium: writing cardholder %s through the cardholder form "
+                "rather than the import — %s", pid, reason,
+            )
+            return form_fallback()
+
+        fresh = _read_slots(form, self._offset_seconds)
         snapshot = {pid: {s.index: self._slot_state(s) for s in fresh}}
-        cardholder = plan.CardholderPlan(identity=identity)
+        cardholder = plan.CardholderPlan(employee_id=employee_id)
         for opinion in opinions:
             cardholder.want(opinion)
         diff = plan.build({pid: cardholder}, snapshot, self._parse_date)
@@ -1775,44 +1771,6 @@ class MillenniumUltraAdapter:
             logger.info("Millennium: cardholder %s already %s", pid, describe)
             return True
         return self._client.import_cardholders(diff.rows).ok
-
-    def _identity_for(self, pid: str) -> import_rows.Identity | None:
-        """How the import should name this cardholder, or None to refuse.
-
-        The import has no column for the record id. It matches a row on First
-        Name, Last Name and Card Type, so those values have to come from the
-        same table it matches against — which is what the export is a dump
-        of. Round-tripping the export's own spelling is the only way to be
-        sure a row lands on the record we read it from.
-
-        None has one meaning and it is always the same: *we cannot prove a
-        row would land on the right person*. Either the export did not run
-        this cycle, or that name belongs to more than one record.
-
-        It is a routing answer, not a refusal. The cardholder save addresses
-        a record by its id and cannot land on the wrong person however badly
-        it is built, so None sends the write back through the form — which is
-        what this adapter did for every write until now. Declining outright
-        would leave 42% of this roster unserviceable to protect them from a
-        risk the fallback does not carry.
-        """
-        identity = self._import_identity.get(str(pid))
-        if identity is not None:
-            return identity
-        if not self._export_ran:
-            logger.info(
-                "Millennium: no bulk export this cycle, so cardholder %s cannot "
-                "be addressed by name",
-                pid,
-            )
-        else:
-            logger.info(
-                "Millennium: cardholder %s shares a name with another record, or "
-                "has none the export agrees on — the import matches on name and "
-                "would be guessing which one",
-                pid,
-            )
-        return None
 
     def _slot_opinion(
         self,
@@ -2086,6 +2044,10 @@ class MillenniumUltraAdapter:
             # address exists for.
             "email": _first_valid_email(form.value("EMail"), form.value("CompanyEMail")),
             "phone": (form.value("Phone") or form.value("InternalPhone") or "").strip(),
+            # The key the import addresses rows by. Taken from the record
+            # itself rather than matched out of the export, so there is no
+            # join to get wrong.
+            "employee_id": form.value("EmployeeID").strip(),
             "enrolled": any(self._is_trigger(s) for s in slots),
         }
         self._profiles[pid] = profile
@@ -2110,7 +2072,7 @@ def _describe(slots: list[Slot]) -> str:
 # That is not hypothetical. The move to ASP.NET Core corrected the spelling
 # of FaciltyCode, so every card read with an empty facility code, the
 # ledger's 99/165 stopped matching the slot's ("", "165"), and every pass
-# was read as revoked. The write path already refused to guess — set_value
+# was read as suspended. The write path already refused to guess — set_value
 # raises for an unknown field — and only the read path was credulous.
 _REQUIRED_SLOT_FIELDS = (
     "CardID",
@@ -2128,7 +2090,7 @@ def _check_slot_shape(form: CardholderForm, prefix: str) -> None:
     A slot either has its fields or is not rendered at all; a slot with
     some of them has been renamed under us. Stopping the cycle is the
     point — the alternative is reading a card as though a field were blank
-    and deciding, downstream, that somebody's pass has been revoked.
+    and deciding, downstream, that somebody's pass has been suspended.
     """
     present = [n for n in _REQUIRED_SLOT_FIELDS if form.find(prefix + n) is not None]
     if not present or len(present) == len(_REQUIRED_SLOT_FIELDS):

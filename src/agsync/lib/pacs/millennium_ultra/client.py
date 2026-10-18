@@ -264,35 +264,129 @@ _EXPORT_REQUEST = {
 LETTER_CODES = tuple(range(ord("A"), ord("Z") + 1))
 
 
+# What the import log says it did. Millennium ends every run with these
+# four counts, and they are the only positive evidence an import produced
+# that anything happened:
+#
+#     Summary:
+#       0 cardholders added
+#       1 cardholders updated
+#       0 cards added
+#       1 cards updated
+#
+# Read rather than ignored because the rule we send makes a row that matches
+# no cardholder a *skip*, not an error — so a run that changed nothing is
+# reported exactly like one that changed everything. An earlier version of
+# this treated an empty log as the success signal, which would have failed
+# every write ever made: the log is never empty.
+_SUMMARY_LINE = re.compile(
+    r"^\s*(\d+)\s+(cardholders|cards)\s+(added|updated)\s*$",
+    re.MULTILINE,
+)
+
+
+@dataclass(frozen=True)
+class ImportSummary:
+    """The four counts, or None for one the log did not state."""
+
+    cardholders_added: int | None = None
+    cardholders_updated: int | None = None
+    cards_added: int | None = None
+    cards_updated: int | None = None
+
+    @classmethod
+    def parse(cls, log: str) -> ImportSummary:
+        found: dict[str, int] = {}
+        for count, subject, verb in _SUMMARY_LINE.findall(log or ""):
+            found[f"{subject}_{verb}"] = int(count)
+        return cls(
+            cardholders_added=found.get("cardholders_added"),
+            cardholders_updated=found.get("cardholders_updated"),
+            cards_added=found.get("cards_added"),
+            cards_updated=found.get("cards_updated"),
+        )
+
+    @property
+    def complete(self) -> bool:
+        return None not in (
+            self.cardholders_added,
+            self.cardholders_updated,
+            self.cards_added,
+            self.cards_updated,
+        )
+
+    def describe(self) -> str:
+        return (
+            f"{self.cardholders_added} cardholder(s) added, "
+            f"{self.cardholders_updated} updated; "
+            f"{self.cards_added} card(s) added, {self.cards_updated} updated"
+        )
+
+    def disagreement(self, rows: int, cells: int) -> str:
+        """Why these counts do not match what we sent, or "" when they do.
+
+        Checked rather than trusted, because every mismatch here is a
+        distinct failure with the same appearance — a successful-looking
+        import. In particular a cardholder *added* means the rule we send
+        was not the rule that ran, which is the one outcome that puts a
+        record into the customer's system that nobody asked for.
+        """
+        if not self.complete:
+            return (
+                "Millennium's import log did not carry the summary counts, so "
+                "there is no evidence the rows were applied"
+            )
+        if self.cardholders_added:
+            return (
+                f"Millennium's import ADDED {self.cardholders_added} "
+                "cardholder(s). It was sent the rule that only updates matched "
+                "records, so this should be impossible and nothing can be "
+                "assumed about what else it did"
+            )
+        if self.cards_added:
+            return (
+                f"Millennium's import added {self.cards_added} card(s) where "
+                "none were expected"
+            )
+        if self.cardholders_updated != rows:
+            return (
+                f"Millennium's import updated {self.cardholders_updated} "
+                f"cardholder(s) where {rows} row(s) were sent — the rest "
+                "matched no Employee ID"
+            )
+        if self.cards_updated != cells:
+            return (
+                f"Millennium's import updated {self.cards_updated} card(s) "
+                f"where {cells} were expected"
+            )
+        return ""
+
+
 @dataclass(frozen=True)
 class ImportOutcome:
     """What a finished import run amounted to.
 
-    ``ok`` means **and is only ever set when** the job completed, Millennium
-    called it a success, *and* the import log came back empty.
+    ``ok`` is set only when the job completed, Millennium called it a
+    success, and **its own summary counts agree with what we sent**.
 
-    That last condition is the load-bearing one, and it is deliberately
-    strict. The rule we send makes a row that matches no cardholder a skip
-    rather than an error, so Millennium reports an import that changed
-    nothing exactly as it reports one that changed everything: Success,
-    Completed, no Error. The log is the only place a skip appears.
+    That last condition carries the weight. The rule we send makes a row
+    matching no cardholder a skip rather than an error, so an import that
+    changed nothing is reported exactly like one that changed everything:
+    Success, Completed, no Error. The summary is the only positive evidence,
+    and checking it is what turns "the job ran" into "the rows were applied".
 
-    Which way to be wrong is a real choice, so: treating a noisy log as a
-    failure can only cost us a retry, and the next cycle's read of the
-    cardholder reconciles it. Treating it as a success would have the ledger
-    record a card we never wrote — and the ledger is what later decides
-    whether an operator revoked something, so a false entry there reads as a
-    revocation and stops a working pass. One is loud and cheap; the other is
-    silent and takes a week to find.
-
-    An install whose log is chatty on a clean run would therefore show up as
-    writes that never record, every cycle, in the log and in the refused
-    saves tab. Visible and one line to fix, which is the point.
+    Being wrong in this direction costs a retry, and the next cycle compares
+    again. Being wrong the other way records a card we never wrote — and
+    that record is what later decides whether an operator switched a card
+    off, so a false entry reads as a suspension and stops a working pass.
+    One is
+    loud and cheap; the other is silent for a week.
     """
 
     ok: bool
     rows: int
     log: str = ""
+    summary: ImportSummary | None = None
 
 
 class MillenniumError(RuntimeError):
@@ -689,16 +783,21 @@ class MillenniumUltraClient:
             )
 
         csv_text = import_rows.to_csv(rows)
-        headers = import_rows.columns_for(rows)
+        columns = import_rows.columns_for(rows)
+        # Every slot-field cell we are asking Millennium to change. Its
+        # summary reports "cards updated", and one slot touched is one card
+        # updated however many of its fields the row carries — so the
+        # expectation is the number of distinct slots, not of cells.
+        expected_cards = sum(len(r.slots) for r in rows)
         logger.info(
             "Millennium: importing %d row(s), %d column(s): %s",
-            len(rows), len(headers), "; ".join(r.describe() for r in rows),
+            len(rows), len(columns), "; ".join(r.describe() for r in rows),
         )
 
-        subject = ", ".join(r.identity.describe() for r in rows)
+        subject = ", ".join(f"Employee ID {r.employee_id}" for r in rows)
         page = self._upload_import_file(csv_text, subject=subject)
         try:
-            mapping = page.mapping(headers)
+            mapping = page.mapping(columns)
         except ImportFieldsUnavailable as e:
             # Nothing has been applied at this point — the upload only
             # stages the file — so this is a clean refusal rather than a
@@ -735,7 +834,9 @@ class MillenniumUltraClient:
                 f"Millennium refused to start the import: {started!r}"
             )
 
-        return self._await_import(csv_text, len(rows), subject=subject)
+        return self._await_import(
+            csv_text, len(rows), expected_cards, subject=subject
+        )
 
     def _import_token(self) -> str:
         """The anti-forgery token the upload is checked against.
@@ -820,15 +921,19 @@ class MillenniumUltraClient:
             raise MillenniumError(str(e)) from e
 
     def _await_import(
-        self, csv_text: str, row_count: int, subject: str = ""
+        self,
+        csv_text: str,
+        row_count: int,
+        expected_cards: int,
+        subject: str = "",
     ) -> ImportOutcome:
         """Poll the job, then read the log whatever the answer was.
 
-        The log is fetched on success as well as on failure. The rule we send
-        makes an unmatched row a skip rather than an error, so Millennium
-        reports a run that changed nothing as a successful import — which
-        means ``Success: true`` is not on its own evidence that anything was
-        applied, and the log is where that shows up.
+        The log is fetched on success as well as on failure, because the rule
+        we send makes an unmatched row a skip rather than an error — so
+        ``Success: true`` is not on its own evidence that anything was
+        applied. The summary at the end of that log is, and it is compared
+        against what we sent.
         """
         deadline = time.time() + IMPORT_TIMEOUT_S
         while time.time() < deadline:
@@ -847,22 +952,23 @@ class MillenniumUltraClient:
                 )
             if status.get("Completed") and status.get("Success"):
                 log = self._import_log(status.get("Context") or "")
-                if log.strip():
-                    # Not raised — the job itself did not fail — but not
-                    # reported as ok either. See ImportOutcome: a skipped row
-                    # is reported here and nowhere else, so a log we cannot
-                    # read as empty is a write we cannot claim happened.
-                    logger.warning(
-                        "Millennium's import finished with a log, so it is not "
-                        "being treated as applied: %s",
-                        log.strip()[:1000],
-                    )
+                summary = ImportSummary.parse(log)
+                complaint = summary.disagreement(row_count, expected_cards)
+                if complaint:
+                    # The job itself did not fail, so this is not raised —
+                    # but it is not reported as applied either. Nothing is
+                    # recorded and the next cycle compares again.
+                    logger.error("Millennium: %s", complaint)
                     self._keep_refused_import(
-                        csv_text, "the import log is not empty", log,
-                        subject=subject,
+                        csv_text, complaint, log, subject=subject
                     )
-                    return ImportOutcome(ok=False, rows=row_count, log=log)
-                return ImportOutcome(ok=True, rows=row_count, log=log)
+                    return ImportOutcome(
+                        ok=False, rows=row_count, log=log, summary=summary
+                    )
+                logger.info("Millennium's import: %s", summary.describe())
+                return ImportOutcome(
+                    ok=True, rows=row_count, log=log, summary=summary
+                )
             time.sleep(IMPORT_POLL_INTERVAL_S)
 
         raise MillenniumError(

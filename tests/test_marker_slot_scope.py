@@ -52,13 +52,20 @@ def _adapter(make_millennium_adapter, page):
     return adapter, client
 
 
-def _written(client) -> dict[int, tuple[str, str]]:
-    form = client.saved[-1][1]
+def _written(client) -> dict[int, str]:
+    """Slot -> the card number the import put there, "" for a slot it did
+    not touch.
+
+    Which slot is chosen is what these tests are about, and that decision is
+    unchanged by the move to an import. The card's internal id no longer
+    appears at all: the import addresses a slot, not a card, so there is
+    nothing to keep in place.
+    """
+    from tests._fakes import written_slot
+
     return {
-        i: (
-            form.value(f"Card_{i}_EncodedCardNumber"),
-            form.value(f"Card_{i}_CardID"),
-        )
+        i: (written_slot(client, i).card_number or "")
+        if written_slot(client, i) is not None else ""
         for i in (1, 2, 3)
     }
 
@@ -87,9 +94,9 @@ def test_another_credentials_card_is_not_a_marker(
     ) is True
 
     written = _written(client)
-    assert written[2] == ("74", "8100"), "pass A's installed card must survive"
-    assert written[3] == ("81", "8200"), "the operator's marker is what gets used"
-    assert written[1] == ("", ""), "the empty slot is left for a watch"
+    assert written[2] == "", "pass A's installed card is not in the file at all"
+    assert written[3] != "", "the operator's marker is what gets used"
+    assert written[1] == "", "the empty slot is left for a watch"
 
 
 def test_the_marker_is_still_consumed_rather_than_worked_around(
@@ -106,8 +113,8 @@ def test_the_marker_is_still_consumed_rather_than_worked_around(
     adapter.write_back_credentials(PID, "seos", [CredentialIdentity("66", "1238")])
 
     written = _written(client)
-    assert written[1] == ("1238", "7919"), "written over the marker, keeping its CardID"
-    assert written[2] == ("", "")
+    assert written[1] == "1238", "written over the marker"
+    assert written[2] == ""
 
 
 def test_a_card_from_any_credential_of_theirs_is_ours(
@@ -130,9 +137,9 @@ def test_a_card_from_any_credential_of_theirs_is_ours(
     ) is True
 
     written = _written(client)
-    assert written[1] == ("74", "8100")
-    assert written[2] == ("88", "8300")
-    assert written[3] == ("81", "8200")
+    assert written[1] == ""
+    assert written[2] == ""
+    assert written[3] != ""
 
 
 def test_a_stranger_card_in_the_trigger_format_is_still_a_marker(
@@ -157,8 +164,8 @@ def test_a_stranger_card_in_the_trigger_format_is_still_a_marker(
     )
 
     written = _written(client)
-    assert written[1] == ("81", "9001"), "the unrecorded card is the marker"
-    assert written[2] == ("74", "8100"), "ours is untouched"
+    assert written[1] != "", "the unrecorded card is the marker"
+    assert written[2] == "", "ours is untouched — not in the file"
 
 
 def test_the_card_id_is_recorded_in_the_cycle_log(

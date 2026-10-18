@@ -87,7 +87,7 @@ def _desired_card_status(cards: list) -> CredentialStatus:
 
     Three outcomes, and the order matters. A suspended pass is still an
     installed one — a holder who loses their phone still has it installed —
-    so asking "is it installed" first would read a revocation as a working
+    so asking "is it installed" first would read a suspension as a working
     credential and turn the card back on.
     """
     live = [c for c in cards if not is_dead(c)]

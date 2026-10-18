@@ -318,8 +318,8 @@ def test_s5_overwriting_the_marker_leaves_the_rest_of_the_record_alone(
     # The only columns in the file are the identity the row is matched on and
     # the slot being written.
     header = csv_text.split("\r\n")[0].split(",")
-    assert header[:3] == ["First Name", "Last Name", "Card Type"]
-    assert all(c.startswith("Card 1 ") for c in header[3:]), header
+    assert header[0] == "agsync_employee_id", "the key the row is matched on"
+    assert all(c.startswith("agsync_card_1_") for c in header[1:]), header
 
 
 # =====================================================================
@@ -878,4 +878,4 @@ def test_an_operators_own_expiry_survives_the_overwrite(
     # already active, so under a diff there is no Active cell to send at all,
     # which is the point: a value that already matches is not rewritten.
     assert _written_active(client, 1) is not False
-    assert "Card 1 Active" not in csv_text
+    assert "agsync_card_1_active" not in csv_text

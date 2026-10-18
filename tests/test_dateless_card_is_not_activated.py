@@ -122,8 +122,13 @@ def writing(make_millennium_adapter, millennium_page, set_slot, seos_ledger):
     return _build
 
 
-def _written(client) -> CardholderForm:
-    return client.saved[-1][1]
+def _written(client, slot: int = 1):
+    """What the import carried for that slot. The decisions below are
+    unchanged by the move from a full-form save to an import; only where
+    the values travel changed."""
+    from tests._fakes import written_slot
+
+    return written_slot(client, slot)
 
 
 def test_a_card_with_no_expiry_is_left_inactive(
@@ -141,9 +146,9 @@ def test_a_card_with_no_expiry_is_left_inactive(
             "11587", "seos", [CredentialIdentity("66", "1238")]
         ) is True
 
-    form = _written(client)
-    assert form.value("Card_1_EncodedCardNumber") == "1238", "the card is written"
-    assert form.is_checked("Card_1_Active") is False, "but not switched on"
+    written = _written(client)
+    assert written.card_number == "1238", "the card is written"
+    assert written.active is False, "but not switched on"
     assert "holds no expiration date" in caplog.text
 
 
@@ -175,7 +180,11 @@ def test_a_card_with_an_expiry_is_switched_on_as_before(
 
     adapter.write_back_credentials("11587", "seos", [CredentialIdentity("66", "1238")])
 
-    assert _written(client).is_checked("Card_1_Active") is True
+    # The marker it replaces is already active, so under a diff there is no
+    # Active cell to send — and "ends up on" is expressed as "is never
+    # switched off". The contrast with the dateless case above is the point:
+    # there, Active is explicitly written False.
+    assert _written(client).active is None
 
 
 def test_a_missing_activation_date_is_supplied(
@@ -192,9 +201,11 @@ def test_a_missing_activation_date_is_supplied(
 
     adapter.write_back_credentials("11587", "seos", [CredentialIdentity("66", "1238")])
 
-    form = _written(client)
-    assert form.value("Card_1_ActivationDate") != ""
-    assert form.is_checked("Card_1_Active") is True
+    written = _written(client)
+    assert written.activation, "a date was supplied"
+    # Not switched off, because the slot carries an expiry. Absent rather
+    # than True because the marker was already active.
+    assert written.active is None
 
 
 def test_an_activation_date_already_there_is_left_alone(
@@ -204,11 +215,11 @@ def test_an_activation_date_already_there_is_left_alone(
         millennium_page, 1, card_id="7919", card_number="1",
         facility_code="99", card_format="7", active=True,
     ))
-    before = CardholderForm.parse(
-        set_slot(millennium_page, 1, card_id="7919", card_number="1",
-                 facility_code="99", card_format="7", active=True)
-    ).value("Card_1_ActivationDate")
 
     adapter.write_back_credentials("11587", "seos", [CredentialIdentity("66", "1238")])
 
-    assert _written(client).value("Card_1_ActivationDate") == before
+    # Left alone by not being mentioned. The import carries no activation
+    # column at all here, which is a stronger guarantee than the form save
+    # could give: a date absent from the file cannot be written wrongly,
+    # whereas one echoed back could be.
+    assert _written(client).activation is None

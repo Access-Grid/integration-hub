@@ -23,14 +23,14 @@ from functools import partial
 
 from agsync.lib.pacs.millennium_ultra import plan
 from agsync.lib.pacs.millennium_ultra.adapter import parse_datetime
-from agsync.lib.pacs.millennium_ultra.import_rows import Identity, to_csv
+from agsync.lib.pacs.millennium_ultra.import_rows import to_csv
 
 PARSE = partial(parse_datetime, offset_seconds=0)
-KAI = Identity("Kai", "Mowatt")
+EMPLOYEE = "22344"
 
 
-def _plan(*opinions: plan.SlotOpinion, identity: Identity = KAI) -> dict:
-    cardholder = plan.CardholderPlan(identity=identity)
+def _plan(*opinions: plan.SlotOpinion, employee_id: str = EMPLOYEE) -> dict:
+    cardholder = plan.CardholderPlan(employee_id=employee_id)
     for opinion in opinions:
         cardholder.want(opinion)
     return {"11666": cardholder}
@@ -169,8 +169,8 @@ def test_the_file_carries_only_the_diffed_cells():
     )
 
     assert to_csv(diff.rows) == (
-        "First Name,Last Name,Card Type,Card 2 Active\r\n"
-        "Kai,Mowatt,,False\r\n"
+        "agsync_employee_id,agsync_card_2_active\r\n"
+        "22344,False\r\n"
     )
 
 
@@ -307,7 +307,7 @@ def test_two_phases_speaking_about_one_slot_merge_field_by_field():
     The later opinion wins per field, so neither phase has to know the
     other ran.
     """
-    cardholder = plan.CardholderPlan(identity=KAI)
+    cardholder = plan.CardholderPlan(employee_id=EMPLOYEE)
     cardholder.want(
         plan.SlotOpinion(
             index=3, card_number="90", facility_code="99", active=True,
@@ -330,7 +330,7 @@ def test_a_precondition_survives_a_later_opinion_that_omits_it():
     A second speaker with no view on what the slot held must not be able to
     discard the first speaker's reason for choosing it.
     """
-    cardholder = plan.CardholderPlan(identity=KAI)
+    cardholder = plan.CardholderPlan(employee_id=EMPLOYEE)
     cardholder.want(
         plan.SlotOpinion(index=3, card_number="90", assumed_empty=True)
     )

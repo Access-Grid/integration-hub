@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field, replace
 
-from .import_rows import Identity, RowWrite, SlotWrite
+from .import_rows import RowWrite, SlotWrite
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +130,15 @@ class SlotOpinion:
 
 @dataclass
 class CardholderPlan:
-    """Everything this cycle wants changed about one cardholder."""
+    """Everything this cycle wants changed about one cardholder.
 
-    identity: Identity
+    Addressed by Employee ID, which is what the import matches a row on and
+    which is unique across cardholders on this install. A blank one cannot
+    be written to at all, so the caller establishes that it is present
+    before building a plan at all.
+    """
+
+    employee_id: str
     # Which credential asked for each slot, so a confirmed write can be
     # recorded against the right ledger entry.
     credential_ids: dict[int, str] = field(default_factory=dict)
@@ -322,7 +328,7 @@ def build(
 
         if not changes:
             continue
-        rows.append(RowWrite(identity=plan.identity, slots=tuple(changes)))
+        rows.append(RowWrite(employee_id=plan.employee_id, slots=tuple(changes)))
         written[person_id] = {change.index: change for change in changes}
 
     return Diff(

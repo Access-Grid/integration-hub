@@ -155,14 +155,14 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             continue
 
         # A pass nobody has installed has an inactive card in the PACS
-        # because phase 4 put it that way, not because anyone revoked it.
+        # because phase 4 put it that way, not because anyone suspended it.
         # Pushing that back would suspend the pass the holder is about to
         # install, and a suspended pass cannot be installed — so the two
         # phases would deadlock on each other.
         #
         # Only for credentials we minted. Where the card is the customer's
         # own, an operator switching it off before anyone installed is a
-        # real revocation and has to reach AccessGrid.
+        # real suspension and has to reach AccessGrid.
         if (
             desired == "suspended"
             and ag_state == "created"

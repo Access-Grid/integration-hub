@@ -1,42 +1,40 @@
 """Millennium's import field catalogue, read off the page that offers it.
 
-The import is a four-step conversation, and this module owns the awkward
-middle. Step one uploads the CSV to
+Step one of an import uploads the file to
 ``/DatabaseFunctions/ImportCardholders/SelectFields``, and the page that
 comes back is the only place two things are stated:
 
   * **the system fields this install has**, each with the numeric ``ID``,
-    ``Card`` slot and ``TenantID`` that step two's JSON has to name. They
+    ``Card`` slot and ``TenantID`` that step two's payload must name. They
     arrive as ``<a>`` elements carrying ``data-id``, ``data-card`` and
-    ``data-tenant-id``, labelled with the same text the export prints as its
-    column headers — "Card 1 Encoded Card No.", "Card 2 Facility Code".
-  * **which of our CSV's columns it actually read**, each with the
-    ``data-user-column-id`` step two has to echo back.
+    ``data-tenant-id``, labelled the way the field screen spells them.
+  * **which of our columns it read**, each with the ``data-user-column-id``
+    step two has to echo back.
 
-Reading the catalogue rather than hard-coding it is the whole point. The
-numeric ids are install configuration: access levels run from 200, their
-activation dates from 456 and their expirations from 712, so an install with
-a different number of them presents a different list. More to the point, a
-hard-coded map is how ``FaciltyCode`` cost us a day — the name was wrong,
-nothing checked it, and the write silently did nothing. Here a label we
-cannot find is raised before a single row is sent.
+Reading the catalogue rather than hard-coding it is the point. The numeric
+ids are install configuration — access levels run from 200, their activation
+dates from 456, their expirations from 712 — and a hard-coded map is how
+``FaciltyCode`` cost us a day: the name was wrong, nothing checked it, and
+the write silently did nothing. Here a label we cannot find is raised before
+a single row is sent.
 
-**The page sorts our columns into two lists, and both matter.** A header
-whose text exactly matches a system field is paired up for us and moves into
-``#configured_fields``, as two ``<a>`` elements: the left one carrying our
-column, the right one carrying that field's ids but rendered with no label at
-all. A header that matches nothing is left loose in ``#available_fields``,
-and the field it ought to go to stays in the ``#selected_fields`` catalogue.
-Since we name our columns with the system labels, we mostly get the first
-case — and reading only the catalogue would then find nothing, because the
-server had already taken those entries out of it. So both are parsed, and a
-pairing the server has already made is preferred to one we would infer.
+Two things about this page were learned the hard way, by testing against the
+live install, and both are load-bearing.
 
-Three columns are special. "First Name", "Last Name" and "Card Type" are not
-system fields: the server pairs all three against the sentinel ``ID`` 1 with
-an empty ``Name``, and uses them to decide which cardholder a row is about.
-They are mandatory, they come first, and :mod:`import_rows` writes them back
-exactly as the export printed them.
+**A field entry of ``ID`` 1 with an empty ``Name`` means "this column is
+deliberately unmapped".** It is not a sentinel the identity columns are
+paired against, which is what an earlier reading of a capture suggested. The
+real person-level fields are First Name 1, Last Name 2, Card Type 3 and
+Employee ID 4, and the empty right-hand entries in ``#configured_fields``
+are placeholders for columns nobody has assigned yet.
+
+**A header that exactly matches a system field is placed automatically — and
+that field is then removed from this page's own catalogue.** So naming a
+column after the field it feeds is precisely how we lose the ability to read
+back which numeric field it means. :mod:`import_rows` therefore names every
+column with an alias that matches nothing, which keeps every column loose and
+the catalogue whole. If one of our aliases is ever placed, that is a bug in
+the aliasing and it is raised rather than worked around.
 """
 
 from __future__ import annotations
@@ -47,18 +45,15 @@ from html.parser import HTMLParser
 
 logger = logging.getLogger(__name__)
 
-# The identity columns, in the order the server pairs them. Not system
-# fields: all three map to IDENTITY_FIELD_ID with an empty Name, and they are
-# how the import matches a row to a cardholder.
-IDENTITY_COLUMNS = ("First Name", "Last Name", "Card Type")
+# The marker for a column we are carrying but not writing. Not used by this
+# adapter — every column we send is mapped — but recognised so that a page
+# carrying them is read correctly.
+UNMAPPED_FIELD_ID = 1
 
-# The sentinel the server pairs the identity columns against.
-IDENTITY_FIELD_ID = 1
-
-# `#available_fields` holds the CSV columns the server could not place,
-# `#configured_fields` the pairs it could, and `#selected_fields` the
-# catalogue of system fields still unused. Only the list ids tell them
-# apart — the markup inside is otherwise identical.
+# `#available_fields` holds the columns the server could not place,
+# `#configured_fields` the ones it could, and `#selected_fields` the
+# catalogue of system fields still unassigned. Only the list ids tell them
+# apart; the markup inside is identical.
 _AVAILABLE = "available_fields"
 _CONFIGURED = "configured_fields"
 _CATALOGUE = "selected_fields"
@@ -66,7 +61,7 @@ _CATALOGUE = "selected_fields"
 
 @dataclass(frozen=True)
 class SystemField:
-    """One importable field, as step two's JSON needs it named."""
+    """One importable field, as step two's payload needs it named."""
 
     label: str
     field_id: int
@@ -74,18 +69,16 @@ class SystemField:
     tenant_id: int
 
     def mapped_to(self, column_index: int, header: str) -> dict:
-        """The `ImportedFields` entry pointing `header` at this field.
+        """The field entry pointing `header` at this field.
 
-        ``Name`` is the system field's label and ``UserColumnName`` our CSV
-        header. They are the same text whenever we have named a column after
-        the field it feeds, which is the convention :mod:`import_rows`
-        follows — but a field the server paired up for us arrives with no
-        label rendered, so the header stands in for it.
+        ``Name`` is Millennium's own label and must match it exactly — the
+        access level labels carry a double space, for instance — which is
+        why it is always read off the page and never typed here.
         """
         return {
             "Card": self.card,
             "ID": self.field_id,
-            "Name": self.label or header,
+            "Name": self.label,
             "TenantID": self.tenant_id,
             "UserColumnID": column_index,
             "UserColumnName": header,
@@ -93,11 +86,11 @@ class SystemField:
 
 
 class ImportFieldsUnavailable(RuntimeError):
-    """The SelectFields page did not say what we need it to say.
+    """The field screen did not say what we need it to say.
 
     Raised rather than worked around. Every path out of here ends in a write
-    to somebody's access control, and a guess about which numeric field id
-    means "facility code" is not a thing to write on.
+    to somebody's access control, and a guess about which numeric field means
+    "facility code" is not a thing to write on.
     """
 
 
@@ -109,27 +102,24 @@ def _attr(attrs: list[tuple[str, str | None]], name: str) -> str:
 
 
 class _FieldsParser(HTMLParser):
-    """Pulls the three field lists out of the SelectFields page.
+    """Pulls the three lists out of the field screen.
 
-    Nesting is tracked by depth rather than by tag name: the lists sit inside
-    several layers of Bootstrap panels, and the only dependable marker is the
-    ``id`` on the ``<div class="list-group">`` itself.
+    Nesting is tracked by depth rather than tag name: the lists sit inside
+    several layers of panels, and the only dependable marker is the ``id`` on
+    the ``<div class="list-group">`` itself.
     """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        # label -> field, for the fields still unassigned.
         self.catalogue: list[SystemField] = []
-        # (column_index, header) for every CSV column the server read.
+        # (column index, header) for every column of ours the server read.
         self.columns: list[tuple[int, str]] = []
-        # (header, field) for the pairs the server made itself.
-        self.paired: list[tuple[str, SystemField]] = []
+        # Headers the server placed against a system field by itself.
+        self.placed: list[str] = []
         self._list = ""
         self._depth = 0
         self._item: dict | None = None
         self._text: list[str] = []
-        # The left half of a configured pair, waiting for its right half.
-        self._pending_header: str | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "div":
@@ -140,7 +130,6 @@ class _FieldsParser(HTMLParser):
                 if name in (_AVAILABLE, _CONFIGURED, _CATALOGUE):
                     self._list = name
                     self._depth = 0
-                    self._pending_header = None
             return
         if tag != "a" or not self._list:
             return
@@ -161,7 +150,6 @@ class _FieldsParser(HTMLParser):
         if tag == "div" and self._list:
             if self._depth == 0:
                 self._list = ""
-                self._pending_header = None
             else:
                 self._depth -= 1
             return
@@ -172,44 +160,26 @@ class _FieldsParser(HTMLParser):
         self._text = []
 
         if self._list == _CATALOGUE:
-            self._take_system_field(item, label)
+            if label and item["id"]:
+                field = self._system_field(item, label)
+                if field is not None:
+                    self.catalogue.append(field)
             return
 
-        # One of our CSV's columns, in either list that names them. The left
-        # half of a configured pair carries data-left, as does every entry in
-        # the available list.
+        # One of our columns, in whichever list names it.
         if item["user_column_id"] and (self._list == _AVAILABLE or item["left"]):
             try:
                 self.columns.append((int(item["user_column_id"]), label))
             except ValueError:
                 logger.debug(
-                    "Millennium: unreadable user column id %r", item["user_column_id"]
+                    "Millennium: unreadable column id %r", item["user_column_id"]
                 )
             else:
                 if self._list == _CONFIGURED:
-                    self._pending_header = label
-            return
-
-        # The right half of a configured pair: the field our column was
-        # matched to. Rendered with no label, so it is identified by the
-        # header it follows rather than by its own text.
-        if self._list == _CONFIGURED and self._pending_header is not None:
-            field = self._system_field(item, label)
-            if field is not None:
-                self.paired.append((self._pending_header, field))
-            self._pending_header = None
-
-    def _take_system_field(self, item: dict, label: str) -> None:
-        if not label:
-            return
-        field = self._system_field(item, label)
-        if field is not None:
-            self.catalogue.append(field)
+                    self.placed.append(label)
 
     @staticmethod
     def _system_field(item: dict, label: str) -> SystemField | None:
-        if not item["id"]:
-            return None
         try:
             return SystemField(
                 label=label,
@@ -224,11 +194,11 @@ class _FieldsParser(HTMLParser):
 
 @dataclass(frozen=True)
 class SelectFieldsPage:
-    """What the server understood about the CSV we just uploaded."""
+    """What the server understood about the file we just uploaded."""
 
     catalogue: dict[str, SystemField]
     columns: dict[str, int]
-    paired: dict[str, SystemField]
+    placed: tuple[str, ...]
 
     @classmethod
     def parse(cls, html: str) -> SelectFieldsPage:
@@ -237,71 +207,61 @@ class SelectFieldsPage:
         page = cls(
             catalogue={f.label: f for f in parser.catalogue},
             columns={header: index for index, header in parser.columns},
-            paired=dict(parser.paired),
+            placed=tuple(parser.placed),
         )
-        if not page.catalogue and not page.paired:
+        if not page.catalogue:
             raise ImportFieldsUnavailable(
                 "Millennium's import page listed no system fields — it is not "
                 "the field-selection screen, or the page shape has changed"
             )
         if not page.columns:
             raise ImportFieldsUnavailable(
-                "Millennium's import page listed none of our CSV's columns — "
-                "the upload did not arrive as a CSV with a header row"
+                "Millennium's import page listed none of our file's columns — "
+                "the upload did not arrive as a file with a header row"
             )
         return page
 
-    def field_for(self, header: str) -> SystemField | None:
-        """The field a header feeds, preferring the server's own pairing.
+    def mapping(self, columns: list[tuple[str, str]]) -> list[dict]:
+        """The field entries for step two, one per column of ours.
 
-        A pairing the server made is better evidence than one we would look
-        up by name: it is what that install will actually do with the
-        column, label collisions and all.
-        """
-        return self.paired.get(header) or self.catalogue.get(header)
-
-    def mapping(self, headers: list[str]) -> list[dict]:
-        """`ImportedFields` for step two, one entry per CSV column.
-
-        The column index comes from the server's own
+        `columns` is (header alias, Millennium label) in file order. Every
+        column must be mapped — we only ever send columns we are writing — and
+        the column index comes from the server's own
         ``data-user-column-id``, never from our position in the header row.
         The two agree on every capture we have; if they ever stop agreeing it
         is the server's number that decides which column it reads, so taking
-        ours would write the right value into the wrong field — the one
-        outcome worth engineering against.
+        ours would write the right value into the wrong field.
         """
-        missing = [h for h in headers if h not in self.columns]
+        aliases = [alias for alias, _ in columns]
+
+        unread = [a for a in aliases if a not in self.columns]
+        if unread:
+            raise ImportFieldsUnavailable(
+                "Millennium's import page did not read these columns: "
+                f"{', '.join(unread)} — it read {', '.join(sorted(self.columns))}"
+            )
+
+        # Our aliases are built not to match any Millennium label, so the
+        # server should never place one. If it has, the alias collided and
+        # the field has been taken out of the catalogue — which is exactly
+        # the condition that makes a mapping unreadable.
+        collided = [a for a in aliases if a in self.placed]
+        if collided:
+            raise ImportFieldsUnavailable(
+                f"Millennium placed our own column(s) {', '.join(collided)} "
+                "against a field of its own, so their ids cannot be read back. "
+                "The header aliasing needs to change"
+            )
+
+        missing = [label for _, label in columns if label not in self.catalogue]
         if missing:
             raise ImportFieldsUnavailable(
-                "Millennium's import page did not read these CSV column(s): "
-                f"{', '.join(missing)} — it read {', '.join(sorted(self.columns))}"
-            )
-
-        unknown = [
-            h for h in headers
-            if h not in IDENTITY_COLUMNS and self.field_for(h) is None
-        ]
-        if unknown:
-            raise ImportFieldsUnavailable(
                 "Millennium's import offers no field called "
-                f"{', '.join(repr(h) for h in unknown)} on this install — the "
-                "column labels have changed and nothing would be written"
+                f"{', '.join(repr(m) for m in missing)} on this install — the "
+                "field labels have changed and nothing would be written"
             )
 
-        out: list[dict] = []
-        for header in headers:
-            index = self.columns[header]
-            if header in IDENTITY_COLUMNS:
-                out.append({
-                    "Card": 0,
-                    "ID": IDENTITY_FIELD_ID,
-                    "Name": "",
-                    "TenantID": 0,
-                    "UserColumnID": index,
-                    "UserColumnName": header,
-                })
-                continue
-            field = self.field_for(header)
-            assert field is not None  # established by the `unknown` check
-            out.append(field.mapped_to(index, header))
-        return out
+        return [
+            self.catalogue[label].mapped_to(self.columns[alias], alias)
+            for alias, label in columns
+        ]

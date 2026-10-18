@@ -174,7 +174,12 @@ class FakeMillenniumClient:
             record = {"First Name": first, "Last Name": last, "Card Type": ""}
             html = self._pages.get(pid)
             if html:
-                for slot in _read_slots(CardholderForm.parse(html), 0):
+                form = CardholderForm.parse(html)
+                # The key the import matches rows on. Carried because the
+                # adapter counts it to find duplicates, and a fake that
+                # always left it blank would make that check untestable.
+                record["Employee ID"] = form.value("EmployeeID").strip()
+                for slot in _read_slots(form, 0):
                     if slot.empty:
                         continue
                     record[f"Card {slot.index} Encoded Card No."] = slot.card_number
@@ -225,3 +230,19 @@ class FakeMillenniumClient:
 
     def close(self):
         pass
+
+
+def written_slot(client, slot: int, row: int = -1):
+    """The slot write the last import carried for `slot`, or None.
+
+    None means the slot was not in the file at all — which under a diff is
+    exactly what "left alone" looks like, there being no round-trip to
+    preserve. That makes it a stronger statement than the old form-based
+    equivalent: a field absent from the file cannot be written wrongly,
+    whereas a field echoed back could be.
+    """
+    assert client.imported, "expected an import"
+    for write in client.imported[row][-1].slots:
+        if write.index == slot:
+            return write
+    return None

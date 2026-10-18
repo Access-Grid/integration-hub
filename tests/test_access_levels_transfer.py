@@ -166,8 +166,12 @@ def test_a_marker_with_no_levels_writes_none(
         CredentialIdentity("66", "1238"), CredentialIdentity("66", "1243"),
     ])
 
-    assert _field(client, "Card_1_AccessLevels") == "{}"
-    assert _field(client, "Card_2_AccessLevels") == "{}"
+    # With nothing to carry over, the write goes through the import — and
+    # the import has no access level column at all, so "writes none" is
+    # guaranteed by the file's shape rather than by a value in it.
+    csv_text = client.imported_csv[-1]
+    assert "access" not in csv_text.lower()
+    assert client.saved == [], "no full-form save was needed"
 
 
 def test_an_empty_blob_is_skipped_in_favour_of_a_real_one(

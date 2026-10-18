@@ -18,7 +18,7 @@ from agsync.lib.pacs.millennium_ultra.adapter import (
     synthesize_email,
 )
 from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
-from tests._fakes import FakeMillenniumClient
+from tests._fakes import FakeMillenniumClient, written_slot
 
 TRIGGER = "7"  # "HID 37" in the captured page's format list
 OTHER = "1"    # "Wiegand Card"
@@ -161,11 +161,14 @@ def test_suspend_unchecks_active_and_leaves_the_card(
     # the form save could give: there, every field had to be echoed back
     # correctly to survive, and here there is nothing to echo.
     assert client.saved == []
-    csv_text = _imported(client)
-    assert "Card 1 Active" in csv_text
-    assert "False" in csv_text
-    assert "1234" not in csv_text
-    assert "7919" not in csv_text
+    written = written_slot(client, 1)
+    assert written.active is False, "the box is switched off"
+    # The card's number and internal id are not in the file at all, which is
+    # a stronger guarantee than the form save could give: there, every field
+    # had to be echoed back correctly to survive.
+    assert written.card_number is None
+    assert written.facility_code is None
+    assert "7919" not in _imported(client)
 
 
 def test_resume_rechecks_active(make_millennium_adapter, millennium_page, set_slot):
@@ -178,7 +181,7 @@ def test_resume_rechecks_active(make_millennium_adapter, millennium_page, set_sl
     adapter = make_millennium_adapter(client)
     list(adapter.list_people())
     assert adapter.update_credential_status("11587", "slot1", CredentialStatus.ACTIVE)
-    assert "Card 1 Active" in _imported(client)
+    assert "agsync_card_1_active" in _imported(client)
     assert "True" in _imported(client)
 
 
@@ -290,23 +293,28 @@ def test_seos_overwrites_the_marker_then_fills_an_empty_slot(
     ]
     assert adapter.write_back_credentials("11587", "seos", identities) is True
 
-    _, form = client.saved[0]
-    _, body = form.to_multipart()
-    # The marker's slot is reused, keeping its CardID so Millennium updates
-    # that card rather than creating a second one beside it.
-    assert b'name="Card_1_CardID"\r\n\r\n7919\r\n' in body
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5001\r\n' in body
-    assert b'name="Card_1_FacilityCode"\r\n\r\n66\r\n' in body
-    assert b'name="Card_1_Active"\r\n\r\ntrue\r\n' in body
-    # The placeholder number it replaced is gone.
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n1234\r\n' not in body
-    # The second credential creates a card: CardID empty, rest filled.
-    assert b'name="Card_2_CardID"\r\n\r\n\r\n' in body
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5002\r\n' in body
-    # Written with the trigger format, so the next cycle recognises them.
-    written = CardholderForm.parse(page)
-    assert form.value("Card_2_CardFormat") == TRIGGER
-    assert written.value("Card_2_CardFormat") != TRIGGER  # unchanged in the source
+    # The marker's slot is reused. There is no CardID column and none is
+    # needed: a value in a slot's columns is that slot's card, whichever
+    # card happens to be in it.
+    first = written_slot(client, 1)
+    assert first.card_number == "5001"
+    # The facility code is absent because the marker already carries 66, and
+    # a diff does not restate what already matches.
+    assert first.facility_code is None
+    assert "7919" not in client.imported_csv[-1]
+    # Already active, so a diff has no Active cell to send.
+    assert first.active is None
+    # The second credential goes into the empty slot. No CardID column is
+    # sent there either — the slot is the address.
+    second = written_slot(client, 2)
+    assert second.card_number == "5002"
+    assert second.facility_code == "66", "an empty slot needs it stated"
+    # Written with the trigger format's display name, so the next cycle
+    # recognises them. The import's Card Format column is a drop-down and
+    # takes the name, where the page's <select> carries the numeric id.
+    assert second.card_format == "HID 37"
+    source = CardholderForm.parse(page)
+    assert source.value("Card_2_CardFormat") != TRIGGER  # unchanged in the source
 
 
 def test_seos_write_records_the_slots_it_used(
@@ -388,10 +396,10 @@ def test_seos_suspend_targets_the_written_slots(
         "11587", "seos", CredentialStatus.SUSPENDED,
     )
     csv_text = _imported(client)
-    assert "Card 2 Active" in csv_text
+    assert "agsync_card_2_active" in csv_text
     # The trigger card itself is the operator's. It is not in the file, so
     # nothing this write does can reach it.
-    assert "Card 1 Active" not in csv_text
+    assert "agsync_card_1_active" not in csv_text
 
 
 # --- setup-time discovery ------------------------------------------------
@@ -536,9 +544,8 @@ def test_a_genuinely_new_device_is_still_written_alongside_a_removed_one(
         "11587", "seos",
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is True
-    _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5002\r\n' in body   # the new one
-    assert b"5001" not in body                                          # not the deleted one
+    assert written_slot(client, 1).card_number == "5002"      # the new one
+    assert "5001" not in client.imported_csv[-1]              # not the deleted one
 
 
 def test_a_long_sweep_reports_progress(
@@ -591,11 +598,10 @@ def test_the_marker_is_told_apart_from_our_own_cards(
         "11587", "seos",
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is True
-    _, body = client.saved[0][1].to_multipart()
     # Slot 1 is the marker, so 5002 lands there.
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5002\r\n' in body
-    # Slot 2 holds a card we issued, and keeps it.
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5001\r\n' in body
+    assert written_slot(client, 1).card_number == "5002"
+    # Slot 2 holds a card we issued, and keeps it by not being in the file.
+    assert written_slot(client, 2) is None
 
 
 def test_a_cardholder_with_no_marker_left_writes_into_empty_slots(
@@ -618,6 +624,7 @@ def test_a_cardholder_with_no_marker_left_writes_into_empty_slots(
         "11587", "seos",
         [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
     ) is True
-    _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5002\r\n' in body
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5001\r\n' in body
+    # 5001 already sits in slot 1, so only the new card is written, into the
+    # empty slot beside it.
+    assert written_slot(client, 2).card_number == "5002"
+    assert written_slot(client, 1) is None

@@ -1,18 +1,21 @@
-"""The four requests a cardholder import actually makes.
-
-This is the write path, so the tests are about the two things that could go
-wrong quietly: sending the wrong rule, and sending a field mapping built on
-a guess. Both are invisible in a 200 — Millennium answers a successful job
-and an import that matched nothing the same way.
+"""The four requests a cardholder import makes, and how we know it worked.
 
   step   request
   1      POST /DatabaseFunctions/ImportCardholders/SelectFields   (multipart)
-  2      POST /DatabaseFunctions/ImportCardholders/ImportCardholdersNow (JSON)
+  2      POST /DatabaseFunctions/ImportCardholders/ImportCardholdersNow
   3      GET  /api/LongOperationStatus?OperationType=CardholdersImport
   4      GET  /DatabaseFunctions/ImportCardholders/GetImportLogFile/{Context}
 
-Every URL, parameter and JSON key here is from a capture of the live install
-on 2026-10-16, down to the shape of the `Context` ("27-24").
+Every address, parameter and payload key here comes from a capture of the
+live install. Two behaviours pinned below were learned by testing against it
+and are easy to get wrong from a capture alone:
+
+* the field identifiers run **First Name 1, Last Name 2, Card Type 3,
+  Employee ID 4**, and an entry of identifier 1 with an empty name means
+  "this column is deliberately unmapped" rather than a shared sentinel; and
+* the import log is **never empty on success** — it ends with a summary of
+  what it did, and that summary is the only positive evidence the rows were
+  applied.
 """
 
 from __future__ import annotations
@@ -30,10 +33,7 @@ from agsync.lib.pacs.millennium_ultra.client import (
     MillenniumError,
     MillenniumUltraClient,
 )
-from agsync.lib.pacs.millennium_ultra.import_fields import (
-    IDENTITY_COLUMNS,
-    SelectFieldsPage,
-)
+from agsync.lib.pacs.millennium_ultra.import_fields import SelectFieldsPage
 
 FIXTURES = pathlib.Path(__file__).parent / "millennium_fixtures"
 SELECT_FIELDS = (FIXTURES / "import_select_fields.html").read_text()
@@ -43,78 +43,26 @@ LANDING = (
     'type="hidden" value="landing-token"/></form>'
 )
 CONTEXT = "27-24"
+EMPLOYEE = "22344"
 
 # The install's own field list, read out of the captured page once.
 CATALOGUE = SelectFieldsPage.parse(SELECT_FIELDS).catalogue
 
 
-def _header_of(multipart: str) -> list[str]:
-    """The CSV header row out of an upload's multipart body."""
-    for line in multipart.split("\r\n"):
-        if line.startswith("First Name,") or line == "First Name":
-            return line.split(",")
-    raise AssertionError(f"no CSV header in the upload: {multipart[:400]}")
-
-
-def _select_fields_page(headers: list[str], missing: str = "") -> str:
-    """The field screen as the install renders it for these columns.
-
-    Not a canned page: the real server sorts the uploaded CSV's columns into
-    the two lists, pairing up whatever matches a system field by name and
-    leaving the rest loose — and a column it paired is *removed* from the
-    catalogue, which is the case a canned page would never produce. Our
-    writer names its columns after the fields they feed, so that is the case
-    that matters.
-    """
-    catalogue_fields = {k: v for k, v in CATALOGUE.items() if k != missing}
-    paired, available, used = [], [], set()
-    for index, header in enumerate(headers):
-        left = (
-            '<a class="list-group-item col-xs-6" data-left="yes" href="#" '
-            f'data-user-column-id="{index}">{header}</a>'
-        )
-        if header in IDENTITY_COLUMNS:
-            paired.append(left)
-            paired.append(
-                '<a class="list-group-item col-xs-6" href="#" '
-                'data-screen-number="0" data-id="1" data-card="0" '
-                'data-tenant-id="0"></a>'
-            )
-        elif header in catalogue_fields:
-            field = catalogue_fields[header]
-            used.add(header)
-            paired.append(left)
-            paired.append(
-                '<a class="list-group-item col-xs-6" href="#" '
-                f'data-screen-number="2" data-id="{field.field_id}" '
-                f'data-card="{field.card}" '
-                f'data-tenant-id="{field.tenant_id}"></a>'
-            )
-        else:
-            available.append(
-                '<a class="list-group-item" href="#" data-left="yes" '
-                f'data-user-column-id="{index}">{header}</a>'
-            )
-
-    catalogue = [
-        '<a class="list-group-item" href="#" data-screen-number="2" '
-        f'data-id="{f.field_id}" data-card="{f.card}" '
-        f'data-tenant-id="{f.tenant_id}">{label}</a>'
-        for label, f in catalogue_fields.items() if label not in used
-    ]
-    return f"""<!DOCTYPE html><html><body>
-      <form method="post" id="myForm">
-        <div class="list-group fields-list" id="available_fields">
-          {"".join(available)}
-        </div>
-        <div class="list-group fields-list" id="selected_fields">
-          {"".join(catalogue)}
-        </div>
-        <div class="list-group fields-list" id="configured_fields">
-          {"".join(paired)}
-        </div>
-      </form>
-    </body></html>"""
+def _log(cardholders_updated=1, cards_updated=1, cardholders_added=0, cards_added=0):
+    """An import log in the shape the live install produces."""
+    return (
+        "10/18/2026 4:33:23 PM  | Information | Start import cardholders\n"
+        "10/18/2026 4:33:23 PM  | Information | Importing file contains 1 "
+        "records and 2 columns\n"
+        "10/18/2026 4:33:23 PM  | Information | Summary:\n"
+        f"  {cardholders_added} cardholders added\n"
+        f"  {cardholders_updated} cardholders updated\n"
+        f"  {cards_added} cards added\n"
+        f"  {cards_updated} cards updated\n\n"
+        "10/18/2026 4:33:23 PM  | Information | Cardholders has been imported "
+        "successfully!\n"
+    )
 
 
 def _status(**over) -> dict:
@@ -127,18 +75,63 @@ def _status(**over) -> dict:
     return status
 
 
-def _row(*slots: import_rows.SlotWrite) -> import_rows.RowWrite:
-    return import_rows.RowWrite(
-        identity=import_rows.Identity("Kai", "Mowatt"), slots=slots
-    )
+def _row(*slots: import_rows.SlotWrite, employee_id: str = EMPLOYEE):
+    return import_rows.RowWrite(employee_id=employee_id, slots=slots)
+
+
+def _header_of(multipart: str) -> list[str]:
+    for line in multipart.split("\r\n"):
+        if line.startswith("agsync_"):
+            return line.split(",")
+    raise AssertionError(f"no header row in the upload: {multipart[:400]}")
+
+
+def _select_fields_page(headers: list[str], missing: str = "") -> str:
+    """The field screen as the install renders it for these columns.
+
+    Not a canned page. The real server sorts our columns into two lists,
+    **placing** any header that exactly matches one of its own labels and
+    removing that field from its catalogue. Our headers are aliases that
+    match nothing, so they should all stay loose — and this mock reproduces
+    the placing behaviour, so a regression in the aliasing gets caught.
+    """
+    catalogue = {k: v for k, v in CATALOGUE.items() if k != missing}
+    available, placed = [], []
+    for index, header in enumerate(headers):
+        if header in catalogue:            # would be placed, and would vanish
+            placed.append(
+                '<a class="list-group-item col-xs-6" data-left="yes" href="#" '
+                f'data-user-column-id="{index}">{header}</a>'
+                '<a class="list-group-item col-xs-6" href="#" '
+                'data-screen-number="0" data-id="1" data-card="0" '
+                'data-tenant-id="0"></a>'
+            )
+            catalogue.pop(header)
+        else:
+            available.append(
+                '<a class="list-group-item" href="#" data-left="yes" '
+                f'data-user-column-id="{index}">{header}</a>'
+            )
+    listed = [
+        '<a class="list-group-item" href="#" data-screen-number="2" '
+        f'data-id="{f.field_id}" data-card="{f.card}" '
+        f'data-tenant-id="{f.tenant_id}">{label}</a>'
+        for label, f in catalogue.items()
+    ]
+    return f"""<!DOCTYPE html><html><body><form method="post" id="myForm">
+      <div class="list-group fields-list" id="available_fields">{"".join(available)}</div>
+      <div class="list-group fields-list" id="selected_fields">{"".join(listed)}</div>
+      <div class="list-group fields-list" id="configured_fields">{"".join(placed)}</div>
+    </form></body></html>"""
 
 
 @pytest.fixture
 def importer(monkeypatch):
     """A real client whose transport records what it was asked for."""
-    def _build(statuses=None, log="", select_fields=None, drop_field=""):
+    def _build(statuses=None, log=None, select_fields=None, drop_field=""):
         seen: list[httpx.Request] = []
         queue = list(statuses or [_status()])
+        body = _log() if log is None else log
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen.append(request)
@@ -159,7 +152,7 @@ def importer(monkeypatch):
             if path == "/api/LongOperationStatus":
                 return httpx.Response(200, json=queue.pop(0) if queue else _status())
             if path.startswith("/DatabaseFunctions/ImportCardholders/GetImportLogFile/"):
-                return httpx.Response(200, text=log)
+                return httpx.Response(200, text=body)
             return httpx.Response(404)
 
         client = MillenniumUltraClient(
@@ -195,7 +188,6 @@ def test_an_import_runs_all_four_steps_in_order(importer):
     outcome = client.import_cardholders([_row(import_rows.SlotWrite(2, active=False))])
 
     assert outcome.ok is True
-    assert outcome.rows == 1
     assert [r.url.path for r in seen] == [
         "/DatabaseFunctions/ImportCardholders",
         "/DatabaseFunctions/ImportCardholders/SelectFields",
@@ -212,8 +204,8 @@ def test_the_poll_names_the_import_operation(importer):
 
     poll = _only(seen, "/api/LongOperationStatus")
     assert poll.url.params["OperationType"] == "CardholdersImport"
-    # The UI's own cache-buster. A cached "Completed" would have us read a
-    # previous run's log and call this one clean.
+    # The cache-buster. A stale "Completed" would have us read the previous
+    # run's log and call this one clean.
     assert "_" in poll.url.params
 
 
@@ -222,9 +214,7 @@ def test_the_log_is_addressed_by_the_context_the_status_gave(importer):
 
     client.import_cardholders([_row(import_rows.SlotWrite(2, active=False))])
 
-    assert any(
-        r.url.path.endswith("/GetImportLogFile/31-7") for r in seen
-    ), [r.url.path for r in seen]
+    assert any(r.url.path.endswith("/GetImportLogFile/31-7") for r in seen)
 
 
 # =====================================================================
@@ -236,9 +226,8 @@ def test_the_rule_is_always_update_matched_only(importer):
     """The one rule that cannot create a cardholder.
 
     This integration writes cards onto records an operator already made. A
-    row whose name matches nothing has to be a skip — under rule 3 it would
-    be a brand-new duplicate cardholder, in the customer's own system, named
-    after somebody who is already in it.
+    row matching no Employee ID has to be a skip — under the rule that also
+    adds, it would become a brand-new cardholder in the customer's system.
     """
     client, seen = importer()
 
@@ -248,11 +237,6 @@ def test_the_rule_is_always_update_matched_only(importer):
 
 
 def test_unknown_drop_down_entries_are_never_created(importer):
-    """Every value we send was read back out of this install.
-
-    So a value it does not recognise means we have misread something — and
-    creating it would make that permanent, in their configuration.
-    """
     client, seen = importer()
 
     client.import_cardholders([_row(import_rows.SlotWrite(2, active=True))])
@@ -286,14 +270,17 @@ def test_the_upload_carries_the_file_and_the_anti_forgery_token(importer):
     # Read off the landing page, which is the only reason that page is
     # fetched at all.
     assert 'name="__RequestVerificationToken"\r\n\r\nlanding-token' in body
-    assert "Card 2 Active" in body
+    assert EMPLOYEE in body
 
 
-def test_the_mapping_is_read_off_the_page_not_guessed(importer):
-    """The numeric field ids come from the install, every time.
+def test_the_mapping_uses_the_real_field_identifiers(importer):
+    """Employee ID is 4, not 1.
 
-    A hard-coded map is how `FaciltyCode` cost us a day: the name was wrong,
-    nothing checked it, and the write silently did nothing.
+    A capture in which nothing was mapped suggested every identity column
+    shared identifier 1. Testing against the install showed those were
+    *unmapped* markers, and that the real identifiers run First Name 1, Last
+    Name 2, Card Type 3, Employee ID 4. Getting this wrong writes a value
+    into the wrong field.
     """
     client, seen = importer()
 
@@ -307,20 +294,39 @@ def test_the_mapping_is_read_off_the_page_not_guessed(importer):
         )
     ])
 
-    fields = {f["UserColumnName"]: f for f in _started(seen)["ImportedFields"]}
-    # The identity columns, against the sentinel the capture pairs them with.
-    for name in ("First Name", "Last Name", "Card Type"):
-        assert fields[name]["ID"] == 1
-        assert fields[name]["Name"] == ""
-        assert fields[name]["Card"] == 0
-    # And the slot's own fields, with the ids and card number this install
-    # declares for them.
+    fields = {f["Name"]: f for f in _started(seen)["ImportedFields"]}
+    assert fields["Employee ID"]["ID"] == 4
+    assert fields["Employee ID"]["Card"] == 0
     assert fields["Card 2 Encoded Card No."]["ID"] == 16
     assert fields["Card 2 Encoded Card No."]["Card"] == 2
     assert fields["Card 2 Facility Code"]["ID"] == 21
     assert fields["Card 2 Card Format"]["ID"] == 20
-    assert fields["Card 2 Active"]["ID"] == 19
     assert fields["Card 2 Activation Date"]["ID"] == 17
+    assert fields["Card 2 Active"]["ID"] == 19
+
+
+def test_nothing_is_sent_unmapped(importer):
+    """Every column in the file is a column we are writing."""
+    client, seen = importer()
+
+    client.import_cardholders([_row(import_rows.SlotWrite(2, active=True))])
+
+    for field in _started(seen)["ImportedFields"]:
+        assert field["Name"], field
+
+
+def test_the_name_and_card_type_are_never_mapped(importer):
+    """The two fields whose inclusion did real damage in live testing."""
+    client, seen = importer()
+
+    client.import_cardholders([
+        _row(import_rows.SlotWrite(1, card_number="5001", active=True))
+    ])
+
+    names = {f["Name"] for f in _started(seen)["ImportedFields"]}
+    assert "First Name" not in names
+    assert "Last Name" not in names
+    assert "Card Type" not in names
 
 
 def test_every_column_index_comes_from_the_server(importer):
@@ -337,9 +343,7 @@ def test_every_column_index_comes_from_the_server(importer):
     ])
 
     upload = _only(seen, "/DatabaseFunctions/ImportCardholders/SelectFields")
-    header = upload.content.decode().split("\r\n")
-    header = next(line for line in header if line.startswith("First Name"))
-    columns = header.split(",")
+    columns = _header_of(upload.content.decode())
     for field in _started(seen)["ImportedFields"]:
         assert columns[field["UserColumnID"]] == field["UserColumnName"]
 
@@ -349,12 +353,9 @@ def test_every_column_index_comes_from_the_server(importer):
 # =====================================================================
 
 
-def test_a_file_the_page_cannot_carry_is_refused_before_the_job_starts(importer):
-    """A column this install has no field for stops the whole import.
-
-    Nothing has been applied at the point this is noticed — the upload only
-    stages the file — so refusing here changes nothing in the PACS.
-    """
+def test_a_field_this_install_lacks_stops_the_import_before_it_starts(importer):
+    """Nothing has been applied when this is noticed — the upload only
+    stages the file — so refusing changes nothing in the PACS."""
     client, seen = importer(drop_field="Card 2 Facility Code")
 
     with pytest.raises(MillenniumError, match="no field called"):
@@ -373,18 +374,11 @@ def test_a_page_that_is_not_the_field_screen_is_refused(importer):
 
 
 def test_more_rows_than_the_cap_are_refused_without_a_request(importer):
-    """The blast radius, stated once.
-
-    A cardholder save can only ever damage the one record it addresses. An
-    import applies every row in the file, so a cycle that wants to change
-    far more cards than a cycle ever does has misread something.
-    """
+    """An import applies every row in the file, so a cycle that wants to
+    change far more cards than a cycle ever does has misread something."""
     client, seen = importer()
     rows = [
-        import_rows.RowWrite(
-            identity=import_rows.Identity(f"First{n}", "Last"),
-            slots=(import_rows.SlotWrite(2, active=False),),
-        )
+        _row(import_rows.SlotWrite(2, active=False), employee_id=str(n))
         for n in range(MAX_IMPORT_ROWS + 1)
     ]
 
@@ -424,44 +418,72 @@ def test_a_job_that_never_finishes_is_not_reported_as_applied(importer, monkeypa
 
 
 # =====================================================================
-# The log
+# Knowing it actually landed
 # =====================================================================
 
 
-def test_a_clean_run_leaves_an_empty_log(importer):
-    client, _ = importer(log="")
+def test_matching_summary_counts_are_what_make_it_successful(importer):
+    client, _ = importer(log=_log(cardholders_updated=1, cards_updated=1))
 
-    assert client.import_cardholders(
-        [_row(import_rows.SlotWrite(2, active=True))]
-    ).log == ""
+    outcome = client.import_cardholders([_row(import_rows.SlotWrite(2, active=True))])
+
+    assert outcome.ok is True
+    assert outcome.summary is not None
+    assert outcome.summary.cards_updated == 1
 
 
-def test_a_run_with_a_log_is_not_reported_as_applied(importer, caplog):
+def test_a_row_that_matched_nothing_is_not_reported_as_applied(importer, caplog):
     """Millennium reports a run that matched nothing as a success.
 
-    The rule we send makes an unmatched row a skip rather than an error, so
-    `Success: true` is not on its own evidence that anything was applied —
-    the log is the only place a skip appears. Claiming it anyway would have
-    the ledger record a card we never wrote, and the ledger is what later
-    decides whether an operator revoked something.
+    The rule we send makes an unmatched Employee ID a skip rather than an
+    error, so success on its own is not evidence of anything. The summary is,
+    and claiming otherwise would record a card we never wrote.
     """
-    client, _ = importer(log="Row 1: no matching cardholder - skipped")
+    client, _ = importer(log=_log(cardholders_updated=0, cards_updated=0))
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("ERROR"):
         outcome = client.import_cardholders(
             [_row(import_rows.SlotWrite(2, active=True))]
         )
 
     assert outcome.ok is False
-    assert "no matching cardholder" in outcome.log
-    assert "no matching cardholder" in caplog.text
+    assert "matched no Employee ID" in caplog.text
 
 
-def test_a_log_that_cannot_be_fetched_does_not_lose_the_outcome(importer):
-    """By the time the log is read, the import has already happened."""
-    client, _ = importer(statuses=[_status(Context="")])
+def test_a_cardholder_being_added_raises_the_alarm(importer, caplog):
+    """Under the rule we send this should be impossible.
+
+    If it happens, the rule that ran was not the rule we sent, and nothing
+    can be assumed about what else the import did.
+    """
+    client, _ = importer(log=_log(cardholders_added=1))
+
+    with caplog.at_level("ERROR"):
+        outcome = client.import_cardholders(
+            [_row(import_rows.SlotWrite(2, active=True))]
+        )
+
+    assert outcome.ok is False
+    assert "ADDED 1 cardholder" in caplog.text
+
+
+def test_fewer_cards_updated_than_expected_is_not_success(importer):
+    client, _ = importer(log=_log(cardholders_updated=1, cards_updated=1))
+
+    outcome = client.import_cardholders([
+        _row(
+            import_rows.SlotWrite(1, active=True),
+            import_rows.SlotWrite(2, active=True),
+        )
+    ])
+
+    assert outcome.ok is False
+
+
+def test_a_log_without_a_summary_is_not_success(importer):
+    """No counts means no evidence, whatever the status said."""
+    client, _ = importer(log="Start import cardholders\nsomething happened\n")
 
     outcome = client.import_cardholders([_row(import_rows.SlotWrite(2, active=True))])
 
-    assert outcome.ok is True
-    assert outcome.log == ""
+    assert outcome.ok is False
