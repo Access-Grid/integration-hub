@@ -26,9 +26,11 @@ from datetime import UTC, datetime, timedelta
 
 from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
+from ...ag.errors import ErrorKind, classify, describe
 from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
+from .phase5_retries import MAX_RETRIES
 from .writeback import push_allocated_identities
 
 logger = logging.getLogger(__name__)
@@ -241,8 +243,18 @@ def run(
                     # card exists in the PACS before the next cycle reads it.
                     push_allocated_identities(pacs, pid, cred.id, card)
             except AccessGridError as e:
-                logger.error("  Provision failed for %s: %s", person.full_name, e)
-                tracking.record_error(pid, cred.id, str(e))
+                kind = classify(e)
+                logger.error(
+                    "  Provision failed for %s: %s — %s",
+                    person.full_name, e, describe(kind),
+                )
+                tracking.record_error(
+                    pid, cred.id, str(e),
+                    # A rejected field or a forbidden state is the same answer
+                    # every cycle. Spending the retries on it only delays
+                    # somebody seeing it.
+                    stop_after=MAX_RETRIES if kind is ErrorKind.PERMANENT else None,
+                )
             except Exception as e:  # noqa: BLE001
                 logger.error("  Unexpected error provisioning %s: %s", person.full_name, e)
                 tracking.record_error(pid, cred.id, f"{type(e).__name__}: {e}")

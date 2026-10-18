@@ -341,3 +341,56 @@ def test_a_dry_run_reads_nothing_and_sends_nothing(install, monkeypatch, caplog)
     assert client.saved == []
     # It still reads, because working out what it *would* do is the point.
     assert client.page_reads == [ONE]
+
+
+# =====================================================================
+# The flush's own failures
+# =====================================================================
+
+
+def test_a_refused_file_does_not_become_a_cycle_failure(install, caplog):
+    """`flush_writes` swallows ordinary failures by contract.
+
+    The intentions are recorded, so the next cycle sends them again. Letting
+    this escape would add a circuit-breaker strike for something already
+    being retried, and would report a phase failure for a phase that worked.
+    """
+    from agsync.lib.pacs.millennium_ultra.client import MillenniumError
+
+    adapter, client = install()
+    _ledger(ONE)
+
+    def _refuse(rows):
+        raise MillenniumError("Millennium's import cannot carry this file")
+
+    client.import_cardholders = _refuse
+    adapter.update_credential_status(ONE, "seos", CredentialStatus.AWAITING_INSTALL)
+
+    with caplog.at_level("ERROR"):
+        assert adapter.flush_writes() == 0        # no exception
+
+    assert "the next cycle will try again" in caplog.text
+    assert SeosLedger.desired_active(ONE, "seos") == {1: False}, "still wanted"
+
+
+def test_an_expired_session_is_allowed_out(install):
+    """The one failure a human has to act on.
+
+    It has to reach the engine so somebody is asked to reconnect, rather
+    than being retried every cycle against a session that has gone.
+    """
+    import pytest as _pytest
+
+    from agsync.lib.pacs.millennium_ultra.client import MillenniumAuthError
+
+    adapter, client = install()
+    _ledger(ONE)
+
+    def _expired(rows):
+        raise MillenniumAuthError("session expired")
+
+    client.import_cardholders = _expired
+    adapter.update_credential_status(ONE, "seos", CredentialStatus.AWAITING_INSTALL)
+
+    with _pytest.raises(MillenniumAuthError):
+        adapter.flush_writes()

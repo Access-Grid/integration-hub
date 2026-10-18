@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
+from ...ag.errors import ErrorKind, classify, describe
 from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
@@ -173,8 +174,15 @@ def run(
                     pacs, tracked.pacs_person_id, tracked.pacs_credential_id, card,
                 )
         except AccessGridError as e:
-            logger.warning("  Retry failed for %s: %s", person.full_name, e)
-            tracking.record_error(tracked.pacs_person_id, tracked.pacs_credential_id, str(e))
+            kind = classify(e)
+            logger.warning(
+                "  Retry failed for %s: %s — %s",
+                person.full_name, e, describe(kind),
+            )
+            tracking.record_error(
+                tracked.pacs_person_id, tracked.pacs_credential_id, str(e),
+                stop_after=MAX_RETRIES if kind is ErrorKind.PERMANENT else None,
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning("  Retry crashed for %s: %s", person.full_name, e)
             tracking.record_error(

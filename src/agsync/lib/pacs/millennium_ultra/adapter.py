@@ -1774,6 +1774,23 @@ class MillenniumUltraAdapter:
         deactivate_date = min(expires) if expires else None
         activate_date = max(starts) if starts else None
 
+        # A card of ours whose format an operator has changed away from the
+        # trigger. Deliberately not an AccessGrid action: the card is still
+        # there and still works, so the pass should keep working, and the
+        # format is the operator's field to set. But it does mean the card
+        # has left the set this integration recognises, so a later cycle that
+        # loses the ledger would not know it was ours — which is worth
+        # knowing now rather than discovering then.
+        for slot in recorded:
+            if not self._is_trigger(slot):
+                logger.warning(
+                    "Millennium: card %s/%s on cardholder %s no longer carries "
+                    "the trigger format. The pass is untouched and still works; "
+                    "the card is just no longer one this integration would "
+                    "recognise on its own",
+                    slot.facility_code, slot.card_number, pid,
+                )
+
         status = CredentialStatus.ACTIVE
         for entry in ledger:
             key = (str(entry.get("facility_code")), str(entry.get("card_number")))
@@ -1994,7 +2011,25 @@ class MillenniumUltraAdapter:
             self._confirm(settled, ledger_writes, active_writes)
             return 0
 
-        outcome = self._client.import_cardholders(diff.rows)
+        try:
+            outcome = self._client.import_cardholders(diff.rows)
+        except MillenniumAuthError:
+            # The one failure a human has to act on. Let it reach the engine
+            # so somebody is asked to reconnect, rather than retrying against
+            # a session that has gone.
+            raise
+        except Exception as e:  # noqa: BLE001
+            # Everything else is an ordinary failure, and the contract on
+            # `flush_writes` is that those do not raise: the intentions are
+            # recorded, so the next cycle sends them again, and turning this
+            # into a cycle failure would only add a circuit-breaker strike
+            # for something already being retried.
+            logger.error(
+                "Millennium: the import carrying this cycle's %d change(s) "
+                "could not be sent: %s. They are still recorded, so the next "
+                "cycle will try again", len(diff.rows), e,
+            )
+            return 0
         if not outcome.ok:
             logger.error(
                 "Millennium: the import carrying this cycle's %d change(s) was "

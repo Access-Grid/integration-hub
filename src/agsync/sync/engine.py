@@ -484,11 +484,13 @@ class SyncEngine:
             # sending them, so this is where they go — after phase 5's
             # retries, before phase 6, which only ever writes to AccessGrid.
             #
-            # Deliberately not inside the try/except that follows it: a
-            # failure here must not be mistaken for a phase failure, and
-            # `flush_writes` does not raise for an ordinary one. Anything it
-            # could not send is still recorded on the adapter's side and is
-            # retried on the next cycle.
+            # It sits inside the same guard as the phases on purpose. An
+            # expired session has to reach the handler below so a human is
+            # asked to reconnect, and anything else here is a cycle failure
+            # like any other. Ordinary failures do not arrive as exceptions
+            # at all: `flush_writes` swallows those, and whatever it could
+            # not send stays recorded on the adapter's side for the next
+            # cycle to pick up.
             if getattr(pacs, "supports_batched_writes", False):
                 result.pacs_writes = pacs.flush_writes()
             result.field_updates = phase6_field_changes.run(snapshot, ag)

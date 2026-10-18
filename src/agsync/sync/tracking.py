@@ -186,17 +186,47 @@ def mark_deleted(pacs_person_id: str, pacs_credential_id: str) -> None:
     )
 
 
-def record_error(pacs_person_id: str, pacs_credential_id: str, error: str) -> None:
+def record_error(
+    pacs_person_id: str,
+    pacs_credential_id: str,
+    error: str,
+    *,
+    stop_after: int | None = None,
+) -> None:
+    """Note why a credential failed, and how much patience it has left.
+
+    `stop_after` exhausts the retries in one go, for a failure that asking
+    again cannot fix — a rejected field, a pass in a state that forbids the
+    operation. Without it such a credential spends three cycles discovering
+    the same answer, and the error only becomes visible after the third.
+
+    The message is stored either way, so what AccessGrid actually said
+    survives regardless of what we concluded from it.
+    """
     now = datetime.now(UTC).isoformat(timespec="seconds")
+    if stop_after is None:
+        get_db().execute(
+            """
+            UPDATE ag_credentials
+               SET sync_error = ?,
+                   retry_count = retry_count + 1,
+                   updated_at = ?
+             WHERE pacs_person_id = ? AND pacs_credential_id = ?
+            """,
+            (error, now, pacs_person_id, pacs_credential_id),
+        )
+        return
+    # Never downward: a credential that has already used more attempts than
+    # this keeps the higher count, so nothing here hands retries back.
     get_db().execute(
         """
         UPDATE ag_credentials
            SET sync_error = ?,
-               retry_count = retry_count + 1,
+               retry_count = MAX(retry_count, ?),
                updated_at = ?
          WHERE pacs_person_id = ? AND pacs_credential_id = ?
         """,
-        (error, now, pacs_person_id, pacs_credential_id),
+        (error, stop_after, now, pacs_person_id, pacs_credential_id),
     )
 
 

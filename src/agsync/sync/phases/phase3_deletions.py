@@ -56,6 +56,18 @@ MAX_RETIREMENTS_PER_CYCLE = 25
 # a whole population at once. Rationed for the same reason provisioning is.
 MAX_EXPIRIES_PER_CYCLE = 25
 
+# And the same ration over every deletion this phase makes, whatever the
+# reason. The empty-snapshot guard above catches the catastrophic case — a
+# failed read reporting nobody — but not a smaller misreading: a roster that
+# came back partial, a trigger reconfigured, an id scheme that shifted. Any
+# of those looks from here like a population that genuinely disappeared.
+#
+# The cap cannot tell the difference either. What it does is turn a runaway
+# into something slow and visible: the rest wait for later cycles, the number
+# is named in the log, and a person has time to stop it while most of the
+# install still works.
+MAX_DELETIONS_PER_CYCLE = 25
+
 
 def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> int:
     logger.info("Phase 3: Checking for deletions")
@@ -110,6 +122,15 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
 
         if reason is None:
             continue
+
+        if deleted >= MAX_DELETIONS_PER_CYCLE:
+            logger.warning(
+                "Phase 3: reached the deletion cap (%d) — %s and anything after "
+                "it wait for the next cycle. If that number is unexpected, look "
+                "at what the PACS returned before the rest follow",
+                MAX_DELETIONS_PER_CYCLE, tracked.pacs_person_id,
+            )
+            break
 
         try:
             logger.info("  Deleting AG card %s — %s", tracked.ag_card_id, reason)

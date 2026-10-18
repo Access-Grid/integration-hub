@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 # used, what it resolved to, and what the halves looked like afterwards.
 SUSPEND_DEBUG = "[SUSPEND-DEBUG]"
 
+# Terminating a pass because its enrolment trigger is gone is the most
+# destructive thing this phase does, and the trigger is a setting somebody
+# can mistype. Get it wrong and every tracked credential reads as
+# un-triggered at once. Rationed so that turns into something slow and
+# visible rather than instant and total; suspensions are reversible and are
+# not capped.
+MAX_TERMINATIONS_PER_CYCLE = 25
+
 
 def _describe_card(card) -> str:
     state = (getattr(card, "state", "") or "?").lower()
@@ -97,6 +105,7 @@ def _suspend_debug_after(snapshot, tracked, ag) -> None:
 
 def run(snapshot: Snapshot, ag: AccessGrid) -> int:
     updated = 0
+    terminated = 0
     logger.info("Phase 2: Checking PACS → AG status changes")
 
     for tracked in tracking.all_tracked():
@@ -113,6 +122,14 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
 
         # Trigger removed → terminate the AG card.
         if not cred.trigger_active:
+            if terminated >= MAX_TERMINATIONS_PER_CYCLE:
+                logger.warning(
+                    "Phase 2: reached the termination cap (%d) — the rest wait "
+                    "for the next cycle. If that number is unexpected, check "
+                    "the enrolment trigger before they follow",
+                    MAX_TERMINATIONS_PER_CYCLE,
+                )
+                continue
             try:
                 logger.info(
                     "  Terminating AG card %s — trigger no longer set on %s/%s",
@@ -130,6 +147,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                     tracked.pacs_person_id, tracked.pacs_credential_id,
                 )
                 updated += 1
+                terminated += 1
             except AccessGridError as e:
                 logger.error("  Failed to delete AG card %s: %s", tracked.ag_card_id, e)
             continue
