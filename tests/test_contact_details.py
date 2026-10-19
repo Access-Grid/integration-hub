@@ -134,7 +134,7 @@ def test_the_detail_page_wins_once_it_has_been_read(
     )
     assert _first_cycle_person(adapter).email == "from.the.export@icon.test"
 
-    adapter._profile_for("11591")  # reads the detail page
+    adapter._export.profile_for("11591")  # reads the detail page
     assert _first_cycle_person(adapter).email == "from.the.page@icon.test"
 
 

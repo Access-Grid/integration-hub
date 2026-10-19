@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from agsync.lib.pacs.millennium_ultra import adapter as mod
+from agsync.lib.pacs.millennium_ultra import export as mod
 from tests._fakes import FakeMillenniumClient
 
 ROSTER = [{"ID": 11587, "IsActive": True, "Name": "Grid, Accessg"}]
@@ -44,7 +44,7 @@ def clock(monkeypatch):
 def _profiles(adapter, client):
     """One cycle: roster, then a profile read for the cardholder."""
     list(adapter.list_people())
-    return adapter._profile_for("11587")
+    return adapter._export.profile_for("11587")
 
 
 def test_a_failed_read_is_queued_with_a_backoff(
@@ -54,7 +54,7 @@ def test_a_failed_read_is_queued_with_a_backoff(
     adapter = make_millennium_adapter(client)
 
     assert _profiles(adapter, client) is None
-    attempts, next_at = adapter._retry["11587"]
+    attempts, next_at = adapter._export.retry["11587"]
     assert attempts == 1
     assert next_at == mod.RETRY_BASE_SECONDS
 
@@ -79,11 +79,11 @@ def test_a_due_retry_is_read_outside_the_sweep(
     _profiles(adapter, client)
 
     clock["t"] = mod.RETRY_BASE_SECONDS
-    adapter._sweep = set()  # not in this cycle's slice
+    adapter._export.sweep = set()  # not in this cycle's slice
     profile = _profiles(adapter, client)
 
     assert profile is not None
-    assert "11587" not in adapter._retry  # success clears the queue
+    assert "11587" not in adapter._export.retry  # success clears the queue
 
 
 def test_the_delay_doubles_and_is_capped(
@@ -95,7 +95,7 @@ def test_the_delay_doubles_and_is_capped(
     delays = []
     for _ in range(10):
         _profiles(adapter, client)
-        attempts, next_at = adapter._retry["11587"]
+        attempts, next_at = adapter._export.retry["11587"]
         delays.append(next_at - clock["t"])
         clock["t"] = next_at
 

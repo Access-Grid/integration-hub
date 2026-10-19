@@ -114,7 +114,7 @@ def test_only_the_cardholders_carrying_a_trigger_card_are_read(
     list(adapter.list_people())
     # Diego Sandoval is in the roster and the export, and carries no trigger
     # card — so his detail page is never fetched.
-    assert adapter._sweep == {"11591", "11618"}
+    assert adapter._export.sweep == {"11591", "11618"}
     assert client.exports == 1
 
 
@@ -127,7 +127,7 @@ def test_a_failed_export_falls_back_to_sweeping(
         make_millennium_adapter, millennium_page, fail=RuntimeError("502"),
     )
     list(adapter.list_people())
-    assert adapter._sweep == {"11591", "11618", "197"}  # cold: everyone
+    assert adapter._export.sweep == {"11591", "11618", "197"}  # cold: everyone
 
 
 def test_an_ambiguous_name_shortlists_every_candidate(
@@ -147,7 +147,7 @@ def test_an_ambiguous_name_shortlists_every_candidate(
     adapter.trigger_card_format = "8"
     with caplog.at_level("INFO"):
         list(adapter.list_people())
-    assert {"11591", "9999"} <= adapter._sweep
+    assert {"11591", "9999"} <= adapter._export.sweep
     assert "Auston Bunsen matches 2 cardholders by name" in caplog.text
     # Two people carry a trigger card; three roster entries might be them.
     assert "2 cardholder(s) carrying the trigger format, across 3" in caplog.text
@@ -207,7 +207,7 @@ def test_a_cardholder_outside_the_sweep_is_never_fetched(
 
     client.get_cardholder_form = spy
     for pid in ("11591", "11618", "197"):
-        adapter._profile_for(pid)
+        adapter._export.profile_for(pid)
 
     assert "197" not in fetched, "swept out, so it must not be read"
     assert sorted(fetched) == ["11591", "11618"]

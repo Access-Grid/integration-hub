@@ -42,7 +42,7 @@ What makes Millennium different from every other adapter here:
     We pay that once to build a profile cache, then each cycle refetch only
     the cardholders that are enrolled plus a rotating slice of the rest, so
     a newly-enrolled card is still discovered without re-reading 158 MB
-    every 30 minutes. See _profile_for.
+    every 30 minutes. See Exporter.profile_for in export.py.
 
 This install stores no email addresses or phone numbers, so phase 1 would
 skip every cardholder for want of a delivery channel. Instead we synthesize
@@ -55,10 +55,8 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from collections.abc import Iterable
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from .... import dryrun
 from ..base import (
@@ -70,15 +68,21 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
-from . import export
 from .client import (
     ANTIFORGERY_COOKIE_PREFIX,
-    CARD_SLOTS,
     COMPANY_COOKIE,
     TIMEOFFSET_COOKIE,
-    MillenniumAuthError,
-    MillenniumError,
     MillenniumUltraClient,
+)
+from .export import (
+    DEFAULT_SWEEP_BUDGET,
+    Exporter,
+    Slot,
+    describe_slots,
+    first_valid_email,
+    format_datetime,
+    parse_roster_name,
+    read_slots,
 )
 from .html_form import CardholderForm
 
@@ -131,83 +135,6 @@ MAX_SEOS_CREDENTIALS = 2
 # Millennium's three slots per cardholder that leaves one to find free.
 REQUIRED_EMPTY_SLOTS = 1
 
-# Cardholders whose detail page we re-read per cycle beyond the enrolled
-# ones. Enrolled cardholders are always refreshed; this budget is what
-# discovers newly-enrolled cards, so it trades discovery latency for load.
-DEFAULT_SWEEP_BUDGET = 400
-
-# A cardholder page that fails to load is retried on its own schedule rather
-# than waiting for the sweep cursor to come round again, which with a large
-# roster can be many cycles. The backoff is what keeps a cardholder that
-# always fails — a corrupt record, say — from being read every cycle
-# forever, while a one-off timeout is retried almost immediately.
-RETRY_BASE_SECONDS = 60
-RETRY_MAX_SECONDS = 3600
-
-# How often to say something while sweeping. A first sweep of a large
-# install reads for five minutes and used to emit nothing at all between
-# "reading all N pages" and the finished snapshot, which is indistinguishable
-# from a hang — long enough that an operator reasonably concludes the sync
-# has stopped and starts looking for what broke.
-PROGRESS_EVERY = 200
-
-# Millennium's date/time fields, e.g. "08/17/2028 12:00 AM".
-DATE_FORMAT = "%m/%d/%Y %I:%M %p"
-
-# Roster names arrive as "Last, Middle. First" — this install repurposes the
-# middle-name field as a card-type label ("HID", "RFID"), so a cardholder
-# with none is simply "Last, First".
-_ROSTER_NAME = re.compile(r"^(?P<last>[^,]+),\s*(?:(?P<middle>\S+)\.\s+)?(?P<first>.+)$")
-
-
-@dataclass(frozen=True)
-class Slot:
-    """One of a cardholder's three card slots."""
-
-    index: int
-    card_id: str
-    card_number: str
-    facility_code: str
-    card_format: str
-    active: bool
-    activation: datetime | None = None
-    expiration: datetime | None = None
-
-    @property
-    def empty(self) -> bool:
-        return not self.card_id and not self.card_number
-
-
-def parse_roster_name(name: str) -> tuple[str, str]:
-    """"Abayan, HID. Tanyabella" -> ("Tanyabella", "Abayan").
-
-    Used only for the initial listing; once a cardholder's detail page is
-    read, its FirstName/LastName fields win.
-    """
-    match = _ROSTER_NAME.match((name or "").strip())
-    if not match:
-        return "", (name or "").strip()
-    return match.group("first").strip(), match.group("last").strip()
-
-
-def _first_valid_email(*candidates: str) -> str:
-    """The first of these that could actually be delivered to.
-
-    Millennium's email fields are free text and hold whatever was typed —
-    a name, a note, a phone number. Issuing a pass to one of those fails at
-    AccessGrid with an error about the address rather than about the field
-    it came from, so anything without an @ and a dot after it is treated as
-    absent and the synthesized address is used instead.
-    """
-    for candidate in candidates:
-        value = (candidate or "").strip()
-        if not value or " " in value:
-            continue
-        local, _, domain = value.partition("@")
-        if local and "." in domain:
-            return value
-    return ""
-
 
 def synthesize_email(first: str, last: str, cardholder_id: str, domain: str) -> str:
     """Deterministic address for an install that stores none.
@@ -222,37 +149,6 @@ def synthesize_email(first: str, last: str, cardholder_id: str, domain: str) -> 
     parts = [re.sub(r"[^a-z0-9]", "", (p or "").lower()) for p in (first, last)]
     local = ".".join([p for p in parts if p] + [str(cardholder_id)])
     return f"{local}@{domain}"
-
-
-def parse_datetime(value: str, offset_seconds: int) -> datetime | None:
-    """Read one of Millennium's date fields back into a UTC instant.
-
-    The stored text is local to the install, per the `timeoffset` the browser
-    reported at sign-in, so the offset has to come back off. Unparseable or
-    empty values give None, and the caller falls back to its own default
-    rather than provisioning a card with a date that means nothing.
-    """
-    value = (value or "").strip()
-    if not value:
-        return None
-    try:
-        naive = datetime.strptime(value, DATE_FORMAT)
-    except ValueError:
-        logger.debug("Millennium: unparseable date %r", value)
-        return None
-    return (naive - timedelta(seconds=offset_seconds)).replace(tzinfo=UTC)
-
-
-def format_datetime(value: datetime, offset_seconds: int) -> str:
-    """Render a UTC instant the way Millennium's date fields expect it.
-
-    The server parses these fields against the browser's `timeoffset`
-    cookie, which AG Connect captured alongside the session, so a UTC string
-    would land hours away from the intended local time.
-    """
-    if value.tzinfo is not None:
-        value = value.astimezone(UTC).replace(tzinfo=None)
-    return (value + timedelta(seconds=offset_seconds)).strftime(DATE_FORMAT)
 
 
 class SeosLedger:
@@ -457,30 +353,21 @@ class MillenniumUltraAdapter:
             company_name=company_name or session.get("company_name", ""),
             time_offset=str(time_offset or session.get("time_offset") or ""),
         )
-        self._sweep_budget = int(sweep_budget)
 
         from . import DESCRIPTOR
 
         self._descriptor = DESCRIPTOR
-        # cardholder id -> {"slots": [Slot], "first": str, "last": str}
-        self._profiles: dict[str, dict] = {}
-        # Roster ids seen in the current list_people() pass.
-        self._roster: dict[str, dict] = {}
-        # Un-enrolled cardholders whose detail page this cycle will re-read.
-        self._sweep: set[str] = set()
-        # Detail pages read this cycle, for progress reporting.
-        self._read_this_cycle = 0
-        self._reading_total = 0
-        # Where the next cycle's slice starts, so coverage rotates rather
-        # than re-reading the same head of the roster forever.
-        self._sweep_cursor = 0
-        self._cold = True
-        # Cardholders whose page failed to load: id -> (attempts, next try).
-        self._retry: dict[str, tuple[int, float]] = {}
-        # Contact details the bulk export supplied this cycle, id -> (email,
-        # phone). The detail page is authoritative once it has been read;
-        # this covers the cycle before that, which is the one that matters.
-        self._exported_contact: dict[str, tuple[str, str]] = {}
+        # Reading Millennium: the roster, the bulk export and the detail
+        # pages, with the caches that keep a cycle from reading them all.
+        # The client is looked up rather than handed over, so a client
+        # swapped onto the adapter is the one the export reads through.
+        self._export = Exporter(
+            client=lambda: self._client,
+            is_trigger=self._is_trigger,
+            trigger_label=self._trigger_format_name,
+            offset_seconds=self._offset_seconds,
+            sweep_budget=sweep_budget,
+        )
         # The trigger format's display name, resolved once. "" means looked
         # for and not found; None means not looked for yet.
         self._trigger_format_label: str | None = None
@@ -511,27 +398,22 @@ class MillenniumUltraAdapter:
         return self._client.card_formats(cardholder_id)
 
     def list_people(self) -> Iterable[Person]:
-        self._roster = {}
-        self._read_this_cycle = 0
         self._ours = {key.partition(":")[0] for key in SeosLedger.all()}
-        roster = self._client.list_cardholders()
-        self._plan_sweep([str(r.get("ID")) for r in roster], roster)
-        self._reading_total = len(self._sweep)
+        roster = self._export.read_roster(self._ours)
 
         for row in roster:
             pid = str(row.get("ID"))
-            self._roster[pid] = row
             first, last = parse_roster_name(row.get("Name", ""))
-            profile = self._profiles.get(pid)
+            profile = self._export.profiles.get(pid)
             if profile:
                 first = profile.get("first") or first
                 last = profile.get("last") or last
             full_name = " ".join(p for p in (first, last) if p)
-            exported_email, exported_phone = self._exported_contact.get(pid, ("", ""))
+            exported_email, exported_phone = self._export.contacts.get(pid, ("", ""))
             # The detail page wins where we have read one, the same
             # precedence the name uses. The export covers the cycle before
             # that, which is the cycle a cardholder is provisioned on.
-            stored_email = (profile or {}).get("email") or _first_valid_email(
+            stored_email = (profile or {}).get("email") or first_valid_email(
                 exported_email
             )
             yield Person(
@@ -551,7 +433,7 @@ class MillenniumUltraAdapter:
                 active=True,
                 raw=row,
             )
-        self._cold = False
+        self._export.finish_roster()
 
     def _trigger_format_name(self) -> str:
         """The display name the export prints for the configured trigger.
@@ -572,166 +454,9 @@ class MillenniumUltraAdapter:
                 logger.debug("Millennium: could not read the format list: %s", e)
         return self._trigger_format_label
 
-    def _enrolled_from_export(self, roster: list[dict]) -> set[str] | None:
-        """Cardholder ids carrying the trigger format, via the bulk export.
-
-        None when the export is unavailable, which is the caller's signal to
-        fall back to reading detail pages. It is an optimisation: on this
-        install it finds 6 slots out of 4,797 in three requests, where the
-        rotating sweep spends 400 requests a cycle looking for them.
-
-        The export has no cardholder id, so rows are matched to the roster
-        by name — and names collide here badly enough (42% of this roster,
-        one of them five ways) that a match is a shortlist. Every candidate
-        is still read and confirmed; this only decides *which* pages to
-        read, never what is true about them.
-        """
-        label = self._trigger_format_name()
-        if not label:
-            return None
-        try:
-            rows = export.parse(self._client.export_cardholders())
-        except Exception as e:  # noqa: BLE001 — never fail a cycle over this
-            logger.info(
-                "Millennium: bulk export unavailable (%s) — sweeping instead", e
-            )
-            return None
-        if not rows:
-            logger.info("Millennium: bulk export came back empty — sweeping instead")
-            return None
-
-        by_name: dict[tuple[str, str], list[str]] = {}
-        for row in roster:
-            first, last = parse_roster_name(row.get("Name", ""))
-            by_name.setdefault(export.name_key(first, last), []).append(
-                str(row.get("ID"))
-            )
-
-        # Contact details for everyone the export named, not only the
-        # enrolled: cheap to keep, and it means a cardholder enrolled later
-        # already has them before their detail page is ever read.
-        self._exported_contact = {}
-        for person in rows:
-            for pid in by_name.get(
-                export.name_key(person.first_name, person.last_name)
-            ) or []:
-                if person.email or person.phone:
-                    self._exported_contact[pid] = (person.email, person.phone)
-
-        candidates: set[str] = set()
-        carrying = unmatched = 0
-        ambiguous: list[tuple[str, int]] = []
-        for person in rows:
-            if not person.carries_format(label):
-                continue
-            carrying += 1
-            ids = by_name.get(export.name_key(person.first_name, person.last_name))
-            if not ids:
-                unmatched += 1
-                continue
-            if len(ids) > 1:
-                ambiguous.append((f"{person.first_name} {person.last_name}", len(ids)))
-            candidates.update(ids)
-
-        if unmatched:
-            # A trigger card we cannot place is the one case where the export
-            # is worse than the sweep, so say so rather than quietly missing
-            # somebody who is meant to be enrolled.
-            logger.warning(
-                "Millennium: %d cardholder(s) carry the trigger format but no "
-                "roster entry matches their name — they will not be enrolled",
-                unmatched,
-            )
-        for name, count in ambiguous:
-            # Says why more pages are being read than there are trigger
-            # cards. All of them are read and confirmed; the extras drop out
-            # for holding no trigger card, but the reads are real.
-            logger.info(
-                "Millennium: %s matches %d cardholders by name — reading all of "
-                "them to find which one holds the trigger card",
-                name, count,
-            )
-        # Counted separately because they differ exactly when a name is
-        # ambiguous, and reporting candidates as though they were enrolled
-        # cardholders would overstate how many people are actually involved.
-        if carrying == len(candidates):
-            logger.info(
-                "Millennium: export found %d cardholder(s) carrying the trigger format",
-                carrying,
-            )
-        else:
-            logger.info(
-                "Millennium: export found %d cardholder(s) carrying the trigger "
-                "format, across %d possible roster entries",
-                carrying, len(candidates),
-            )
-        return candidates
-
-    def _plan_sweep(self, ids: list[str], roster: list[dict] | None = None) -> None:
-        """Pick which un-enrolled cardholders to re-read this cycle.
-
-        Enrolled cardholders are always refreshed, so this slice exists only
-        to notice cards that became enrolled since we last looked. The bulk
-        export answers that directly when it is available; failing that, the
-        roster is walked a window at a time so every cardholder is revisited
-        within a bounded number of cycles rather than the same head being
-        re-read forever.
-        """
-        if roster is not None:
-            candidates = self._enrolled_from_export(roster)
-            if candidates is not None:
-                # Plus everyone we hold a card on, whom the export cannot
-                # be relied on to name.
-                #
-                # It names cardholders by the format they carry, so somebody
-                # loses their place in it the moment their last trigger card
-                # goes — which is exactly the event we most need to see, and
-                # the only evidence that authorises deleting their pass. It
-                # also joins by name, having no cardholder id to join on, so
-                # a roster entry spelled differently never lands at all.
-                #
-                # Either way the cardholder was carried only by their cached
-                # page, and a restart or any write of ours drops that. Then
-                # they are unread, and phase 3 declines to act on a record it
-                # did not read — correctly, which is what makes it silent.
-                # The pass stays live, the slot stays held, and nothing says
-                # so. The ledger is the reliable statement of who matters:
-                # a card we wrote is a card we are answerable for.
-                self._sweep = candidates | self._ours
-                # Everybody else in the roster has no trigger card and no
-                # card of ours, so reading them would tell us nothing.
-                self._cold = False
-                return
-
-        if self._cold:
-            # Nothing is cached yet, so a partial read would look like a
-            # population with no credentials — which phase 3 reads as mass
-            # deletion. Take the whole thing once.
-            self._sweep = set(ids)
-            logger.info(
-                "Millennium: first sweep — reading all %d cardholder detail pages; "
-                "later cycles refresh enrolled cardholders plus %d others",
-                len(ids), self._sweep_budget,
-            )
-            return
-
-        if not ids or self._sweep_budget <= 0:
-            self._sweep = set()
-            return
-
-        start = self._sweep_cursor % len(ids)
-        window = min(self._sweep_budget, len(ids))
-        # Wrap around the end of the roster so the slice stays contiguous.
-        self._sweep = set((ids + ids)[start : start + window])
-        self._sweep_cursor = (start + window) % len(ids)
-        logger.debug(
-            "Millennium: re-reading %d of %d cardholders this cycle (from index %d)",
-            window, len(ids), start,
-        )
-
     def list_credentials(self, person_id: str) -> Iterable[Credential]:
         pid = str(person_id)
-        profile = self._profile_for(pid)
+        profile = self._export.profile_for(pid)
         if profile is None:
             # Unreadable is not the same as empty: answering [] here would
             # let phase 3 read a dropped connection — or a cardholder we
@@ -749,7 +474,7 @@ class MillenniumUltraAdapter:
                 logger.warning(
                     "Millennium: cardholder %s holds cards we wrote but no slot "
                     "carries format %s — reporting no credentials. Slots: %s",
-                    pid, self.trigger_card_format, _describe(slots),
+                    pid, self.trigger_card_format, describe_slots(slots),
                 )
                 # And the record of those cards is now false, so drop it.
                 # Phase 3 deletes the pass off the back of this same empty
@@ -789,7 +514,7 @@ class MillenniumUltraAdapter:
         want_active = status == CredentialStatus.ACTIVE
         pid = str(person_id)
         form = self._client.get_cardholder_form(pid)
-        current = _read_slots(form, self._offset_seconds)
+        current = read_slots(form, self._offset_seconds)
         slots = self._slots_for_credential(pid, credential_id, current)
         if not slots:
             logger.warning(
@@ -868,7 +593,7 @@ class MillenniumUltraAdapter:
             SeosLedger.note_active(
                 pid, credential_id, dict.fromkeys(confirmed, want_active)
             )
-            self._drop_profile(pid, "changing a card's Active box")
+            self._export.drop_profile(pid, "changing a card's Active box")
         return ok
 
     @property
@@ -919,7 +644,7 @@ class MillenniumUltraAdapter:
             return False
         pid = str(person_id)
         form = self._client.get_cardholder_form(pid)
-        slots = _read_slots(form, self._offset_seconds)
+        slots = read_slots(form, self._offset_seconds)
         existing = {(s.facility_code, s.card_number) for s in slots if not s.empty}
 
         written = list(SeosLedger.get(pid, credential_id))
@@ -1017,7 +742,7 @@ class MillenniumUltraAdapter:
         if not self._client.save_cardholder(pid, form):
             return False
         SeosLedger.record(pid, credential_id, written)
-        self._drop_profile(pid, "writing credentials")
+        self._export.drop_profile(pid, "writing credentials")
         logger.info(
             "Millennium: wrote %d credential(s) into cardholder %s: %s",
             len(pending), pid,
@@ -1118,14 +843,14 @@ class MillenniumUltraAdapter:
         form = self._client.get_cardholder_form(pid)
         slots = {
             (s.facility_code, s.card_number): s
-            for s in _read_slots(form, self._offset_seconds)
+            for s in read_slots(form, self._offset_seconds)
             if not s.empty
         }
         token = form.value("__RequestVerificationToken")
         # Read from the cardholder rather than the credential id, which no
         # longer carries a position.
         marker = self._marker_slot(
-            _read_slots(form, self._offset_seconds), set(recorded)
+            read_slots(form, self._offset_seconds), set(recorded)
         )
         trigger_slot = marker.index if marker else None
 
@@ -1188,7 +913,7 @@ class MillenniumUltraAdapter:
 
         if retired:
             SeosLedger.record(pid, credential_id, written)
-            self._drop_profile(pid, "retiring credentials")
+            self._export.drop_profile(pid, "retiring credentials")
         return retired
 
     # -- internals -------------------------------------------------------
@@ -1468,7 +1193,7 @@ class MillenniumUltraAdapter:
             ", ".join(
                 f"{e.get('facility_code')}/{e.get('card_number')}" for e in ledger
             ) or "nothing written yet",
-            _describe(slots),
+            describe_slots(slots),
         )
         return Credential(
             id=credential_id,
@@ -1599,192 +1324,6 @@ class MillenniumUltraAdapter:
             form.set_checked(f"Card_{slot}_Active", False)
             return
         form.set_checked(f"Card_{slot}_Active", True)
-
-    def _backing_off(self, pid: str) -> bool:
-        """Has this cardholder failed recently, with its retry not yet due?"""
-        pending = self._retry.get(pid)
-        return pending is not None and time.monotonic() < pending[1]
-
-    def _record_failure(self, pid: str, error: Exception) -> None:
-        attempts = self._retry.get(pid, (0, 0.0))[0] + 1
-        delay = min(RETRY_BASE_SECONDS * 2 ** (attempts - 1), RETRY_MAX_SECONDS)
-        self._retry[pid] = (attempts, time.monotonic() + delay)
-        logger.warning(
-            "Millennium: failed to read cardholder %s: %s — retrying in %ds "
-            "(attempt %d)",
-            pid, error, delay, attempts,
-        )
-
-    def _drop_profile(self, pid: str, why: str) -> None:
-        """Forget a cardholder's cached page after writing to it.
-
-        Named rather than inlined because it is load-bearing: a cardholder
-        the sweep does not name is read *only* when their cached profile
-        says they are enrolled, so dropping the cache is what decides
-        whether they are ever read again.
-        """
-        if self._profiles.pop(pid, None) is None:
-            return
-        logger.info(
-            "Millennium: dropped the cached page for cardholder %s after %s%s",
-            pid, why,
-            "" if pid in self._sweep
-            else " — they are not in this cycle's sweep, so this is the last "
-                 "cycle they are visible unless the next sweep names them",
-        )
-
-    def _profile_for(self, pid: str) -> dict | None:
-        """Current slot state for a cardholder, refetched when it matters.
-
-        Enrolled cardholders are always refreshed — their state drives phases
-        2 through 6, and a stale "no credentials" answer would look like a
-        deletion. Everyone else is refreshed within the per-cycle budget so
-        newly-enrolled cards are still found without re-reading every page.
-        """
-        cached = self._profiles.get(pid)
-        enrolled = bool(cached and cached.get("enrolled"))
-        # Enrolled cardholders are never held back: their slots drive phases
-        # 2 through 6, and a stale reading there is worse than a wasted read.
-        if not enrolled:
-            if self._backing_off(pid):
-                return cached
-            retrying = pid in self._retry
-            if not retrying and pid not in self._sweep:
-                # Including when nothing is cached. It used to read anyway in
-                # that case, which was invisible while the first sweep read
-                # everybody — but once the export narrowed the sweep to the
-                # handful who carry a trigger card, every other cardholder
-                # fell through here and was fetched regardless.
-                #
-                # Answering None is safe: it reaches the snapshot as "not
-                # read this cycle", which no phase treats as evidence.
-                if pid in self._ours:
-                    logger.warning(
-                        "Millennium: not reading cardholder %s this cycle — not in "
-                        "the sweep and %s. We hold cards on them, so every phase "
-                        "will see them as having no credential",
-                        pid,
-                        "serving a profile cached from an earlier cycle"
-                        if cached else "nothing is cached",
-                    )
-                return cached
-
-        try:
-            form = self._client.get_cardholder_form(pid)
-        except MillenniumAuthError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            self._record_failure(pid, e)
-            return cached
-
-        self._retry.pop(pid, None)
-
-        self._read_this_cycle += 1
-        if self._read_this_cycle % PROGRESS_EVERY == 0:
-            logger.info(
-                "Millennium: read %d of %d cardholder pages",
-                self._read_this_cycle, max(self._reading_total, self._read_this_cycle),
-            )
-
-        slots = _read_slots(form, self._offset_seconds)
-        profile = {
-            "slots": slots,
-            "first": form.value("FirstName"),
-            "last": form.value("LastName"),
-            # Personal before company: the pass is delivered to a person, and
-            # a shared company address would send several people's passes to
-            # one inbox. Both are commonly blank — this install has neither
-            # for any of its 1,599 cardholders — which is what the synthesized
-            # address exists for.
-            "email": _first_valid_email(form.value("EMail"), form.value("CompanyEMail")),
-            "phone": (form.value("Phone") or form.value("InternalPhone") or "").strip(),
-            "enrolled": any(self._is_trigger(s) for s in slots),
-        }
-        self._profiles[pid] = profile
-        return profile
-
-
-def _describe(slots: list[Slot]) -> str:
-    """One-line slot summary, for diagnostics."""
-    return ", ".join(
-        f"{s.index}:empty" if s.empty
-        else f"{s.index}:{s.facility_code}/{s.card_number} "
-             f"fmt={s.card_format or '-'} {'on' if s.active else 'off'} "
-             f"id={s.card_id or '-'}"
-        for s in slots
-    ) or "none"
-
-
-# Every per-slot field this adapter reads. Checked rather than assumed,
-# because `form.value()` answers "" for a field that is not on the page and
-# a silently-empty value is indistinguishable from a real one.
-#
-# That is not hypothetical. The move to ASP.NET Core corrected the spelling
-# of FaciltyCode, so every card read with an empty facility code, the
-# ledger's 99/165 stopped matching the slot's ("", "165"), and every pass
-# was read as revoked. The write path already refused to guess — set_value
-# raises for an unknown field — and only the read path was credulous.
-_REQUIRED_SLOT_FIELDS = (
-    "CardID",
-    "EncodedCardNumber",
-    "FacilityCode",
-    "CardFormat",
-    "ActivationDate",
-    "ExpirationDate",
-)
-
-
-def _check_slot_shape(form: CardholderForm, prefix: str) -> None:
-    """Refuse to read a card whose page does not look the way we expect.
-
-    A slot either has its fields or is not rendered at all; a slot with
-    some of them has been renamed under us. Stopping the cycle is the
-    point — the alternative is reading a card as though a field were blank
-    and deciding, downstream, that somebody's pass has been revoked.
-    """
-    present = [n for n in _REQUIRED_SLOT_FIELDS if form.find(prefix + n) is not None]
-    if not present or len(present) == len(_REQUIRED_SLOT_FIELDS):
-        return
-    missing = ", ".join(
-        prefix + n for n in _REQUIRED_SLOT_FIELDS if form.find(prefix + n) is None
-    )
-    raise MillenniumError(
-        f"Millennium's cardholder page is missing {missing} — the page shape "
-        "has changed, and reading it would misreport every card on this "
-        "cardholder"
-    )
-
-
-def _read_slots(form: CardholderForm, offset_seconds: int = 0) -> list[Slot]:
-    slots: list[Slot] = []
-    for index in CARD_SLOTS:
-        prefix = f"Card_{index}_"
-        _check_slot_shape(form, prefix)
-        # A slot with no selected format submits the <select>'s first option,
-        # which would masquerade as a real format on an empty slot.
-        format_control = form.find(f"{prefix}CardFormat")
-        selected = ""
-        if format_control is not None:
-            selected = next(
-                (o.value for o in format_control.options if o.selected), ""
-            )
-        slots.append(
-            Slot(
-                index=index,
-                card_id=form.value(f"{prefix}CardID"),
-                card_number=form.value(f"{prefix}EncodedCardNumber"),
-                facility_code=form.value(f"{prefix}FacilityCode"),
-                card_format=selected,
-                active=form.is_checked(f"{prefix}Active"),
-                activation=parse_datetime(
-                    form.value(f"{prefix}ActivationDate"), offset_seconds
-                ),
-                expiration=parse_datetime(
-                    form.value(f"{prefix}ExpirationDate"), offset_seconds
-                ),
-            )
-        )
-    return slots
 
 
 def _stored_session() -> dict:

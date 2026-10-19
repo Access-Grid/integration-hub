@@ -22,12 +22,12 @@ import re
 
 import pytest
 
-from agsync.lib.pacs.millennium_ultra.adapter import (
+from agsync.lib.pacs.millennium_ultra.client import MillenniumError
+from agsync.lib.pacs.millennium_ultra.export import (
     _REQUIRED_SLOT_FIELDS,
     _check_slot_shape,
-    _read_slots,
+    read_slots,
 )
-from agsync.lib.pacs.millennium_ultra.client import MillenniumError
 from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 
 
@@ -73,7 +73,7 @@ def test_the_old_misspelling_is_gone_from_the_page(millennium_page):
 def test_a_card_reads_with_its_facility_code(form):
     """The read that went wrong. An empty facility code here is what made
     the ledger's 99/165 stop matching the slot's ("", "165")."""
-    slots = _read_slots(form)
+    slots = read_slots(form)
 
     populated = [s for s in slots if not s.empty]
     assert populated, "the fixture should have at least one card"
@@ -123,7 +123,7 @@ def test_reading_a_whole_cardholder_stops_too(millennium_page):
     broken = _without(millennium_page, "Card_2_FacilityCode")
 
     with pytest.raises(MillenniumError):
-        _read_slots(broken)
+        read_slots(broken)
 
 
 def test_a_page_that_is_merely_intact_is_left_alone(form):

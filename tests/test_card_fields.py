@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from agsync.lib.pacs.base import Credential, CredentialStatus, Person
-from agsync.lib.pacs.millennium_ultra.adapter import format_datetime, parse_datetime
+from agsync.lib.pacs.millennium_ultra.export import format_datetime, parse_datetime
 from agsync.sync.phases import phase1_provision
 from agsync.sync.snapshot import Snapshot
 

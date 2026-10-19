@@ -14,9 +14,9 @@ from agsync.lib.pacs.base import CredentialIdentity, CredentialStatus
 from agsync.lib.pacs.millennium_ultra.adapter import (
     MODE_SEOS,
     SeosLedger,
-    parse_roster_name,
     synthesize_email,
 )
+from agsync.lib.pacs.millennium_ultra.export import parse_roster_name
 from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
 from tests._fakes import FakeMillenniumClient
 
@@ -384,7 +384,7 @@ def test_first_cycle_reads_every_cardholder(make_millennium_adapter, millennium_
     # credential-less, which phase 3 treats as a deletion.
     adapter = make_millennium_adapter(_client({"11587": millennium_page}))
     list(adapter.list_people())
-    assert adapter._sweep == {"11587", "10301"}
+    assert adapter._export.sweep == {"11587", "10301"}
 
 
 def test_later_cycles_rotate_through_the_roster(make_millennium_adapter, millennium_page):
@@ -392,12 +392,12 @@ def test_later_cycles_rotate_through_the_roster(make_millennium_adapter, millenn
         _client({"11587": millennium_page}), sweep_budget=1,
     )
     list(adapter.list_people())          # cold: everyone
-    adapter._cold = False
+    adapter._export.cold = False
 
     list(adapter.list_people())
-    first = set(adapter._sweep)
+    first = set(adapter._export.sweep)
     list(adapter.list_people())
-    second = set(adapter._sweep)
+    second = set(adapter._export.sweep)
     # One at a time, and a different one each cycle — the whole roster is
     # covered rather than the same head being re-read forever.
     assert len(first) == len(second) == 1
@@ -416,12 +416,12 @@ def test_enrolled_cardholders_are_refreshed_even_outside_the_slice(
     client = _client({"11587": page, "10301": page})
     adapter = make_millennium_adapter(client, sweep_budget=0)
     _creds(adapter)
-    adapter._cold = False
+    adapter._export.cold = False
 
     list(adapter.list_people())
-    assert adapter._sweep == set()       # nothing scheduled for a re-read...
+    assert adapter._export.sweep == set()       # nothing scheduled for a re-read...
     assert list(adapter.list_credentials("11587"))  # ...but the enrolled one still is
-    assert adapter._profiles["11587"]["enrolled"] is True
+    assert adapter._export.profiles["11587"]["enrolled"] is True
 
 
 # --- safety rails --------------------------------------------------------
@@ -518,7 +518,7 @@ def test_a_long_sweep_reports_progress(
     to log nothing between starting and finishing, which reads as a stopped
     sync rather than a working one.
     """
-    from agsync.lib.pacs.millennium_ultra import adapter as module
+    from agsync.lib.pacs.millennium_ultra import export as module
 
     monkeypatch.setattr(module, "PROGRESS_EVERY", 2)
     roster = [{"ID": i, "IsActive": False, "Name": f"Person{i}, A"} for i in range(5)]

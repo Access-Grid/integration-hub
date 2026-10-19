@@ -350,7 +350,7 @@ def test_s9_the_detail_page_name_beats_the_roster_name(
     before = {p.id: p for p in adapter.list_people()}["11587"].full_name
     assert before == "Oldfirst Stalename", "with no profile yet, the roster is all we have"
 
-    adapter._profile_for("11587")  # reads the detail page
+    adapter._export.profile_for("11587")  # reads the detail page
     after = {p.id: p for p in adapter.list_people()}["11587"].full_name
     assert after == "Access Grid", "the detail page must win once it is read"
 
@@ -722,7 +722,7 @@ def _with_contact(millennium_page, set_slot, *, email="", phone=""):
 
 def _person(adapter):
     people = {p.id: p for p in adapter.list_people()}
-    adapter._profile_for("11587")
+    adapter._export.profile_for("11587")
     return {p.id: p for p in adapter.list_people()}["11587"], people["11587"]
 
 

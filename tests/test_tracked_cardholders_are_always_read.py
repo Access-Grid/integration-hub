@@ -139,7 +139,7 @@ def test_a_cardholder_we_hold_a_card_on_is_swept(unnamed):
 
     list(adapter.list_people())
 
-    assert PID in adapter._sweep
+    assert PID in adapter._export.sweep
     assert PID in adapter._ours
 
 
@@ -148,7 +148,7 @@ def test_they_are_read_with_nothing_cached(unnamed, caplog):
     adapter, client = unnamed
     _own_a_card(adapter, client)
     # A restart loses every cached page; the ledger survives it.
-    adapter._profiles.clear()
+    adapter._export.profiles.clear()
 
     with caplog.at_level(logging.INFO):
         list(adapter.list_people())
@@ -175,10 +175,10 @@ def test_they_are_read_after_their_last_trigger_card_is_deleted(
     # The operator deletes every format-8 card, and the app restarts.
     client._pages[PID] = _page(millennium_page, set_slot, trigger=False)
     client.carries_trigger = False
-    adapter._profiles.clear()
+    adapter._export.profiles.clear()
 
     list(adapter.list_people())
-    assert PID in adapter._sweep
+    assert PID in adapter._export.sweep
     # Read, and honestly reporting no credential — which is what lets phase 3
     # delete the pass. The alternative, PacsRecordUnavailable, is what left it
     # live forever.
@@ -214,7 +214,7 @@ def test_a_stranger_is_still_not_read(unnamed, caplog):
     _own_a_card(adapter, client)
     list(adapter.list_people())
 
-    assert "4242" not in adapter._sweep
+    assert "4242" not in adapter._export.sweep
     with caplog.at_level(logging.INFO):
         with pytest.raises(PacsRecordUnavailable):
             list(adapter.list_credentials("4242"))
@@ -229,7 +229,7 @@ def test_the_sweep_is_the_export_plus_the_ledger_and_nothing_else(unnamed):
     list(adapter.list_people())
 
     # 9391 from the export's name join, 9390 from the ledger.
-    assert adapter._sweep == {PID, "9391"}
+    assert adapter._export.sweep == {PID, "9391"}
 
 
 # =====================================================================
@@ -273,10 +273,10 @@ def test_an_unread_cardholder_we_hold_cards_on_is_still_named(unnamed, caplog):
     """
     adapter, client = unnamed
     _own_a_card(adapter, client)
-    adapter._profiles.clear()
-    adapter._sweep = set()
+    adapter._export.profiles.clear()
+    adapter._export.sweep = set()
 
     with caplog.at_level(logging.INFO):
-        assert adapter._profile_for(PID) is None
+        assert adapter._export.profile_for(PID) is None
 
     assert re.search(r"not reading cardholder 9390 this cycle", _messages(caplog))
