@@ -732,6 +732,31 @@ class MillenniumUltraClient:
             f"Save for cardholder {cardholder_id} -> HTTP {response.status_code}"
         )
 
+    def delete_card_by_number(
+        self, employee_id: str, facility_code: str, card_number: str
+    ) -> bool:
+        """Delete the card with this facility code and number from a cardholder.
+
+        The export names neither the record nor the card's id, so both are
+        read here: the record from a search, the card from that record's
+        page. A card that is not on the cardholder is refused, not guessed.
+        """
+        record_id = self.find_cardholder_id(employee_id)
+        form = self.get_cardholder_form(record_id)
+        for slot in CARD_SLOTS:
+            prefix = f"Card_{slot}_"
+            if (
+                form.value(prefix + "EncodedCardNumber").strip() == str(card_number)
+                and form.value(prefix + "FacilityCode").strip() == str(facility_code)
+            ):
+                card_id = form.value(prefix + "CardID").strip()
+                if not card_id:
+                    break
+                return self.delete_card(record_id, card_id, form.token)
+        raise MillenniumError(
+            f"Employee ID {employee_id} holds no card {facility_code}/{card_number}"
+        )
+
     def delete_card(self, cardholder_id: str | int, card_id: str, token: str) -> bool:
         """Remove a card from its slot.
 
