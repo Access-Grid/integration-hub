@@ -213,7 +213,12 @@ def make_millennium_adapter():
     """Build a MillenniumUltraAdapter with its client swapped for a fake."""
     from agsync.lib.pacs.millennium_ultra.adapter import MillenniumUltraAdapter
 
-    def _build(fake_client, **kwargs) -> MillenniumUltraAdapter:
+    def _build(fake_client, migrated=True, **kwargs) -> MillenniumUltraAdapter:
+        if migrated:
+            from agsync.lib.pacs.millennium_ultra import migrate
+            from agsync.settings_store import set_json
+
+            set_json(migrate.DONE_KEY, True)
         kwargs.setdefault("base_url", "https://millennium.test")
         kwargs.setdefault("trigger_card_format", "7")
         kwargs.setdefault("trigger_card_format_label", "HID 37")

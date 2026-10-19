@@ -48,7 +48,7 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
-from . import export
+from . import export, migrate
 from .client import (
     ANTIFORGERY_COOKIE_PREFIX,
     COMPANY_COOKIE,
@@ -279,6 +279,7 @@ class MillenniumUltraAdapter:
 
     def list_people(self) -> Iterable[Person]:
         """Everyone in this cycle's export, keyed by Employee ID."""
+        migrate.ensure(self)
         if not self._trigger_label:
             # Without it no card reads as a trigger, which would look like
             # everybody's pass being withdrawn at once.
