@@ -1,58 +1,52 @@
-"""Millennium adapter: trigger gating, both directions, and write safety.
+"""Millennium adapter: people and credentials, read from the bulk export.
 
-The trigger is a card format rather than a sentinel field, and the adapter
-runs in one of two opposite directions — DESFire copies a card out of
-Millennium, Seos writes an AccessGrid-minted card in. Both are exercised
-here against the real captured cardholder page.
+The trigger is a card format rather than a sentinel field, compared by the
+display name the export prints. The adapter runs in one of two directions —
+DESFire copies a card out of Millennium, Seos asks AccessGrid to mint one.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import logging
 
-from agsync.lib.pacs.base import CredentialIdentity, CredentialStatus
+import pytest
+
+from agsync.lib.pacs.base import CredentialStatus
 from agsync.lib.pacs.millennium_ultra.adapter import (
     MODE_SEOS,
     SeosLedger,
-    parse_roster_name,
     synthesize_email,
 )
-from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
-from tests._fakes import FakeMillenniumClient
+from agsync.lib.pacs.millennium_ultra.client import MillenniumError
+from tests._fakes import FakeMillenniumClient, export_row
 
-TRIGGER = "7"  # "HID 37" in the captured page's format list
-OTHER = "1"    # "Wiegand Card"
-
-ROSTER = [
-    {"ID": 11587, "IsActive": False, "Name": "Grid, Accessg"},
-    {"ID": 10301, "IsActive": True, "Name": "Abayan, HID. Tanyabella"},
-]
+TRIGGER = "HID 37"
+OTHER = "Wiegand Card"
 
 
-def _client(pages: dict[str, str]) -> FakeMillenniumClient:
-    return FakeMillenniumClient(roster=ROSTER, pages=pages)
+def _card(number="1234", card_format=TRIGGER, active=True):
+    return {
+        "card_number": number, "facility_code": "66",
+        "card_format": card_format, "active": active,
+    }
 
 
-def _creds(adapter, person_id="11587"):
-    list(adapter.list_people())  # populates the roster the profiles hang off
+def _creds(adapter, person_id="33137"):
+    list(adapter.list_people())
     return list(adapter.list_credentials(person_id))
+
+
+def _adapter(make_millennium_adapter, *rows, **kwargs):
+    return make_millennium_adapter(FakeMillenniumClient(rows=rows), **kwargs)
 
 
 # --- names and identity --------------------------------------------------
 
 
-def test_roster_name_splits_last_and_first():
-    # This install repurposes the middle-name field as a card-type label.
-    assert parse_roster_name("Abayan, HID. Tanyabella") == ("Tanyabella", "Abayan")
-    assert parse_roster_name("Grid, Accessg") == ("Accessg", "Grid")
-
-
-def test_email_is_synthesized_from_name_and_record_id():
-    # Millennium stores no addresses, and the same human appears once per
-    # card technology — so the record id has to be part of the address.
+def test_email_is_synthesized_from_name_and_employee_id():
     assert (
-        synthesize_email("Accessg", "Grid", "11587", "cards.example.com")
-        == "accessg.grid.11587@cards.example.com"
+        synthesize_email("Accessg", "Grid", "33137", "cards.example.com")
+        == "accessg.grid.33137@cards.example.com"
     )
     assert synthesize_email("Jean-Luc", "O'Brien", "42", "x.test") == "jeanluc.obrien.42@x.test"
 
@@ -61,531 +55,171 @@ def test_no_domain_means_no_email():
     assert synthesize_email("A", "B", "1", "") == ""
 
 
-def test_people_carry_the_synthesized_address(make_millennium_adapter, millennium_page):
-    adapter = make_millennium_adapter(_client({"11587": millennium_page}))
-    people = {p.id: p for p in adapter.list_people()}
-    assert people["11587"].email == "accessg.grid.11587@cards.example.com"
-    assert people["10301"].full_name == "Tanyabella Abayan"
-    # Millennium has no cardholder-level enable flag; IsActive is UI state.
-    assert people["10301"].active is True
-    assert people["11587"].active is True
+def test_no_employee_id_is_an_error(caplog):
+    with caplog.at_level(logging.ERROR):
+        assert synthesize_email("Ada", "Lovelace", "", "x.test") == ""
+    assert "no Employee ID" in caplog.text
+
+
+def test_people_are_keyed_by_employee_id(make_millennium_adapter):
+    adapter = _adapter(
+        make_millennium_adapter, export_row("33137", "Accessg", "Grid", phone="555-0100"),
+    )
+    [person] = adapter.list_people()
+    assert person.id == "33137"
+    assert person.full_name == "Accessg Grid"
+    assert person.email == "accessg.grid.33137@cards.example.com"
+    assert person.phone == "555-0100"
+    # Millennium has no cardholder-level enable flag.
+    assert person.active is True
+
+
+def test_a_row_with_no_employee_id_is_skipped(make_millennium_adapter, caplog):
+    adapter = _adapter(
+        make_millennium_adapter, export_row("", "No", "Id"), export_row("7", "Has", "Id"),
+    )
+    with caplog.at_level(logging.ERROR):
+        assert [p.id for p in adapter.list_people()] == ["7"]
+    # Once where the address could not be made, once for the skip.
+    assert "cannot synthesize an email for No Id" in caplog.text
+    assert "skipping No Id" in caplog.text
+
+
+def test_a_shared_employee_id_skips_every_row_holding_it(make_millennium_adapter, caplog):
+    adapter = _adapter(
+        make_millennium_adapter,
+        export_row("5", "Ann", "One"), export_row("5", "Bob", "Two"), export_row("6"),
+    )
+    with caplog.at_level(logging.ERROR):
+        assert [p.id for p in adapter.list_people()] == ["6"]
+    assert "Employee ID 5" in caplog.text
+
+
+# --- refusing to read nonsense -------------------------------------------
+
+
+def test_no_stored_trigger_name_fails_the_cycle(make_millennium_adapter):
+    """Otherwise no card reads as a trigger, and every pass looks withdrawn."""
+    adapter = _adapter(make_millennium_adapter, export_row("1"), trigger_card_format_label="")
+    with pytest.raises(MillenniumError, match="no stored name"):
+        list(adapter.list_people())
+
+
+def test_an_empty_export_fails_the_cycle(make_millennium_adapter):
+    adapter = _adapter(make_millennium_adapter)
+    with pytest.raises(MillenniumError, match="empty"):
+        list(adapter.list_people())
 
 
 # --- the trigger ---------------------------------------------------------
 
 
-def test_slot_with_the_trigger_format_enrolls(
-    make_millennium_adapter, millennium_page, set_slot
-):
-    page = set_slot(
-        millennium_page, 1,
-        card_id="7919", card_number="1234", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    creds = _creds(make_millennium_adapter(_client({"11587": page})))
-    assert len(creds) == 1
-    assert creds[0].id == "slot1"
-    assert creds[0].card_number == "1234"
-    assert creds[0].site_code == "66"
-    assert creds[0].trigger_active is True
-    assert creds[0].status is CredentialStatus.ACTIVE
+def test_slot_with_the_trigger_format_enrolls(make_millennium_adapter):
+    adapter = _adapter(make_millennium_adapter, export_row("33137", slots=[_card()]))
+    [cred] = _creds(adapter)
+    assert cred.id == "slot1"
+    assert cred.card_number == "1234"
+    assert cred.site_code == "66"
+    assert cred.trigger_active is True
+    assert cred.status is CredentialStatus.ACTIVE
     # DESFire copies an existing card out; nothing is allocated.
-    assert creds[0].allocate_identity is False
+    assert cred.allocate_identity is False
 
 
-def test_slot_with_another_format_does_not_enroll(
-    make_millennium_adapter, millennium_page, set_slot
-):
-    page = set_slot(
-        millennium_page, 1,
-        card_id="7919", card_number="1234", facility_code="66",
-        card_format=OTHER, active=True,
+def test_slot_with_another_format_does_not_enroll(make_millennium_adapter):
+    adapter = _adapter(
+        make_millennium_adapter, export_row("33137", slots=[_card(card_format=OTHER)]),
     )
-    assert _creds(make_millennium_adapter(_client({"11587": page}))) == []
-
-
-def test_empty_slot_never_triggers(make_millennium_adapter, millennium_page, set_slot):
-    # An empty slot's <select> submits its first option, which would look
-    # like a real format. Millennium does not persist a format for a slot
-    # with no card, so an empty slot must never enroll.
-    page = set_slot(millennium_page, 3, card_id="", card_number="", card_format=None)
-    assert _creds(make_millennium_adapter(_client({"11587": page}))) == []
-
-
-def test_inactive_card_is_suspended(make_millennium_adapter, millennium_page, set_slot):
-    page = set_slot(
-        millennium_page, 1,
-        card_id="7919", card_number="1234", facility_code="66",
-        card_format=TRIGGER, active=False,
-    )
-    creds = _creds(make_millennium_adapter(_client({"11587": page})))
-    assert creds[0].status is CredentialStatus.SUSPENDED
-
-
-# --- suspend / resume ----------------------------------------------------
-
-
-def test_suspend_unchecks_active_and_leaves_the_card(
-    make_millennium_adapter, millennium_page, set_slot
-):
-    page = set_slot(
-        millennium_page, 1,
-        card_id="7919", card_number="1234", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client)
-    assert adapter.update_credential_status("11587", "slot1", CredentialStatus.SUSPENDED)
-
-    _, form = client.saved[0]
-    _, body = form.to_multipart()
-    assert b'name="Card_1_Active"' not in body      # omission is "inactive"
-    assert b'name="Card_1_CardID"\r\n\r\n7919\r\n' in body
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n1234\r\n' in body
-
-
-def test_resume_rechecks_active(make_millennium_adapter, millennium_page, set_slot):
-    page = set_slot(
-        millennium_page, 1,
-        card_id="7919", card_number="1234", facility_code="66",
-        card_format=TRIGGER, active=False,
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client)
-    assert adapter.update_credential_status("11587", "slot1", CredentialStatus.ACTIVE)
-    _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_1_Active"\r\n\r\ntrue\r\n' in body
-
-
-def test_status_write_is_skipped_when_already_correct(
-    make_millennium_adapter, millennium_page, set_slot
-):
-    page = set_slot(
-        millennium_page, 1,
-        card_id="7919", card_number="1234", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client)
-    assert adapter.update_credential_status("11587", "slot1", CredentialStatus.ACTIVE)
-    assert client.saved == []
-
-
-def test_access_levels_survive_a_status_write(
-    make_millennium_adapter, millennium_page, set_slot
-):
-    levels = '{"0":{"200":{"ALID":2,"AD":null,"ED":null}}}'
-    page = millennium_page.replace(
-        'name="Card_1_AccessLevels" id="Card_1_AccessLevels" value="{}"',
-        'name="Card_1_AccessLevels" id="Card_1_AccessLevels" value="'
-        + levels.replace('"', "&quot;") + '"',
-    )
-    page = set_slot(
-        page, 1, card_id="7919", card_number="1234", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    client = _client({"11587": page})
-    make_millennium_adapter(client).update_credential_status(
-        "11587", "slot1", CredentialStatus.SUSPENDED,
-    )
-    _, body = client.saved[0][1].to_multipart()
-    assert levels.encode() in body
-
-
-# --- Seos: AccessGrid mints, we write in --------------------------------
-
-
-def _seos_page(millennium_page, set_slot, empty_slots=(2, 3)):
-    """A cardholder holding a trigger card, with `empty_slots` free."""
-    page = set_slot(
-        millennium_page, 1,
-        card_id="7919", card_number="1234", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    for slot in (2, 3):
-        if slot in empty_slots:
-            page = set_slot(page, slot, card_id="", card_number="", card_format=None)
-        else:
-            page = set_slot(
-                page, slot, card_id=f"79{slot}0", card_number=f"90{slot}",
-                facility_code="66", card_format=OTHER, active=True,
-            )
-    return page
-
-
-def test_seos_credential_asks_accessgrid_to_allocate(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    page = _seos_page(millennium_page, set_slot)
-    adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
-    creds = _creds(adapter)
-    assert len(creds) == 1
-    assert creds[0].allocate_identity is True
-    # Nothing of ours may reach AccessGrid, or it would not allocate.
-    assert creds[0].card_number == ""
-    assert creds[0].site_code == ""
-
-
-def test_seos_needs_a_slot_besides_the_marker(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    """A phone and a watch need one slot each.
-
-    The marker's own is one of them — we overwrite it — so one more has to
-    be free. With none, a holder who installs on both would run out, and we
-    decline rather than provision half a person.
-    """
-    page = _seos_page(millennium_page, set_slot, empty_slots=())
-    adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
     assert _creds(adapter) == []
 
 
-def test_one_free_slot_beside_the_marker_is_enough(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    page = _seos_page(millennium_page, set_slot, empty_slots=(3,))
-    adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
+def test_trigger_matching_is_by_exact_name(make_millennium_adapter):
+    adapter = _adapter(
+        make_millennium_adapter, export_row("33137", slots=[_card()]),
+        trigger_card_format_label="HID 3",
+    )
+    assert _creds(adapter) == []
+
+
+def test_empty_slot_never_triggers(make_millennium_adapter):
+    adapter = _adapter(
+        make_millennium_adapter, export_row("33137", slots=[_card(number="")]),
+    )
+    assert _creds(adapter) == []
+
+
+def test_inactive_card_is_suspended(make_millennium_adapter):
+    adapter = _adapter(
+        make_millennium_adapter, export_row("33137", slots=[_card(active=False)]),
+    )
+    [cred] = _creds(adapter)
+    assert cred.status is CredentialStatus.SUSPENDED
+
+
+def test_card_dates_come_from_the_export(make_millennium_adapter):
+    card = {**_card(), "activation": "9/11/2026 12:00:00 AM", "expiration": "9/11/2027 6:17:00 PM"}
+    adapter = _adapter(make_millennium_adapter, export_row("33137", slots=[card]))
+    [cred] = _creds(adapter)
+    assert cred.activate_date.isoformat() == "2026-09-11T00:00:00+00:00"
+    assert cred.deactivate_date.isoformat() == "2027-09-11T18:17:00+00:00"
+
+
+# --- Seos: AccessGrid mints ----------------------------------------------
+
+
+def test_seos_credential_asks_accessgrid_to_allocate(make_millennium_adapter, seos_ledger):
+    adapter = _adapter(
+        make_millennium_adapter, export_row("33137", slots=[_card()]), mode=MODE_SEOS,
+    )
+    [cred] = _creds(adapter)
+    assert cred.id == "seos"
+    assert cred.allocate_identity is True
+    # Nothing of ours may reach AccessGrid, or it would not allocate.
+    assert cred.card_number == ""
+    assert cred.site_code == ""
+
+
+def test_seos_needs_a_slot_besides_the_marker(make_millennium_adapter, seos_ledger):
+    full = [_card(), _card("902", OTHER), _card("903", OTHER)]
+    adapter = _adapter(make_millennium_adapter, export_row("33137", slots=full), mode=MODE_SEOS)
+    assert _creds(adapter) == []
+
+
+def test_one_free_slot_beside_the_marker_is_enough(make_millennium_adapter, seos_ledger):
+    adapter = _adapter(
+        make_millennium_adapter,
+        export_row("33137", slots=[_card(), _card("902", OTHER)]), mode=MODE_SEOS,
+    )
     assert len(_creds(adapter)) == 1
-
-
-def test_seos_overwrites_the_marker_then_fills_an_empty_slot(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    page = _seos_page(millennium_page, set_slot)
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-    identities = [
-        CredentialIdentity("66", "5001", datetime(2026, 8, 18, 4, tzinfo=UTC), None),
-        CredentialIdentity("66", "5002", datetime(2026, 8, 18, 4, tzinfo=UTC), None),
-    ]
-    assert adapter.write_back_credentials("11587", "seos", identities) is True
-
-    _, form = client.saved[0]
-    _, body = form.to_multipart()
-    # The marker's slot is reused, keeping its CardID so Millennium updates
-    # that card rather than creating a second one beside it.
-    assert b'name="Card_1_CardID"\r\n\r\n7919\r\n' in body
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5001\r\n' in body
-    assert b'name="Card_1_FacilityCode"\r\n\r\n66\r\n' in body
-    assert b'name="Card_1_Active"\r\n\r\ntrue\r\n' in body
-    # The placeholder number it replaced is gone.
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n1234\r\n' not in body
-    # The second credential creates a card: CardID empty, rest filled.
-    assert b'name="Card_2_CardID"\r\n\r\n\r\n' in body
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5002\r\n' in body
-    # Written with the trigger format, so the next cycle recognises them.
-    written = CardholderForm.parse(page)
-    assert form.value("Card_2_CardFormat") == TRIGGER
-    assert written.value("Card_2_CardFormat") != TRIGGER  # unchanged in the source
-
-
-def test_seos_write_records_the_slots_it_used(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    page = _seos_page(millennium_page, set_slot)
-    adapter = make_millennium_adapter(_client({"11587": page}), mode=MODE_SEOS)
-    adapter.write_back_credentials(
-        "11587", "seos", [CredentialIdentity("66", "5001")],
-    )
-    assert SeosLedger.get("11587", "seos") == [
-        {"slot": 1, "card_number": "5001", "facility_code": "66"},
-    ]
-
-
-def test_seos_write_is_idempotent(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    # Phase 4 re-offers the full list every cycle, so an identity already in
-    # a slot must not be written a second time.
-    page = _seos_page(millennium_page, set_slot)
-    page = set_slot(
-        page, 2, card_id="7930", card_number="5001", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-    # Returns False because nothing was written — the invariant that matters
-    # is that the cardholder was not touched.
-    assert adapter.write_back_credentials(
-        "11587", "seos", [CredentialIdentity("66", "5001")],
-    ) is False
-    assert client.saved == []
-
-
-def test_seos_refuses_a_card_number_already_in_use(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    page = _seos_page(millennium_page, set_slot)
-    client = _client({"11587": page})
-    client.number_free = False
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-    assert adapter.write_back_credentials(
-        "11587", "seos", [CredentialIdentity("66", "5001")],
-    ) is False
-    assert client.saved == []
-
-
-def test_seos_writes_nothing_when_slots_run_short(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    page = _seos_page(millennium_page, set_slot, empty_slots=())
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-    assert adapter.write_back_credentials(
-        "11587", "seos",
-        [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
-    ) is False
-    # All or nothing: a partial write would strand the second device.
-    assert client.saved == []
-
-
-def test_seos_suspend_targets_the_written_slots(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    page = _seos_page(millennium_page, set_slot)
-    page = set_slot(
-        page, 2, card_id="7930", card_number="5001", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    SeosLedger.record(
-        "11587", "seos",
-        [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-    assert adapter.update_credential_status(
-        "11587", "seos", CredentialStatus.SUSPENDED,
-    )
-    _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_2_Active"' not in body
-    # The trigger card itself is the operator's, and stays as it was.
-    assert b'name="Card_1_Active"\r\n\r\ntrue\r\n' in body
 
 
 # --- setup-time discovery ------------------------------------------------
 
 
-def test_card_formats_are_read_from_a_cardholder_page(
-    make_millennium_adapter, millennium_page
-):
-    # Millennium has no endpoint that lists formats — the only source is a
-    # card slot's <select>, so this must come off a real cardholder.
-    client = FakeMillenniumClient(roster=ROSTER, pages={"11587": millennium_page})
-    assert make_millennium_adapter(client).card_formats() == [
+def test_card_formats_are_read_for_the_setup_screen(make_millennium_adapter):
+    assert _adapter(make_millennium_adapter).card_formats() == [
         ("1", "Wiegand Card"), ("7", "HID 37"),
     ]
 
 
-# --- refresh strategy ----------------------------------------------------
+def test_no_cardholders_means_no_formats(make_millennium_adapter):
+    client = FakeMillenniumClient()
+    client.first_cardholder_id = lambda: ""
+    assert make_millennium_adapter(client).card_formats() == []
 
 
-def test_first_cycle_reads_every_cardholder(make_millennium_adapter, millennium_page):
-    # A partial first read would leave tracked cardholders looking
-    # credential-less, which phase 3 treats as a deletion.
-    adapter = make_millennium_adapter(_client({"11587": millennium_page}))
-    list(adapter.list_people())
-    assert adapter._sweep == {"11587", "10301"}
-
-
-def test_later_cycles_rotate_through_the_roster(make_millennium_adapter, millennium_page):
-    adapter = make_millennium_adapter(
-        _client({"11587": millennium_page}), sweep_budget=1,
-    )
-    list(adapter.list_people())          # cold: everyone
-    adapter._cold = False
-
-    list(adapter.list_people())
-    first = set(adapter._sweep)
-    list(adapter.list_people())
-    second = set(adapter._sweep)
-    # One at a time, and a different one each cycle — the whole roster is
-    # covered rather than the same head being re-read forever.
-    assert len(first) == len(second) == 1
-    assert first != second
-    assert first | second == {"11587", "10301"}
-
-
-def test_enrolled_cardholders_are_refreshed_even_outside_the_slice(
-    make_millennium_adapter, millennium_page, set_slot
-):
-    page = set_slot(
-        millennium_page, 1,
-        card_id="7919", card_number="1234", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    client = _client({"11587": page, "10301": page})
-    adapter = make_millennium_adapter(client, sweep_budget=0)
-    _creds(adapter)
-    adapter._cold = False
-
-    list(adapter.list_people())
-    assert adapter._sweep == set()       # nothing scheduled for a re-read...
-    assert list(adapter.list_credentials("11587"))  # ...but the enrolled one still is
-    assert adapter._profiles["11587"]["enrolled"] is True
-
-
-# --- safety rails --------------------------------------------------------
-
-
-def test_status_write_is_refused_for_a_slot_with_no_card(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    # The card behind the credential was deleted in Millennium. Activating
-    # an empty slot is not a thing, so we decline rather than post junk.
-    page = _seos_page(millennium_page, set_slot)
-    SeosLedger.record(
-        "11587", "seos",
-        [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-    assert adapter.update_credential_status(
-        "11587", "seos", CredentialStatus.ACTIVE,
-    ) is False
-    assert client.saved == []
+# --- the ledger ----------------------------------------------------------
 
 
 def test_ledger_keeps_one_entry_per_physical_card(seos_ledger):
     # A rewritten card must not accumulate a second ledger row.
     SeosLedger.record(
-        "11587", "seos",
+        "33137", "seos",
         [
             {"slot": 2, "card_number": "5001", "facility_code": "66"},
             {"slot": 3, "card_number": "5001", "facility_code": "66"},
         ],
     )
-    assert SeosLedger.get("11587", "seos") == [
+    assert SeosLedger.get("33137", "seos") == [
         {"slot": 3, "card_number": "5001", "facility_code": "66"},
     ]
-
-
-def test_a_credential_removed_in_the_pacs_is_never_recreated(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    """An operator's deletion in Millennium is final.
-
-    Phase 4 re-offers every tracked card's identities on every cycle. Without
-    this, a card somebody deliberately deleted in Millennium would be written
-    straight back on the next sync — this integration overruling a person
-    working in their own system, forever.
-    """
-    page = _seos_page(millennium_page, set_slot)          # slots 2 and 3 empty
-    SeosLedger.record(
-        "11587", "seos",
-        [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-
-    assert adapter.write_back_credentials(
-        "11587", "seos", [CredentialIdentity("66", "5001")],
-    ) is False
-    assert client.saved == []
-    # And it stays remembered, so a later cycle does not rediscover it.
-    assert SeosLedger.get("11587", "seos") == [
-        {"slot": 2, "card_number": "5001", "facility_code": "66"},
-    ]
-
-
-def test_a_genuinely_new_device_is_still_written_alongside_a_removed_one(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    # Refusing to resurrect must not block the second device a holder
-    # installs later, which is the whole point of re-offering.
-    page = _seos_page(millennium_page, set_slot)
-    SeosLedger.record(
-        "11587", "seos",
-        [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-
-    assert adapter.write_back_credentials(
-        "11587", "seos",
-        [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
-    ) is True
-    _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5002\r\n' in body   # the new one
-    assert b"5001" not in body                                          # not the deleted one
-
-
-def test_a_long_sweep_reports_progress(
-    make_millennium_adapter, millennium_page, caplog, monkeypatch
-):
-    """Five silent minutes is indistinguishable from a hang.
-
-    The first sweep of a large install reads every cardholder page and used
-    to log nothing between starting and finishing, which reads as a stopped
-    sync rather than a working one.
-    """
-    from agsync.lib.pacs.millennium_ultra import adapter as module
-
-    monkeypatch.setattr(module, "PROGRESS_EVERY", 2)
-    roster = [{"ID": i, "IsActive": False, "Name": f"Person{i}, A"} for i in range(5)]
-    pages = {str(i): millennium_page for i in range(5)}
-    adapter = make_millennium_adapter(FakeMillenniumClient(roster=roster, pages=pages))
-
-    with caplog.at_level("INFO"):
-        for person in adapter.list_people():
-            list(adapter.list_credentials(person.id))
-
-    progress = [m for m in (r.getMessage() for r in caplog.records) if "read" in m and "of" in m]
-    assert progress, "a long sweep must say something while it runs"
-    assert "of 5 cardholder pages" in progress[0]
-
-
-def test_the_marker_is_told_apart_from_our_own_cards(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    """The ledger is the only thing that distinguishes them.
-
-    Cards we write carry the trigger format, so `_is_trigger` is true of
-    ours too. Without the ledger, a second credential would overwrite the
-    first one we had just issued instead of the operator's placeholder.
-    """
-    page = _seos_page(millennium_page, set_slot)
-    page = set_slot(
-        page, 2, card_id="7930", card_number="5001", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    SeosLedger.record(
-        "11587", "seos",
-        [{"slot": 2, "card_number": "5001", "facility_code": "66"}],
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-
-    assert adapter.write_back_credentials(
-        "11587", "seos",
-        [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
-    ) is True
-    _, body = client.saved[0][1].to_multipart()
-    # Slot 1 is the marker, so 5002 lands there.
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5002\r\n' in body
-    # Slot 2 holds a card we issued, and keeps it.
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5001\r\n' in body
-
-
-def test_a_cardholder_with_no_marker_left_writes_into_empty_slots(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    """Every trigger-format card is ours, so there is nothing to overwrite."""
-    page = _seos_page(millennium_page, set_slot)
-    page = set_slot(
-        page, 1, card_id="7919", card_number="5001", facility_code="66",
-        card_format=TRIGGER, active=True,
-    )
-    SeosLedger.record(
-        "11587", "seos",
-        [{"slot": 1, "card_number": "5001", "facility_code": "66"}],
-    )
-    client = _client({"11587": page})
-    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
-
-    assert adapter.write_back_credentials(
-        "11587", "seos",
-        [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
-    ) is True
-    _, body = client.saved[0][1].to_multipart()
-    assert b'name="Card_2_EncodedCardNumber"\r\n\r\n5002\r\n' in body
-    assert b'name="Card_1_EncodedCardNumber"\r\n\r\n5001\r\n' in body

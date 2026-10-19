@@ -241,6 +241,24 @@ def _detected_mode() -> str:
     return "seos" if protocol == PROTOCOL_SEOS else "desfire"
 
 
+def trigger_params(params: dict, format_id: str) -> dict:
+    """`params` with the trigger set to `format_id`, by id and by name.
+
+    Both are stored: the setup screens choose by id, and the export the
+    sync reads prints the name. Raises ValueError if the PACS does not
+    define that format.
+    """
+    format_id = format_id.strip()
+    labels = dict(build_adapter(_configured_vendor(), params).card_formats())
+    if format_id not in labels:
+        raise ValueError(f"card format {format_id!r} is not defined in the PACS")
+    return {
+        **params,
+        "trigger_card_format": format_id,
+        "trigger_card_format_label": labels[format_id],
+    }
+
+
 def _read_card_formats() -> tuple[list[dict], str]:
     """Read this install's card formats through the freshly-captured session."""
     vendor = _configured_vendor()

@@ -14,12 +14,8 @@ from tests._fakes import FakeMillenniumClient
 
 
 @pytest.fixture
-def adapter(make_millennium_adapter, millennium_page):
-    client = FakeMillenniumClient(
-        roster=[{"ID": 11587, "Name": "Grid, Accessg"}],
-        pages={"11587": millennium_page},
-    )
-    return make_millennium_adapter(client, mode=MODE_SEOS)
+def adapter(make_millennium_adapter):
+    return make_millennium_adapter(FakeMillenniumClient(), mode=MODE_SEOS)
 
 
 def test_written_card_numbers_are_reported(adapter, seos_ledger):
@@ -44,11 +40,10 @@ def test_several_cardholders_are_kept_apart(adapter, seos_ledger):
     assert written[("8824", "seos")] == ["5001"]
 
 
-def test_a_read_only_adapter_reports_nothing(make_millennium_adapter, millennium_page):
+def test_a_read_only_adapter_reports_nothing(make_millennium_adapter):
     # DESFire copies cards out; nothing is ever written, so the column has
     # nothing to say rather than saying "not saved" about every row.
-    client = FakeMillenniumClient(roster=[], pages={"11587": millennium_page})
-    desfire = make_millennium_adapter(client)
+    desfire = make_millennium_adapter(FakeMillenniumClient())
     assert desfire.supports_credential_writeback is False
 
 

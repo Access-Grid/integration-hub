@@ -399,9 +399,14 @@ def update_trigger_format(
     pacs = PacsConfig.load()
     if not pacs:
         return RedirectResponse(url="/settings?err=not_configured", status_code=303)
-    params = dict(pacs.get("params") or {})
-    previous = params.get("trigger_card_format")
-    params["trigger_card_format"] = trigger_card_format.strip()
+    from .connect import trigger_params
+
+    previous = (pacs.get("params") or {}).get("trigger_card_format")
+    try:
+        params = trigger_params(dict(pacs.get("params") or {}), trigger_card_format)
+    except Exception as e:  # noqa: BLE001 — reported on the settings page
+        logger.warning("settings: could not record the trigger format: %s", e)
+        return RedirectResponse(url="/settings?err=trigger", status_code=303)
     PacsConfig.save(pacs["vendor"], params, pacs.get("options") or {})
     logger.info(
         "Enrollment trigger changed from card format %r to %r",

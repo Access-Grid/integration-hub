@@ -114,6 +114,7 @@
   "settings.trigger.missing": "El disparador guardado (formato {id}) ya no existe en esta instalación; no hay nadie inscrito hasta que elija otro.",
   "settings.trigger.subtitle": "Los titulares con una tarjeta de este formato reciben un pase de AccessGrid. Cambiarlo redefine quién está inscrito: quien solo tenga el formato anterior queda fuera y su pase se cancela en el siguiente ciclo.",
   "settings.trigger.title": "Disparador de inscripción",
+  "settings.trigger.unreadable": "No se pudo leer ese formato de tarjeta en el PACS, así que el disparador no se cambió. Compruebe la conexión e inténtelo de nuevo.",
   "status.ag_cards": "Tarjetas AccessGrid",
   "status.credentials": "Credenciales",
   "status.identities": "Identidades",

@@ -26,11 +26,10 @@ import pytest
 from agsync import dryrun
 from agsync.lib.pacs.base import (
     Credential,
-    CredentialIdentity,
     CredentialStatus,
     Person,
 )
-from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, SeosLedger
+from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS
 from agsync.sync import tracking
 from agsync.sync.phases import (
     phase1_provision,
@@ -39,7 +38,7 @@ from agsync.sync.phases import (
     phase6_field_changes,
 )
 from agsync.sync.snapshot import Snapshot
-from tests._fakes import FakeMillenniumClient
+from tests._fakes import FakeMillenniumClient, export_row
 
 # Captured at import, before the suite's autouse fixture replaces it, so a
 # test can ask for the real behaviour without reverting every other patch
@@ -47,9 +46,7 @@ from tests._fakes import FakeMillenniumClient
 # and any stubbed engine.
 _REAL_ACTIVE = dryrun.active
 
-TRIGGER = "7"
 PID = "11665"
-ROSTER = [{"ID": PID, "IsActive": True, "Name": "Dorvil, Greg"}]
 
 
 @pytest.fixture
@@ -196,70 +193,13 @@ def test_every_mutation_is_gated():
 # =====================================================================
 
 
-def _adapter(make_millennium_adapter, millennium_page, set_slot):
-    page = set_slot(
-        millennium_page, 1, card_id="7919", card_number="1",
-        facility_code="99", card_format=TRIGGER, active=True,
-    )
-    for index in (2, 3):
-        page = set_slot(page, index, card_id="", card_number="", card_format=None)
-    client = FakeMillenniumClient(roster=ROSTER, pages={PID: page})
-    adapter = make_millennium_adapter(
-        client, mode=MODE_SEOS, trigger_card_format=TRIGGER
-    )
-    list(adapter.list_people())
-    return adapter, client
-
-
-def test_no_card_is_written_into_the_pacs(
-    dry, make_millennium_adapter, millennium_page, set_slot, seos_ledger, caplog
-):
-    adapter, client = _adapter(make_millennium_adapter, millennium_page, set_slot)
-
-    with caplog.at_level(logging.INFO):
-        ok = adapter.write_back_credentials(
-            PID, "seos", [CredentialIdentity("99", "1238")]
-        )
-
-    assert ok is True, "the cycle carries on as though it had worked"
-    assert client.saved == [], "nothing reached Millennium"
-    assert "[DRYRUN] would write 1 credential(s)" in caplog.text
-
-
-def test_the_ledger_is_not_written_either(
-    dry, make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
-    """A ledger naming cards that are not on the cardholder is how a later
-    cycle decides a pass has been revoked — which is the failure this whole
-    switch exists because of."""
-    adapter, _ = _adapter(make_millennium_adapter, millennium_page, set_slot)
-
-    adapter.write_back_credentials(PID, "seos", [CredentialIdentity("99", "1238")])
-
-    assert SeosLedger.get(PID, "seos") == []
-
-
-def test_no_card_is_switched_off(
-    dry, make_millennium_adapter, millennium_page, set_slot, seos_ledger, caplog
-):
-    adapter, client = _adapter(make_millennium_adapter, millennium_page, set_slot)
-    SeosLedger.record(PID, "seos", [
-        {"slot": 1, "card_number": "1", "facility_code": "99"},
-    ])
-
-    with caplog.at_level(logging.INFO):
-        adapter.update_credential_status(PID, "seos", CredentialStatus.SUSPENDED)
-
-    assert client.saved == []
-    assert "[DRYRUN] would set cardholder 11665 credential seos to inactive" in caplog.text
-
-
-def test_reading_still_happens(
-    dry, make_millennium_adapter, millennium_page, set_slot, seos_ledger
-):
+def test_reading_still_happens(dry, make_millennium_adapter, seos_ledger):
     """Dry run stops writes, not sight. A cycle that cannot read tells us
     nothing about what it would have done."""
-    adapter, _ = _adapter(make_millennium_adapter, millennium_page, set_slot)
+    marker = {"card_number": "1", "facility_code": "99", "card_format": "HID 37"}
+    client = FakeMillenniumClient(rows=[export_row(PID, "Greg", "Dorvil", slots=[marker])])
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+    list(adapter.list_people())
 
     assert [c.id for c in adapter.list_credentials(PID)] == ["seos"]
 

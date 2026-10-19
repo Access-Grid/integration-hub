@@ -1,4 +1,4 @@
-"""Test doubles shared across the Avigilon Alta suite."""
+"""Test doubles shared across the PACS adapter suites."""
 
 from __future__ import annotations
 
@@ -58,53 +58,69 @@ class FakeCdviClient:
         pass
 
 
-class FakeMillenniumClient:
-    """Stand-in for MillenniumUltraClient — no network, records writes.
+# The export's columns, in Millennium's order.
+EXPORT_COLUMNS = [
+    "First Name", "Last Name", "Card Type", "Employee ID", "Phone", "E-Mail",
+    "Current Status",
+] + [
+    f"Card {n} {field}"
+    for n in (1, 2, 3)
+    for field in (
+        "Printed Card No.", "Encoded Card No.", "Activation Date",
+        "Expiration Date", "Active", "Card Format", "Facility Code", "Badge Type",
+    )
+]
 
-    Serves the real captured cardholder page (optionally mutated per
-    cardholder) so the adapter's slot reading and form mutation run against
-    genuine markup rather than a hand-written approximation.
+
+def export_row(employee_id, first="Ada", last="Lovelace", email="", phone="", slots=()):
+    """One cardholder as an export row.
+
+    `slots` is a list of dicts, one per slot from slot 1: card_number,
+    facility_code, card_format (the display name), active, activation and
+    expiration (export date text). An omitted slot, or None, is empty.
+    """
+    row = {
+        "Employee ID": employee_id, "First Name": first, "Last Name": last,
+        "E-Mail": email, "Phone": phone,
+    }
+    for n, slot in enumerate(slots, start=1):
+        if not slot:
+            continue
+        row[f"Card {n} Encoded Card No."] = slot.get("card_number", "")
+        row[f"Card {n} Facility Code"] = slot.get("facility_code", "")
+        row[f"Card {n} Card Format"] = slot.get("card_format", "")
+        row[f"Card {n} Active"] = "True" if slot.get("active", True) else "False"
+        row[f"Card {n} Activation Date"] = slot.get("activation", "")
+        row[f"Card {n} Expiration Date"] = slot.get("expiration", "")
+    return row
+
+
+class FakeMillenniumClient:
+    """Stand-in for MillenniumUltraClient — no network.
+
+    Serves `rows` (see export_row) as the export CSV, so the adapter reads
+    them through the real export.parse.
     """
 
-    def __init__(self, roster=None, pages=None, formats=None):
-        self._roster = roster or []
-        self._pages = pages or {}  # cardholder id -> html
+    def __init__(self, rows=None, formats=None):
+        self.rows = list(rows or [])
         self._formats = formats or [("1", "Wiegand Card"), ("7", "HID 37")]
-        self.saved: list[tuple[str, object]] = []
-        self.validated: list[dict] = []
-        self.save_result = True
-        self.number_free = True
-        self.deleted: list[tuple[str, str]] = []
-        self.delete_result = True
 
-    def list_cardholders(self):
-        return self._roster
+    def export_cardholders(self):
+        import csv
+        import io
+
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=EXPORT_COLUMNS, restval="")
+        writer.writeheader()
+        writer.writerows(self.rows)
+        return out.getvalue()
 
     def first_cardholder_id(self):
-        return str(self._roster[0]["ID"]) if self._roster else ""
-
-    def get_cardholder_form(self, cardholder_id):
-        from agsync.lib.pacs.millennium_ultra.html_form import CardholderForm
-
-        return CardholderForm.parse(self._pages[str(cardholder_id)])
+        return "1"
 
     def card_formats(self, cardholder_id):
         return self._formats
-
-    def card_number_is_free(self, slot, card_number, facility_code, card_format):
-        self.validated.append({
-            "slot": slot, "card_number": card_number,
-            "facility_code": facility_code, "card_format": card_format,
-        })
-        return self.number_free
-
-    def save_cardholder(self, cardholder_id, form):
-        self.saved.append((str(cardholder_id), form))
-        return self.save_result
-
-    def delete_card(self, cardholder_id, card_id, token):
-        self.deleted.append((str(cardholder_id), str(card_id)))
-        return self.delete_result
 
     def test_connection(self):
         return True, "ok"

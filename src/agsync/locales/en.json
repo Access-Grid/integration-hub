@@ -114,6 +114,7 @@
   "settings.trigger.missing": "The saved trigger (format {id}) no longer exists on this install — nothing is enrolled until you pick another.",
   "settings.trigger.subtitle": "Cardholders holding a card in this format get an AccessGrid pass. Changing it re-decides who is enrolled: anyone holding only the old format is un-enrolled, and their pass is terminated on the next cycle.",
   "settings.trigger.title": "Enrollment trigger",
+  "settings.trigger.unreadable": "Could not read that card format from the PACS, so the trigger was not changed. Check the connection and try again.",
   "status.ag_cards": "AccessGrid cards",
   "status.credentials": "Credentials",
   "status.identities": "Identities",
