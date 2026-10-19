@@ -23,6 +23,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -40,6 +41,26 @@ DATE_FORMATS = ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y %I:%M:%S %p")
 
 
 @dataclass(frozen=True)
+class AccessLevel:
+    """One of a card's access levels, as the export prints it.
+
+    Kept as text, so a card we write can be given exactly the same.
+    """
+
+    position: int  # 1-10
+    name: str
+    activation: str = ""
+    expiration: str = ""
+
+
+# "Card 1 Access Level 3 Activation Date [Global]" — the bracket names the
+# tenant, which differs between installs.
+_LEVEL_COLUMN = re.compile(
+    r"^Card (\d) Access Level (\d+)(?: (Activation|Expiration) Date)? \[.*\]$"
+)
+
+
+@dataclass(frozen=True)
 class Slot:
     """One of a cardholder's three card slots."""
 
@@ -50,6 +71,7 @@ class Slot:
     active: bool
     activation: datetime | None = None
     expiration: datetime | None = None
+    access_levels: tuple[AccessLevel, ...] = ()
 
     @property
     def empty(self) -> bool:
@@ -106,6 +128,13 @@ def parse(csv_text: str, offset_seconds: int = 0) -> list[Cardholder]:
         def cell(name: str, row: dict = row) -> str:
             return (row.get(name) or "").strip()
 
+        # (card, position) -> {"name"/"Activation"/"Expiration": text}
+        levels: dict[tuple[int, int], dict[str, str]] = {}
+        for column, value in row.items():
+            if (match := _LEVEL_COLUMN.match(column or "")) and (value or "").strip():
+                card, position, which = match.groups()
+                levels.setdefault((int(card), int(position)), {})[which or "name"] = value.strip()
+
         slots = tuple(
             Slot(
                 index=n,
@@ -116,6 +145,14 @@ def parse(csv_text: str, offset_seconds: int = 0) -> list[Cardholder]:
                 active=cell(f"Card {n} Active").lower() == "true",
                 activation=parse_datetime(cell(f"Card {n} Activation Date"), offset_seconds),
                 expiration=parse_datetime(cell(f"Card {n} Expiration Date"), offset_seconds),
+                access_levels=tuple(
+                    AccessLevel(
+                        position, level["name"],
+                        level.get("Activation", ""), level.get("Expiration", ""),
+                    )
+                    for (card, position), level in sorted(levels.items())
+                    if card == n and level.get("name")
+                ),
             )
             for n in SLOTS
         )

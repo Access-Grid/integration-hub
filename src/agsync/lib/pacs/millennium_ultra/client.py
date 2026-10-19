@@ -114,11 +114,12 @@ _EXPORT_FIELDS = (
     (19, "Active"),
     (20, "Card Format"),
     (21, "Facility Code"),
-    # The same fields the export screen sends. Unread for now; the import
-    # stage writes cards and needs their access levels.
+    # The export screen's fields, plus access levels 6-10: a card we write
+    # copies every level of the card that asked for it, and a short copy
+    # would silently drop some.
     *(
         field
-        for n in range(5)
+        for n in range(10)
         for field in (
             (200 + n, f"Access Level {n + 1}"),
             (456 + n, f"Access Level {n + 1} Activation Date"),

@@ -107,3 +107,26 @@ def test_an_error_is_kept_even_when_a_later_run_succeeds():
         "in imported data fields!"
     ]
     assert log.counts["cardholders updated"] == 1
+
+
+# --- access levels ------------------------------------------------------
+
+
+def test_a_cards_levels_are_copied_to_the_same_positions():
+    from agsync.lib.pacs.millennium_ultra.export import AccessLevel
+    from agsync.lib.pacs.millennium_ultra.import_file import access_level_cells
+
+    levels = (AccessLevel(1, "MASTER 1", "", "12/31/2026 00:00:00"), AccessLevel(7, "T2 Front"))
+    assert access_level_cells(3, levels) == {
+        (3, "Access Level 1"): "MASTER 1",
+        (3, "Access Level 1 Expiration Date"): "12/31/2026 00:00:00",
+        (3, "Access Level 7"): "T2 Front",
+    }
+
+
+def test_access_levels_map_to_millenniums_field_ids():
+    cells = _card(3, **{"Access Level 1": "MASTER 1", "Access Level 10 Expiration Date": "x"})
+    [imported] = build([Row("22344", "King", "Bunsen", cells)])
+    ids = {f["UserColumnName"]: f["ID"] for f in imported.fields}
+    assert ids["Card3AccessLevel1"] == 200
+    assert ids["Card3AccessLevel10ExpirationDate"] == 721

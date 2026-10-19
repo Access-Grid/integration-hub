@@ -35,6 +35,15 @@ FIELD_IDS = {
     "Active": 19,
     "Card Format": 20,
     "Facility Code": 21,
+    **{
+        label: first_id + position - 1
+        for position in range(1, 11)
+        for label, first_id in (
+            (f"Access Level {position}", 200),
+            (f"Access Level {position} Activation Date", 456),
+            (f"Access Level {position} Expiration Date", 712),
+        )
+    },
 }
 
 # A card is found by its number and facility code; without both, the import
@@ -68,6 +77,21 @@ class Row:
 
 
 _KEY_COLUMNS = ((0, "Employee ID"), (0, "First Name"), (0, "Last Name"))
+
+
+def access_level_cells(card: int, levels) -> dict[tuple[int, str], str]:
+    """Cells giving card `card` these levels, in the same positions.
+
+    Only what is set: an empty date is left out rather than sent empty.
+    """
+    cells: dict[tuple[int, str], str] = {}
+    for level in levels:
+        cells[(card, f"Access Level {level.position}")] = level.name
+        if level.activation:
+            cells[(card, f"Access Level {level.position} Activation Date")] = level.activation
+        if level.expiration:
+            cells[(card, f"Access Level {level.position} Expiration Date")] = level.expiration
+    return cells
 
 
 @dataclass(frozen=True)

@@ -86,3 +86,21 @@ def test_a_cardholder_missing_from_the_export_is_unread_not_empty(
     list(adapter.list_people())
     with pytest.raises(PacsRecordUnavailable, match="not in this cycle's export"):
         list(adapter.list_credentials("11591"))
+
+
+# --- access levels -------------------------------------------------------
+
+
+def test_access_levels_are_read_per_card_whatever_the_tenant_is_called():
+    text = (
+        "Employee ID,Card 1 Encoded Card No.,"
+        "Card 1 Access Level 1 [Global],Card 1 Access Level 1 Expiration Date [Global],"
+        "Card 1 Access Level 7 [Tower B],Card 2 Access Level 1 [Global]\r\n"
+        "33137,1255,MASTER 1,12/31/2026 00:00:00,T2 Floor #10 Front,\r\n"
+    )
+    [cardholder] = export.parse(text)
+    assert cardholder.slots[0].access_levels == (
+        export.AccessLevel(1, "MASTER 1", "", "12/31/2026 00:00:00"),
+        export.AccessLevel(7, "T2 Floor #10 Front"),
+    )
+    assert cardholder.slots[1].access_levels == ()  # an empty level is no level

@@ -183,3 +183,10 @@ def test_a_failed_job_is_not_downloaded(exporter):
         client.export_cardholders()
 
     assert not [r for r in seen if r.url.path == "/WebServices/FileDownload/"]
+
+
+def test_the_export_asks_for_all_ten_access_levels(exporter):
+    client, seen = exporter()
+    client.export_cardholders()
+    ids = {f["ID"] for f in json.loads(seen[0].content)["fields"]}
+    assert set(range(200, 210)) | set(range(456, 466)) | set(range(712, 722)) <= ids
