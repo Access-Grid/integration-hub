@@ -89,6 +89,39 @@ IMPORT_FILENAME = "agsync-import.csv"
 # never create a cardholder.
 IMPORT_RULE_UPDATE_ONLY = 2
 
+# The cardholder search screen's form, as it posts a search by Employee ID:
+# every field it sends, with the values it sends for "no criterion".
+_SEARCH_BLANK = (
+    "FirstName LastName MiddleName Sex Address1 Address2 City State Zip Phone "
+    "BirthDay EMail CardholderTypeSearch Card_1_PrintedCardNumber "
+    "Card_1_ActivationDate Card_1_ActiveSearch Card_1_EncodedCardNumber "
+    "Card_1_ExpirationDate Card_1_FacilityCode Card_1_PinCode Card_1_IssueCode "
+    "IssueDate ReIssueDate CompanyEMail MasterArea InternalPhone Supervisor "
+    "Comment1 AdaShuntSearch VehicleModel BadgeDate VehicleColor EmploymentDate "
+    "VehicleYear LicensePlateNo Comment2 UserField3 UserField2 UserField1"
+).split()
+_SEARCH_DEFAULTS = {
+    "MaxRecord": "500",
+    "CardholderType": "Cardholder",
+    "OwnersAsJson": "[]",
+    "Card_1_CardID": "2147483647",
+    "Card_1_CardFormat": "-2147483648",
+    "Card_1_BadgeType": "0",
+    "Card_1_CardClass": "0",
+    "Card_1_Tenant_0": "0",
+    "Card_1_AccessLevels": "{}",
+    "PrimaryLocation": "0",
+    "Department": "0",
+    "EmployeeClass": "0",
+    "ParkingDesignation": "0",
+    "ParkingAssignment": "0",
+    "ID": "0",
+    "TenantsAsJson": "[0]",
+    "CarsAsJson": "[]",
+    "SplitterWidth": "200",
+    "ViewMode": "CardholderSearch",
+}
+
 # What to ask the export for. Images are the field that matters by its
 # absence: with them the job 504s outright on this install, which is what
 # made the endpoint look unusable at first. The rest is the smallest set
@@ -472,11 +505,7 @@ class MillenniumUltraClient:
         job, then read its log. A skipped row is a warning in the log, not a
         failure here; an error in the log is.
         """
-        page = self._get("/DatabaseFunctions/ImportCardholders").text
-        token = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', page)
-        if not token:
-            raise MillenniumError("The import page carries no anti-forgery token")
-
+        token = self._page_token("/DatabaseFunctions/ImportCardholders")
         self._pace()
         response = self._http.post(
             self._url("/DatabaseFunctions/ImportCardholders/SelectFields"),
@@ -485,7 +514,7 @@ class MillenniumUltraClient:
                 "FileName": IMPORT_FILENAME,
                 "FileFormat": "1",
                 "FieldHeaders": "true",
-                "__RequestVerificationToken": token.group(1),
+                "__RequestVerificationToken": token,
             },
             headers={"Referer": self._url("/DatabaseFunctions/ImportCardholders/Index")},
         )
@@ -522,6 +551,48 @@ class MillenniumUltraClient:
         if log.errors:
             raise MillenniumError(f"Millennium's import failed: {'; '.join(log.errors)}")
         return log
+
+    def find_cardholder_id(self, employee_id: str) -> str:
+        """The record id of the one cardholder with this Employee ID.
+
+        The export carries no record id, and the cardholder page and card
+        deletion are both addressed by one. The search screen answers with
+        its results as JSON in the page; the match is checked exactly, since
+        a search need not be.
+        """
+        token = self._page_token("/Cardholders/Cardholders/Search")
+        form = {name: "" for name in _SEARCH_BLANK} | _SEARCH_DEFAULTS
+        form |= {"EmployeeID": employee_id, "__RequestVerificationToken": token}
+        self._pace()
+        response = self._http.post(
+            self._url("/Cardholders/Cardholders/SearchResult"),
+            files={name: (None, value) for name, value in form.items()},
+            headers={"Referer": self._url("/Cardholders/Cardholders/Search")},
+        )
+        self._check_auth(response)
+        found = re.search(r"var data = (\[.*?\]);\s*</script>", response.text, re.S)
+        if response.status_code != 200 or not found:
+            raise MillenniumError(
+                f"Millennium's search for Employee ID {employee_id} did not return "
+                f"results (HTTP {response.status_code})"
+            )
+        ids = [
+            str(row["ID"]) for row in json.loads(found.group(1))
+            if str(row.get("EmployeeID", "")).strip() == employee_id
+        ]
+        if len(ids) != 1:
+            raise MillenniumError(
+                f"Employee ID {employee_id} matches {len(ids)} cardholders in Millennium"
+            )
+        return ids[0]
+
+    def _page_token(self, path: str) -> str:
+        """The anti-forgery token a page's form posts back."""
+        page = self._get(path).text
+        token = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', page)
+        if not token:
+            raise MillenniumError(f"{path} carries no anti-forgery token")
+        return token.group(1)
 
     def _wait(self, operation: str) -> dict:
         """Poll a queued job until it finishes; its final status."""
