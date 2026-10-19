@@ -89,6 +89,7 @@ EXPORT_POLL_INTERVAL_S = 1.0
 _EXPORT_FIELDS = (
     (1, "First Name"),
     (2, "Last Name"),
+    (3, "Card Type"),
     (4, "Employee ID"),
     # Contact details, which reach us nowhere else in time. The detail page
     # carries them too, but it is read after list_people has already built
@@ -104,6 +105,17 @@ _EXPORT_FIELDS = (
     (19, "Active"),
     (20, "Card Format"),
     (21, "Facility Code"),
+    # The same fields the export screen sends. Unread for now; the import
+    # stage writes cards and needs their access levels.
+    *(
+        field
+        for n in range(5)
+        for field in (
+            (200 + n, f"Access Level {n + 1}"),
+            (456 + n, f"Access Level {n + 1} Activation Date"),
+            (712 + n, f"Access Level {n + 1} Expiration Date"),
+        )
+    ),
 )
 
 # Smallest gap between two requests to the install, across every client in

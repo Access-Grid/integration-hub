@@ -34,8 +34,9 @@ OPERATION = "CardholdersExport"
 
 SLOTS = (1, 2, 3)
 
-# How the export prints a date, e.g. "9/11/2026 12:00:00 AM".
-DATE_FORMAT = "%m/%d/%Y %I:%M:%S %p"
+# How the export prints a date. Installs differ: "04/30/2024 00:00:00" on
+# one, "9/11/2026 12:00:00 AM" on another.
+DATE_FORMATS = ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y %I:%M:%S %p")
 
 
 @dataclass(frozen=True)
@@ -84,12 +85,14 @@ def parse_datetime(value: str, offset_seconds: int) -> datetime | None:
     value = (value or "").strip()
     if not value:
         return None
-    try:
-        naive = datetime.strptime(value, DATE_FORMAT)
-    except ValueError:
-        logger.debug("Millennium: unparseable date %r", value)
-        return None
-    return (naive - timedelta(seconds=offset_seconds)).replace(tzinfo=UTC)
+    for shape in DATE_FORMATS:
+        try:
+            naive = datetime.strptime(value, shape)
+        except ValueError:
+            continue
+        return (naive - timedelta(seconds=offset_seconds)).replace(tzinfo=UTC)
+    logger.debug("Millennium: unparseable date %r", value)
+    return None
 
 
 def parse(csv_text: str, offset_seconds: int = 0) -> list[Cardholder]:

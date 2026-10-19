@@ -64,6 +64,12 @@ def _cred(**kwargs) -> Credential:
 # --- dates ---------------------------------------------------------------
 
 
+def test_both_export_date_shapes_are_read():
+    # 24-hour on one install, AM/PM on another; the same instant either way.
+    assert parse_datetime("04/30/2024 18:17:00", 0) == datetime(2024, 4, 30, 18, 17, tzinfo=UTC)
+    assert parse_datetime("4/30/2024 6:17:00 PM", 0) == datetime(2024, 4, 30, 18, 17, tzinfo=UTC)
+
+
 def test_millennium_dates_are_read_against_the_install_offset():
     # -14400 is the offset the browser reported at sign-in; the export's
     # text is local to it, so a naive parse would be four hours out.
