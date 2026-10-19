@@ -196,28 +196,3 @@ table.creds td { padding: 0.75rem 0.6rem; border-bottom: 1px solid var(--border)
 .banner.err a { display: block; text-decoration: none; font-weight: 600; }
 .banner.err a:hover { text-decoration: underline; }
 
-
-/* The refused-saves tab. Exchanges are long and monospaced; the point is
-   to be able to scan them, not to make them pretty. */
-details.failed-save {
-  border: 1px solid var(--border, #d8d8d8);
-  border-radius: 6px;
-  padding: 0.6rem 0.9rem;
-  margin-bottom: 0.75rem;
-}
-details.failed-save summary {
-  cursor: pointer;
-  display: flex;
-  gap: 0.9rem;
-  align-items: baseline;
-}
-pre.exchange {
-  max-height: 22rem;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-size: 0.8rem;
-  background: var(--code-bg, #f6f6f6);
-  padding: 0.6rem;
-  border-radius: 4px;
-}

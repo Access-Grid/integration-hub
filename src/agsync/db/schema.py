@@ -235,6 +235,8 @@ MIGRATIONS: list[tuple[str, Step]] = [
         CREATE INDEX IF NOT EXISTS idx_failed_saves_ts ON failed_saves(ts);
         """,
     ),
+    # Nothing writes to it any more: saves are giving way to Millennium's import.
+    ("010_drop_failed_saves", "DROP TABLE IF EXISTS failed_saves;"),
 ]
 
 

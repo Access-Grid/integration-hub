@@ -46,37 +46,11 @@ def _client(response: httpx.Response) -> MillenniumUltraClient:
 # =====================================================================
 
 
-def test_the_error_page_is_not_read_as_a_validation_failure(millennium_page):
-    with pytest.raises(MillenniumError, match="System is temporarily unavailable"):
-        _client(httpx.Response(200, text=ERROR_PAGE)).save_cardholder(
-            "12247", CardholderForm.parse(millennium_page)
-        )
-
-
 def test_the_error_page_says_the_record_is_unchanged(millennium_page):
     with pytest.raises(MillenniumError, match="the record is unchanged"):
         _client(httpx.Response(200, text=ERROR_PAGE)).save_cardholder(
             "12247", CardholderForm.parse(millennium_page)
         )
-
-
-def test_the_exchange_is_still_kept(millennium_page, tmp_path, monkeypatch):
-    """It is the one case with nothing else to look at."""
-    from agsync import failed_saves
-
-    with pytest.raises(MillenniumError):
-        _client(httpx.Response(200, text=ERROR_PAGE)).save_cardholder(
-            "12247", CardholderForm.parse(millennium_page)
-        )
-
-    (row,) = failed_saves.recent()
-    assert "temporarily unavailable" in row["response"]
-
-
-def test_a_page_with_no_heading_at_all_still_reports_something(millennium_page):
-    with pytest.raises(MillenniumError, match="carrying no cardholder form"):
-        _client(httpx.Response(200, text="<html><body>nothing</body></html>")
-                ).save_cardholder("12247", CardholderForm.parse(millennium_page))
 
 
 def test_a_real_rejection_is_still_a_rejection(millennium_page):

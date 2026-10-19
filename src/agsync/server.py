@@ -39,7 +39,6 @@ from .routes import api, wizard
 from .routes import auth as auth_routes
 from .routes import connect as connect_route
 from .routes import credentials as credentials_route
-from .routes import failed_saves as failed_saves_route
 from .routes import logs as logs_route
 from .routes import settings as settings_route
 from .routes import status as status_route
@@ -197,7 +196,6 @@ def create_app() -> FastAPI:
     app.include_router(status_route.router)
     app.include_router(credentials_route.router)
     app.include_router(logs_route.router)
-    app.include_router(failed_saves_route.router)
     app.include_router(settings_route.router)
     app.include_router(api.router)
     app.include_router(connect_route.router)

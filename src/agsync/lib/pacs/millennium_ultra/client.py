@@ -58,7 +58,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 import time
 from typing import Any
@@ -66,7 +65,6 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .... import failed_saves
 from ..base import PacsAuthExpired
 from . import export as export_mod
 from .html_form import CardholderForm, validation_errors
@@ -145,21 +143,6 @@ CARD_SLOTS = (1, 2, 3)
 # not so many that one cardholder floods the log.
 MAX_VALIDATION_ERRORS = 10
 
-# What we sent, printed beside why it was refused. Millennium names the
-# field it objects to but not the value it objected to, and the value is
-# usually the whole story — a duplicate card number, a date that came back
-# in a shape it will not parse.
-#
-# This is cardholder data: name, address, phone and email are on the form
-# and will appear in the log. That is a deliberate trade for being able to
-# see a refused save, on an install whose logs stay on the operator's own
-# machine. The anti-forgery token is the one thing held back, because it is
-# a live credential rather than a record.
-_NEVER_LOGGED = frozenset({"__RequestVerificationToken"})
-MAX_LOGGED_VALUE = 120
-MAX_LOGGED_PAYLOAD = 4000
-
-
 def _is_cardholder_form(html: str) -> bool:
     """Is this the cardholder screen coming back, or something else?
 
@@ -173,45 +156,6 @@ def _is_cardholder_form(html: str) -> bool:
         return False
     return True
 
-
-_HEADLINE = (
-    r"<h3[^>]*>(.*?)</h3>",
-    r"<h1[^>]*>(.*?)</h1>",
-    r"<title[^>]*>(.*?)</title>",
-)
-
-
-def _page_headline(html: str) -> str:
-    """Whatever the page leads with, for the error message."""
-    for pattern in _HEADLINE:
-        match = re.search(pattern, html, re.S | re.I)
-        if not match:
-            continue
-        text = " ".join(re.sub(r"<[^>]+>", " ", match.group(1)).split())
-        if text:
-            return text[:120]
-    return "a page carrying no cardholder form"
-
-
-def _describe_payload(form: CardholderForm) -> str:
-    """The form as it goes on the wire, field by field."""
-    try:
-        pairs = form.submitted_pairs()
-    except Exception as e:  # noqa: BLE001 — a diagnostic must not raise
-        return f"(could not describe the payload: {e})"
-    parts = []
-    for name, value in pairs:
-        if name in _NEVER_LOGGED:
-            shown = "[redacted]"
-        elif len(value) > MAX_LOGGED_VALUE:
-            shown = value[:MAX_LOGGED_VALUE] + "…"
-        else:
-            shown = value
-        parts.append(f"{name}={shown!r}")
-    text = ", ".join(parts)
-    if len(text) > MAX_LOGGED_PAYLOAD:
-        text = text[:MAX_LOGGED_PAYLOAD] + f"… ({len(parts)} fields in all)"
-    return text
 
 _EXPORT_REQUEST = {
     "format": 1,
@@ -607,11 +551,10 @@ class MillenniumUltraClient:
             # a complaint about the fields, and reading it as one reports a
             # bad field that does not exist and retries forever.
             if not _is_cardholder_form(response.text):
-                self._keep_refused_save(cardholder_id, response, body, [])
                 raise MillenniumError(
-                    f"Millennium answered the save for cardholder "
-                    f"{cardholder_id} with {_page_headline(response.text)!r} "
-                    "rather than the cardholder form — the record is unchanged"
+                    f"Millennium answered the save for cardholder {cardholder_id} "
+                    "with something other than the cardholder form — the record "
+                    "is unchanged"
                 )
             # The rejection and its reasons arrive together — the page is
             # re-rendered with the complaints written into it — so there is
@@ -635,37 +578,9 @@ class MillenniumUltraClient:
                     "other than a bad field",
                     cardholder_id,
                 )
-            logger.error(
-                "Millennium: the refused payload for cardholder %s was %s",
-                cardholder_id, _describe_payload(form),
-            )
-            self._keep_refused_save(cardholder_id, response, body, reasons)
             return False
-        self._keep_refused_save(cardholder_id, response, body, [])
         raise MillenniumError(
             f"Save for cardholder {cardholder_id} -> HTTP {response.status_code}"
-        )
-
-    def _keep_refused_save(
-        self,
-        cardholder_id: str | int,
-        response: httpx.Response,
-        body: bytes,
-        reasons: list[str],
-    ) -> None:
-        """Keep the exchange, not just a sentence about it.
-
-        The log says what was refused and usually why, but the PACS does
-        not always say why — and when it does not, the page it sent back
-        is the only thing left to read.
-        """
-        failed_saves.record(
-            vendor="millennium_ultra",
-            cardholder_id=str(cardholder_id),
-            status_code=response.status_code,
-            reasons=reasons,
-            request=body.decode("utf-8", "replace"),
-            response=response.text,
         )
 
     def delete_card(self, cardholder_id: str | int, card_id: str, token: str) -> bool:
