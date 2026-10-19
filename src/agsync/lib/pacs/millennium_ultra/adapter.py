@@ -690,7 +690,7 @@ def _stored_session() -> dict:
 
 HELP_TEXT: dict[str, dict[str, str]] = {
     "en": {
-        "pacs.millennium_ultra.base_url": "Millennium Ultra login URL (e.g. https://hosted8.mgiaccess.com)",
+        "pacs.millennium_ultra.base_url": "Millennium Ultra login URL (e.g. https://hosted105.mgiaccess.com)",
         "pacs.millennium_ultra.email_domain": "Domain for synthesized email addresses (e.g. cards.example.com)",
         "pacs.millennium_ultra.notify_email": "Notification email (used when the Millennium session expires)",
         "pacs.millennium_ultra.mode_desfire": "Your AccessGrid card template issues DESFire, so cards read from Millennium: the facility code and card number on each trigger card are copied out to AccessGrid. Nothing is written back.",
@@ -715,7 +715,7 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         ),
     },
     "es": {
-        "pacs.millennium_ultra.base_url": "URL de inicio de sesión de Millennium Ultra (p. ej. https://hosted8.mgiaccess.com)",
+        "pacs.millennium_ultra.base_url": "URL de inicio de sesión de Millennium Ultra (p. ej. https://hosted105.mgiaccess.com)",
         "pacs.millennium_ultra.email_domain": "Dominio para las direcciones de correo sintetizadas (p. ej. cards.example.com)",
         "pacs.millennium_ultra.notify_email": "Correo de notificación (se usa cuando caduca la sesión de Millennium)",
         "pacs.millennium_ultra.mode_desfire": "Su plantilla de AccessGrid emite DESFire, así que las tarjetas se leen desde Millennium: el código de instalación y el número de cada tarjeta disparadora se copian a AccessGrid. No se escribe nada de vuelta.",

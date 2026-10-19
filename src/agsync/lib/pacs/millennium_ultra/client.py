@@ -5,7 +5,7 @@ operator uses, carrying the forms-auth cookie that the AG Connect side-car
 captured (the login is captcha-gated, so we can never authenticate
 headlessly; see agsync.connect).
 
-Endpoints, all verified against a live install (hosted8.mgiaccess.com):
+Endpoints, all verified against a live install (hosted105.mgiaccess.com):
 
   GET  /Cardholders/CardholdersHelper/GetList/{ignored}?firstLetter=<ascii>
         JSON roster for one initial letter. The path segment is the row the
@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any
@@ -67,6 +68,7 @@ import httpx
 
 from ..base import PacsAuthExpired
 from . import export as export_mod
+from . import import_file
 from .html_form import CardholderForm, validation_errors
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,13 @@ HTTP_TIMEOUT = 60.0
 # about the job being slow.
 EXPORT_TIMEOUT_S = 90.0
 EXPORT_POLL_INTERVAL_S = 1.0
+
+# The import job's name, and the name our file is uploaded under.
+IMPORT_OPERATION = "CardholdersImport"
+IMPORT_FILENAME = "agsync-import.csv"
+# "Only update matched records - do not add new": a wrong Employee ID can
+# never create a cardholder.
+IMPORT_RULE_UPDATE_ONLY = 2
 
 # What to ask the export for. Images are the field that matters by its
 # absence: with them the job 504s outright on this install, which is what
@@ -439,44 +448,100 @@ class MillenniumUltraClient:
         for what the CSV holds and what it leaves out.
 
         Raises MillenniumError if the job fails or does not finish in time.
-        The caller is expected to fall back to reading detail pages — this
-        is an optimisation, and a PACS that will not export is not a PACS
-        that cannot be synced.
         """
         started = self._post_json(
             "/DatabaseFunctions/ExportCardholders/ExportCardholdersNow",
             _EXPORT_REQUEST,
+            referer="/DatabaseFunctions/ExportCardholders",
         )
         if started is not True:
             raise MillenniumError(f"Millennium refused to start the export: {started!r}")
+        # Context still names the archive, and an empty one means the job
+        # finished without producing anything — worth refusing rather than
+        # downloading whatever was left over from a previous run.
+        if not self._wait(export_mod.OPERATION).get("Context"):
+            raise MillenniumError("Export finished without naming its file")
+        return export_mod.unpack(self._fetch_export_file())
 
+    def import_cardholders(self, imported: import_file.ImportFile) -> import_file.ImportLog:
+        """Run one import, and return Millennium's log of it.
+
+        The same steps as the import screen: upload the file with the page's
+        anti-forgery token, say which column fills which field, wait for the
+        job, then read its log. A skipped row is a warning in the log, not a
+        failure here; an error in the log is.
+        """
+        page = self._get("/DatabaseFunctions/ImportCardholders").text
+        token = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', page)
+        if not token:
+            raise MillenniumError("The import page carries no anti-forgery token")
+
+        self._pace()
+        response = self._http.post(
+            self._url("/DatabaseFunctions/ImportCardholders/SelectFields"),
+            files={"ImportFile": (IMPORT_FILENAME, imported.csv.encode(), "text/csv")},
+            data={
+                "FileName": IMPORT_FILENAME,
+                "FileFormat": "1",
+                "FieldHeaders": "true",
+                "__RequestVerificationToken": token.group(1),
+            },
+            headers={"Referer": self._url("/DatabaseFunctions/ImportCardholders/Index")},
+        )
+        self._check_auth(response)
+        # The field-mapping page, recognised by its lists' ids rather than by
+        # English text.
+        if response.status_code != 200 or 'id="selected_fields"' not in response.text:
+            raise MillenniumError(
+                f"Millennium did not accept the import file (HTTP {response.status_code})"
+            )
+
+        started = self._post_json(
+            "/DatabaseFunctions/ImportCardholders/ImportCardholdersNow",
+            {
+                "format": 1,
+                "rule": IMPORT_RULE_UPDATE_ONLY,
+                "HeaderIncluded": True,
+                "ImportNewDropDownEntries": False,
+                "Filename": IMPORT_FILENAME,
+                "ImportedFields": imported.fields,
+                "DontReplaceAccessLevel": False,
+            },
+            referer="/DatabaseFunctions/ImportCardholders/SelectFields",
+        )
+        if started is not True:
+            raise MillenniumError(f"Millennium refused to start the import: {started!r}")
+        context = self._wait(IMPORT_OPERATION).get("Context")
+        if not context:
+            raise MillenniumError("Import finished without naming its log")
+
+        log = import_file.parse_log(
+            self._get(f"/DatabaseFunctions/ImportCardholders/GetImportLogFile/{context}").text
+        )
+        if log.errors:
+            raise MillenniumError(f"Millennium's import failed: {'; '.join(log.errors)}")
+        return log
+
+    def _wait(self, operation: str) -> dict:
+        """Poll a queued job until it finishes; its final status."""
         deadline = time.time() + EXPORT_TIMEOUT_S
         while time.time() < deadline:
-            status = self._export_status()
+            status = self._operation_status(operation)
             if not isinstance(status, dict):
-                raise MillenniumError(f"Unreadable export status: {status!r}")
+                raise MillenniumError(f"Unreadable {operation} status: {status!r}")
             if status.get("Failed") or (status.get("Error") or ""):
                 raise MillenniumError(
-                    f"Millennium's export failed: {status.get('Error') or 'no detail'}"
+                    f"Millennium's {operation} failed: {status.get('Error') or 'no detail'}"
                 )
             if status.get("Completed") and status.get("Success"):
-                # Context still names the archive, and an empty one means
-                # the job finished without producing anything — worth
-                # refusing rather than downloading whatever was left over
-                # from a previous run. The name no longer forms the URL.
-                name = status.get("Context") or ""
-                if not name:
-                    raise MillenniumError("Export finished without naming its file")
-                logger.debug("Millennium's export produced %s", name)
-                return export_mod.unpack(self._fetch_export_file())
+                return status
             time.sleep(EXPORT_POLL_INTERVAL_S)
-
         raise MillenniumError(
-            f"Millennium's export did not finish within {EXPORT_TIMEOUT_S:.0f}s"
+            f"Millennium's {operation} did not finish within {EXPORT_TIMEOUT_S:.0f}s"
         )
 
-    def _export_status(self) -> Any:
-        """How far along the queued export is.
+    def _operation_status(self, operation: str) -> Any:
+        """How far along a queued job is.
 
         A GET under /api on the ASP.NET Core build, where it used to be a
         POST to /Home/GetLongOperationStatus. The trailing `_` is the UI's
@@ -487,7 +552,7 @@ class MillenniumUltraClient:
         response = self._get(
             "/api/LongOperationStatus",
             params={
-                "operationtype": export_mod.OPERATION,
+                "operationtype": operation,
                 "_": str(int(time.time() * 1000)),
             },
             ajax=True,
@@ -495,7 +560,7 @@ class MillenniumUltraClient:
         try:
             return response.json()
         except ValueError as e:
-            raise MillenniumError(f"Unreadable export status: {e}") from e
+            raise MillenniumError(f"Unreadable {operation} status: {e}") from e
 
     def _fetch_export_file(self) -> bytes:
         """The zip the finished job left behind.
@@ -510,7 +575,7 @@ class MillenniumUltraClient:
         )
         return response.content
 
-    def _post_json(self, path: str, payload: dict[str, Any]) -> Any:
+    def _post_json(self, path: str, payload: dict[str, Any], referer: str) -> Any:
         """POST JSON the way the UI's own XHRs do, and read JSON back."""
         self._pace()
         response = self._http.post(
@@ -521,7 +586,7 @@ class MillenniumUltraClient:
                 "Content-Type": "application/json",
                 "X-Requested-With": "XMLHttpRequest",
                 "Origin": self.base_url,
-                "Referer": self._url("/DatabaseFunctions/ExportCardholders"),
+                "Referer": self._url(referer),
             },
         )
         self._check_auth(response)

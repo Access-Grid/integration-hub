@@ -165,7 +165,7 @@
   "settings.pacs_address.title": "PACS address",
   "settings.pacs_address.subtitle": "Where this install reaches the PACS. Change it if the server has moved.",
   "settings.pacs_address.saved": "PACS address saved.",
-  "settings.pacs_address.invalid": "That is not a valid address. Use something like https://hosted8.mgiaccess.com.",
+  "settings.pacs_address.invalid": "That is not a valid address. Use something like https://hosted105.mgiaccess.com.",
   "settings.pacs_address.reconnect_warning": "Changing the address signs this install out of the PACS: the saved session belongs to the old server, so you will need to connect again.",
   "settings.dry_run.title": "Changes to the PACS and AccessGrid",
   "settings.dry_run.subtitle": "Whether this install acts on what it finds, or only reports what it would do.",
