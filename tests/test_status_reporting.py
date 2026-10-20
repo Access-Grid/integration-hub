@@ -256,7 +256,7 @@ def test_the_schema_is_declared():
 
 def test_free_text_is_scrubbed_of_infrastructure():
     dirty = (
-        "snapshot: failed reading https://hosted8.mgiaccess.com/Cardholders "
+        "snapshot: failed reading https://hosted105.mgiaccess.com/Cardholders "
         r"from C:\Users\Millennium\AppData\app.db and /Users/ab/Projects/x.py"
     )
     clean = payload.scrub(dirty)

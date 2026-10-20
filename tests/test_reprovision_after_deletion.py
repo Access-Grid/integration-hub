@@ -15,6 +15,7 @@ accident.
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -73,15 +74,15 @@ def test_suspending_does_not_release_the_card_id(db):
 # --- what phase 1 then does ----------------------------------------------
 
 
-def _provision_once(monkeypatch, tracked):
+def _provision_once(monkeypatch, tracked, expires=None):
     person = SimpleNamespace(
         id="9390", full_name="George Lampon", email="g@icon.test", phone="",
         title="", active=True,
     )
     cred = SimpleNamespace(
-        id="seos", trigger_active=True, status=None, site_code="",
+        id="seos", trigger_active=True, status=None, site_code="", hold=False,
         allocate_identity=True, card_number="", file_data=None,
-        activate_date=None, deactivate_date=None,
+        activate_date=None, deactivate_date=expires,
     )
     snap = Snapshot()
     snap.people["9390"] = person
@@ -111,6 +112,26 @@ def test_a_deleted_row_is_provisioned_again(monkeypatch):
         sync_error=None, retry_count=0,
     )
     assert len(_provision_once(monkeypatch, deleted)) == 1
+
+
+def test_an_expired_card_is_not_provisioned_again(monkeypatch):
+    """Phase 3 deleted the pass for expiring; issuing another would only
+    have it deleted again, every cycle. Seen live."""
+    deleted = SimpleNamespace(
+        ag_card_id=None, status="deleted", last_known_ag_state="deleted",
+        sync_error=None, retry_count=0,
+    )
+    yesterday = datetime.now(UTC) - timedelta(days=1)
+    assert _provision_once(monkeypatch, deleted, expires=yesterday) == []
+
+
+def test_extending_the_date_provisions_it_again(monkeypatch):
+    deleted = SimpleNamespace(
+        ag_card_id=None, status="deleted", last_known_ag_state="deleted",
+        sync_error=None, retry_count=0,
+    )
+    next_year = datetime.now(UTC) + timedelta(days=365)
+    assert len(_provision_once(monkeypatch, deleted, expires=next_year)) == 1
 
 
 def test_a_live_row_is_still_skipped(monkeypatch):

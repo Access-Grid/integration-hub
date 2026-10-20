@@ -131,7 +131,7 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
             continue
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
-        if cred is None or not cred.allocate_identity:
+        if cred is None or cred.hold or not cred.allocate_identity:
             # The "no such credential" case is already named once per cycle
             # by _push_new_credentials, which walks the same rows.
             continue
@@ -219,6 +219,8 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
 
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
+        if cred is not None and cred.hold:
+            continue
         # A credential we minted has its card driven by the install gate
         # above — one owner per checkbox. Here the card is the customer's
         # own, where an issued pass rightly leaves it active.
@@ -279,6 +281,8 @@ def _push_new_credentials(
             continue
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
+        if cred is not None and cred.hold:
+            continue
         if cred is None:
             # The exit that hides a missing watch credential: nothing is
             # offered to the PACS, nothing is written, and nothing is said.

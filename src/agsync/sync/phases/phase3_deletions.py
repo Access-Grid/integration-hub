@@ -9,7 +9,10 @@ guarantee). A row should be deleted if any of these are true:
     phase 2 — we leave that path here as a no-op)
 
 Safety: if the snapshot has zero people, abort the phase. That's almost
-certainly a transient PACS error and we don't want to nuke every card.
+certainly a transient PACS error and we don't want to nuke every card. And
+if it has under MIN_COMPLETE_FRACTION of the people the last complete read
+had, nobody is revoked for being missing this cycle: a read that short is
+far likelier to be partial than a real mass departure.
 
 The phase then runs a second pass in the opposite direction. Where the
 first treats the PACS as the truth and removes what it no longer holds,
@@ -31,12 +34,12 @@ from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
-from .writeback import deleted_identities_from_cards
+from .writeback import deleted_identities_from_cards, identities_from_cards
 
 logger = logging.getLogger(__name__)
 
 
-def _expired(cred) -> bool:
+def expired(cred) -> bool:
     """Has this credential passed the date the PACS gave it?
 
     Only ever True on a date the PACS actually stated: a credential with no
@@ -56,6 +59,11 @@ MAX_RETIREMENTS_PER_CYCLE = 25
 # a whole population at once. Rationed for the same reason provisioning is.
 MAX_EXPIRIES_PER_CYCLE = 25
 
+# A read with fewer people than this share of the last complete one revokes
+# nobody for being missing. The last complete read's size is kept here.
+MIN_COMPLETE_FRACTION = 0.3
+_LAST_COMPLETE_KEY = "last_complete_people_count"
+
 
 def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> int:
     logger.info("Phase 3: Checking for deletions")
@@ -63,6 +71,19 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
     if not snapshot.people:
         logger.warning("Phase 3: PACS returned 0 people — skipping deletions for safety")
         return 0
+
+    from ...settings_store import get_json, set_json
+
+    previous = get_json(_LAST_COMPLETE_KEY) or 0
+    complete = len(snapshot.people) >= previous * MIN_COMPLETE_FRACTION
+    if complete:
+        set_json(_LAST_COMPLETE_KEY, len(snapshot.people))
+    else:
+        logger.error(
+            "Phase 3: the PACS returned %d people against %d in the last complete "
+            "read — under %d%%, so nobody is revoked for being missing this cycle",
+            len(snapshot.people), previous, int(MIN_COMPLETE_FRACTION * 100),
+        )
 
     deleted = 0
     expired_this_cycle = 0
@@ -73,6 +94,8 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
         person = snapshot.people.get(tracked.pacs_person_id)
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
+        if cred is not None and cred.hold:
+            continue
 
         # A person still on the roster whose card page we could not read
         # this cycle tells us nothing, so act on nothing. A person who is
@@ -87,11 +110,13 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
             continue
 
         reason: str | None = None
+        if not complete and (person is None or cred is None):
+            continue
         if person is None:
             reason = f"person {tracked.pacs_person_id} no longer in PACS"
         elif cred is None:
             reason = f"credential {tracked.pacs_credential_id} no longer on person"
-        elif _expired(cred):
+        elif expired(cred):
             # Whatever the Active box says. A card past its date is not a
             # credential any more, and the pass on the holder's phone is the
             # half the PACS cannot switch off by itself.
@@ -111,6 +136,21 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
         if reason is None:
             continue
 
+        # An expired card's pass is deleted, and the cards we wrote for it
+        # go from the PACS too: re-issuing is then adding a trigger card, as
+        # the first time. Read before the delete, while the pass is listed.
+        expired_cards: list = []
+        if (
+            pacs is not None
+            and getattr(pacs, "supports_credential_retirement", False)
+            and cred is not None
+            and expired(cred)
+        ):
+            expired_cards = snapshot.detailed_cards(
+                ag, tracked.ag_card_id, tracked.pacs_person_id,
+                tracked.pacs_credential_id, tracked.sync_ref,
+            )
+
         try:
             logger.info("  Deleting AG card %s — %s", tracked.ag_card_id, reason)
             if dryrun.active():
@@ -121,6 +161,11 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
                 tracked.pacs_person_id, tracked.pacs_credential_id,
             )
             deleted += 1
+            if expired_cards:
+                pacs.retire_credentials(
+                    tracked.pacs_person_id, tracked.pacs_credential_id,
+                    identities_from_cards(expired_cards),
+                )
         except AccessGridError as e:
             msg = str(e).lower()
             if "not found" in msg or "404" in msg:

@@ -82,6 +82,22 @@ def notify_reconnect_required(vendor_name: str, detail: str = "") -> bool:
     return send_mail(recipient, subject, body)
 
 
+def notify_card_problem(key: str, problem: str) -> bool:
+    """Mail the operator about a card the sync will not act on. True if mailed.
+
+    The caller logs the problem where it finds it; this only sends it on,
+    once per `key` (one card) per RESEND_INTERVAL_S.
+    """
+    recipient = ((PacsConfig.load() or {}).get("params") or {}).get("notify_email", "")
+    if not recipient or not _should_send(f"card:{key}"):
+        return False
+    return send_mail(
+        recipient,
+        "AccessGrid Sync: a card needs attention",
+        f"{problem}\n\nThe pass is left as it is until this is resolved in the PACS.\n",
+    )
+
+
 def send_mail(recipient: str, subject: str, body: str) -> bool:
     config = NotificationConfig.load() or {}
     host = (config.get("smtp_host") or "").strip()

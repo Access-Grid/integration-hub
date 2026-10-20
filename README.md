@@ -74,7 +74,7 @@ Sessions expire, roughly hourly, and they do not say so. A dead cookie has
 been seen producing three different shapes, none of which looks like an
 error: a redirect to the login page, an empty 200 body, and a valid empty
 `[]` alongside HTTP 500 on the cardholder screens. The last is the dangerous
-one — a well-formed empty roster is indistinguishable from a PACS with no
+one — a well-formed empty answer is indistinguishable from a PACS with no
 cardholders, and reads downstream as "everyone was deleted". All three raise
 `PacsAuthExpired`, so syncing pauses, a banner appears, and — if SMTP is
 configured under Settings → Notifications — a message asks someone to
@@ -88,32 +88,37 @@ being wrong that way prompts a human and being wrong the other way stops the
 sync in silence.
 
 **Enrollment trigger (card format).** At setup you choose one card format,
-read live from the install. Any cardholder holding a card in that format is
-enrolled. There is no sentinel field to type. An *empty* card slot cannot
-carry a format — Millennium discards one posted for a slot with no card — so
-the trigger is always a slot holding a real card. It can be changed later
-under Settings → Enrollment trigger; the format list is re-read from the
-PACS each time, so one added or renamed there shows up without re-running
-setup. Narrowing the trigger un-enrolls everyone holding only the old
-format, and phase 2 terminates their passes on the next cycle.
+read live from the install; both its id and its display name are stored,
+and the name is what the export is matched against. Any cardholder holding a
+card in that format is enrolled. An *empty* card slot cannot carry a
+format, so the trigger is always a slot holding a real card. It can be
+changed later under Settings → Enrollment trigger. A card whose format is
+changed away from the trigger is not revoked: its pass is held, untouched,
+until the format comes back.
+
+**Reading: one export per cycle.** Each cycle reads Millennium's bulk
+cardholder export — a queued job, three requests, one row per cardholder
+with all three card slots and their access levels — and nothing else.
+Cardholders are keyed by **Employee ID**, since the export has no record
+id; a row without one, or sharing one with another row, is skipped with an
+ERROR. An empty export, or a trigger with no stored name, fails the cycle
+rather than reading as nobody enrolled. A cardholder with no valid email
+address gets `first.last.<Employee ID>@<configured domain>`.
 
 **Two directions**, read from the AccessGrid card template's `protocol`
-rather than asked for. The operator is never in a position to make the two
-systems disagree, and the engine re-reads it every cycle, so swapping the
-template for one of a different technology takes effect on its own. An
-unreadable template falls back to DESFire, the direction that never writes.
+rather than asked for, and re-read every cycle along with whether the
+template is a pair. An unreadable template falls back to DESFire, the
+direction that never writes a card.
 
 - **DESFire** — the card already exists in Millennium; its facility code and
-  card number are copied out to AccessGrid. Millennium is the source of
-  truth and no card is ever written.
+  card number are copied out to AccessGrid. The only thing changed in
+  Millennium is the card's Active box.
 - **HID Seos** — AccessGrid mints the credential. The trigger card marks
-  *who* gets a pass; AccessGrid allocates the facility code and card number
-  (it allocates whenever they are omitted) and the sync engine writes them
-  into the cardholder's empty card slots. A cardholder needs **two** free
-  slots before Seos will provision, because a pass routinely carries two
-  credentials — a card template *pair* issues one per platform, and a holder
-  who installs on both a phone and a watch needs one slot each. Running out
-  halfway would strand the second.
+  *who* gets a pass; AccessGrid allocates the facility code and card number,
+  and the first card is written over the trigger card. A pair's second card
+  goes into an empty slot, so a pair needs one free slot. Each card written
+  takes the trigger format, the trigger card's access levels (all ten), an
+  activation date of now, and Active off until the pass is installed.
 
   A pair is worth calling out: issuing against one returns a *unified pass*
   rather than a card. Its credentials are in `details`, one per platform,
@@ -130,31 +135,50 @@ unreadable template falls back to DESFire, the direction that never writes.
   key, since it repeats if a credential was ever issued twice. See
   `Snapshot.resolve_ag_cards`.
 
-**Write safety.** Millennium's save replaces the entire cardholder record:
-any field not echoed back is wiped. Rather than maintain a field list, the
-adapter parses *every* control the page served and replays all of them,
-mutating only the target slot — reproducing browser submit semantics exactly
-(document order, unchecked boxes omitted, empty file parts for the photo and
-signature). `tests/test_millennium_html_form.py` asserts that our POST is
-byte-identical to a captured browser POST for the same page. Access levels,
-photos, user fields and vehicle details are replayed untouched; this adapter
-never edits a cardholder's access levels.
+**Which trigger cards get a pass.** `pacs_cards` records every card a pass
+rests on, one row per card, with the card number and facility code
+encrypted. Each trigger-format slot is checked against it:
+
+- a recorded card is its existing pass, followed if it moved slot;
+- a recorded slot now holding a different card, a card recorded on another
+  cardholder, or a tracked pass with nothing recorded is logged as an ERROR
+  and mailed to the notification address — nothing is issued, and the
+  existing pass is held;
+- anything else is a new pass, recorded at once as `card` (then `card-2`,
+  ...), which phase 1 issues and keeps retrying until it has.
+
+A held pass (`Credential.hold`) is left exactly as it is by every phase.
+
+**Writing: one import per cycle.** The phases only record what should
+change, as pending rows in `pacs_cards`. Once they have all run,
+`finish_cycle` sends one Millennium cardholder import — "update matched
+records only", matched by Employee ID, carrying only the columns being
+changed — and deletes any cards marked for deletion (found by an Employee ID
+search, then that cardholder's page). It keeps what the import log confirms;
+a row the log skipped stays pending for the next cycle. Dry run sends
+nothing.
+
+- Suspend and resume switch the card's Active box. A card we switched on
+  that an operator has since switched off is not switched back on.
+- A Seos card AccessGrid deletes, or its holder unlinks, is deleted from
+  Millennium. DESFire cards are the customer's and are never deleted.
+
+**Revocation.** A card gone from Millennium revokes its pass through phase
+3. A read with under 30% of the people of the last complete read revokes
+nobody for being missing.
 
 **Seeing what reached the PACS.** For Seos the AccessGrid pass existing is
 only half the story — the pass opens doors when its card numbers are in
 Millennium, and not before. The Credentials page reports that per row ("2
 card numbers saved to Millennium Ultra"), with the numbers themselves on the
-badge for looking up a pass that is not working. Read from the ledger, not
-from the cardholder pages: rendering one line per pass should not cost a
-90 KB fetch each.
+badge for looking up a pass that is not working. Read from `pacs_cards`.
 
-**Changing a person's details.** Phase 6 pushes name, phone and title
-changes to AccessGrid. It does **not** push email: AccessGrid rejects it on
-an issued pass, since the address is what the pass was delivered to rather
-than an attribute of it. A changed address is logged once — the pass keeps
-the old one, so re-issue it if that matters — rather than retried forever.
-This is worth knowing for Millennium, where the address is synthesized:
-renaming a cardholder or changing the email domain changes it.
+**Changing a person's details.** Phase 6 pushes name, phone, title and the
+card's expiration date to AccessGrid, as metadata updates. It does **not**
+push email: AccessGrid rejects it on an issued pass, since the address is
+what the pass was delivered to. A changed address is logged once. A pass's
+expiry is recorded the first time it is seen, rather than pushed, so
+existing passes are not all rewritten at once.
 
 **Pass details.** A pass carries the card's own validity from Millennium as
 its start and expiration dates, rather than "whenever the sync noticed it"
@@ -163,47 +187,14 @@ its start and expiration dates, rather than "whenever the sync noticed it"
 deployment rather than the person, so they are set once under Settings →
 Pass details; a PACS that does carry a per-person title still wins.
 
-**Writeback.** Suspend and resume toggle the card's `Active` checkbox; the
-card keeps its number, dates and access levels. In Seos mode the slots
-holding AccessGrid-allocated cards are recorded on our side rather than
-stamped into a customer-visible field.
-
-A Seos credential is written into Millennium **once**. Phase 4 re-offers
-each tracked card's identities every cycle so a second device is picked up,
-but an identity the ledger says we already wrote is never written again: if
-it is gone from the cardholder, somebody removed it in Millennium, and that
-decision stands. Nothing in any phase creates a credential in the PACS to
-match one that exists only in AccessGrid — the only card this integration
-creates is the first write for a newly-issued pass.
-
-That removal is a revocation, and it travels back out through the ordinary
-route: the credential reports itself suspended, and phase 2 suspends the
-AccessGrid pass off the `ag_credentials` tracking table on the next cycle.
-Written cards are matched by facility code + card number, not by slot, so
-moving one between slots is not mistaken for a deletion and a *different*
-card appearing in the old slot is not mistaken for ours. Every written
-credential must be present and active for the pass to stay active:
-AccessGrid can suspend a pass but not one device on it, so a holder whose
-watch credential was deleted cannot be half-revoked, and access control
-fails closed.
-
-**Cardholders.** This install stores no email addresses or phone numbers, so
-an address is synthesized per cardholder as
-`first.last.<record id>@<configured domain>`. The record id is part of it
-because the same human appears once per card technology, and each is a
-separate pass. The domain is editable under Settings → Synthesized email
-addresses; changing it changes every address, and phase 6 pushes the new
-ones to AccessGrid on the next cycle, including for passes already issued.
-Hand passes out with the QR code on the Credentials page.
-Names come from the roster (`Last, Middle. First`, where this install
-repurposes the middle-name field as a card-type label) and are replaced by
-the authoritative first/last once a detail page is read.
-
-**Scale.** ~1,800 cardholders, one ~90 KB detail page each. The first cycle
-reads all of them to build a profile cache (~5 minutes); after that each
-cycle refreshes the enrolled cardholders plus a rotating slice of the rest,
-so a newly-enrolled card is still discovered without re-reading 158 MB every
-cycle. The roster sweep itself is 26 cheap JSON calls, about two seconds.
+**Upgrading an existing install.** On its first cycle the adapter moves
+everything keyed by Millennium record id to Employee ID: it reads each
+tracked cardholder's page once and re-keys tracking and `pacs_cards` in one
+transaction. A record it cannot read, with no Employee ID, or sharing one,
+stops the move — fix it in Millennium — and nothing syncs until it
+completes. It also fills in the trigger format's name, migration 011 moves
+the old ledger blob into `pacs_cards`, and DESFire passes tracked by slot
+(`slot2`) are adopted under their existing ids.
 
 ## Quick start (development)
 

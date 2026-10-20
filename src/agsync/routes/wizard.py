@@ -21,6 +21,7 @@ data it needs and the next step is rendered. Refreshing a step is safe.
 from __future__ import annotations
 
 import hmac
+import logging
 
 from fastapi import APIRouter, Form, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
@@ -31,6 +32,8 @@ from ..connect import register as uri_register
 from ..lib.pacs import available_pacs, get_descriptor
 from ..settings_store import AccessGridConfig, PacsConfig, is_configured
 from ..sync import get_engine
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/wizard")
 
@@ -227,8 +230,13 @@ def wizard_pacs_trigger(
     pacs = PacsConfig.load()
     if not pacs:
         return RedirectResponse(url="/wizard", status_code=303)
-    params = dict(pacs.get("params") or {})
-    params["trigger_card_format"] = trigger_card_format.strip()
+    from .connect import trigger_params
+
+    try:
+        params = trigger_params(dict(pacs.get("params") or {}), trigger_card_format)
+    except Exception as e:  # noqa: BLE001 — back to the picker, which shows the read error
+        logger.warning("wizard: could not record the trigger format: %s", e)
+        return RedirectResponse(url="/wizard", status_code=303)
     PacsConfig.save(pacs["vendor"], params, pacs.get("options") or {})
     engine = get_engine()
     engine.invalidate_pacs_adapter()

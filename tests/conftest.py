@@ -17,7 +17,7 @@ def _never_the_real_database(tmp_path, monkeypatch):
     """Point every test at a database of its own.
 
     Without this a test that reaches storage reads the operator's live
-    install: `get_settings()` defaults db_path to it, so `SeosLedger.all()`
+    install: `get_settings()` defaults db_path to it, so `PacsCards.all()`
     answers with real cardholders and `AccessGridConfig.load()` with a real
     API key. That is how test_only_the_cardholders_carrying_a_trigger_card
     came to depend on run order — it passed only when some earlier test had
@@ -194,10 +194,9 @@ def make_cdvi_adapter():
 
 # --- Millennium Ultra fixtures -------------------------------------------
 #
-# The cardholder page is the real thing, captured from a live install (see
-# tests/millennium_fixtures). Slot state is varied by rewriting attributes on
-# that markup rather than by hand-building a page, so the adapter is always
-# reading the shape Millennium actually serves.
+# The adapter reads only the export, built per test with tests._fakes
+# export_row. The cardholder page is the real thing, captured from a live
+# install (see tests/millennium_fixtures), and is kept for the client tests.
 
 
 @pytest.fixture
@@ -210,76 +209,19 @@ def millennium_page() -> str:
 
 
 @pytest.fixture
-def set_slot():
-    """Rewrite one card slot in the captured page.
-
-    Passing card_number=None empties the slot, which is how a cardholder
-    with room for a Seos credential is expressed.
-    """
-
-    def _set(
-        html: str,
-        slot: int,
-        *,
-        card_id: str = "",
-        card_number: str | None = "",
-        facility_code: str = "",
-        card_format: str | None = None,
-        active: bool = False,
-    ) -> str:
-        import re
-
-        prefix = f"Card_{slot}_"
-
-        def set_input(source: str, name: str, value: str) -> str:
-            """Replace one input's value attribute, adding it if absent."""
-            pattern = re.compile(r'<input\b[^>]*\bname="' + re.escape(name) + r'"[^>]*>')
-            match = pattern.search(source)
-            assert match, f"no input named {name} in the captured page"
-            tag = re.sub(r'\s+value="[^"]*"', "", match.group(0))
-            tag = tag[:-1].rstrip().removesuffix("/").rstrip() + f' value="{value}" />'
-            return source[: match.start()] + tag + source[match.end() :]
-
-        html = set_input(html, prefix + "CardID", card_id)
-        html = set_input(html, prefix + "EncodedCardNumber", "" if card_number is None else card_number)
-        html = set_input(html, prefix + "FacilityCode", facility_code)
-
-        # Checkbox state is presence of the `checked` attribute.
-        box = re.compile(
-            r'(<input type="checkbox" name="' + re.escape(prefix) + r'Active"[^>]*?)(\s+checked)?(>)'
-        )
-        html = box.sub(
-            lambda m: f"{m.group(1)}{' checked' if active else ''}{m.group(3)}", html, count=1,
-        )
-
-        # And the format select's selection lives on one <option>.
-        select = re.search(
-            r'<select[^>]*name="' + re.escape(prefix) + r'CardFormat".*?</select>', html, re.S,
-        )
-        if select:
-            body = re.sub(r'\s+selected="selected"', "", select.group(0))
-            body = re.sub(r"<option([^>]*)\sselected([^>]*)>", r"<option\1\2>", body)
-            if card_format:
-                body = re.sub(
-                    r'(<option value="' + re.escape(card_format) + r'")(\s*)>',
-                    r'\1 selected="selected">',
-                    body,
-                    count=1,
-                )
-            html = html[: select.start()] + body + html[select.end() :]
-        return html
-
-    return _set
-
-
-@pytest.fixture
 def make_millennium_adapter():
     """Build a MillenniumUltraAdapter with its client swapped for a fake."""
     from agsync.lib.pacs.millennium_ultra.adapter import MillenniumUltraAdapter
 
-    def _build(fake_client, **kwargs) -> MillenniumUltraAdapter:
+    def _build(fake_client, migrated=True, **kwargs) -> MillenniumUltraAdapter:
+        if migrated:
+            from agsync.lib.pacs.millennium_ultra import migrate
+            from agsync.settings_store import set_json
+
+            set_json(migrate.DONE_KEY, True)
         kwargs.setdefault("base_url", "https://millennium.test")
         kwargs.setdefault("trigger_card_format", "7")
+        kwargs.setdefault("trigger_card_format_label", "HID 37")
         kwargs.setdefault("email_domain", "cards.example.com")
         kwargs.setdefault("auth_cookie", "test-cookie")
         adapter = MillenniumUltraAdapter(**kwargs)
@@ -288,23 +230,3 @@ def make_millennium_adapter():
         return adapter
 
     return _build
-
-
-@pytest.fixture
-def seos_ledger(monkeypatch):
-    """In-memory stand-in for the encrypted settings blob the ledger uses.
-
-    The ledger records which Millennium slots hold AccessGrid-allocated
-    cards; the tests need its behaviour, not SQLite.
-    """
-    store: dict = {}
-
-    def fake_get(key):
-        return store.get(key)
-
-    def fake_set(key, value):
-        store[key] = value
-
-    monkeypatch.setattr("agsync.settings_store.get_json", fake_get, raising=False)
-    monkeypatch.setattr("agsync.settings_store.set_json", fake_set, raising=False)
-    return store

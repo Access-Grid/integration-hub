@@ -200,6 +200,15 @@ def test_the_reference_beats_the_ambiguous_token():
     assert snap.resolve_ag_card("missing", "11587", "seos", "abc123") is current
 
 
+def test_a_pass_issued_this_cycle_does_not_resolve_to_earlier_issues():
+    """Seen live: a re-issued pass is not in the listing taken before it
+    was issued, and the token found the earlier, deleted pass instead. Its
+    card was then deleted from the PACS as though AccessGrid had deleted it."""
+    snap = Snapshot()
+    snap.ag_cards_by_token[("11587", "seos")] = [SimpleNamespace(id="old", state="deleted")]
+    assert snap.resolve_ag_cards("new", "11587", "seos", "fresh-ref") == []
+
+
 def test_cards_issued_before_references_still_resolve():
     # Upgrading must not orphan passes already out in the world.
     snap = Snapshot()

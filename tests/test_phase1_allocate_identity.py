@@ -155,7 +155,7 @@ def test_writeback_failure_does_not_fail_the_provision(stub_tracking):
 
 def test_one_identity_per_installed_device():
     # A pass on a phone and a watch has two credentials, and both belong in
-    # Millennium — that is why provisioning demands two free slots.
+    # Millennium.
     card = SimpleNamespace(
         id="agcard-1",
         site_code="66",

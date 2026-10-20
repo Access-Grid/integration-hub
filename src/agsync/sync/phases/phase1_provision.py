@@ -8,6 +8,7 @@ Skip rules (with reasons logged):
   - person inactive
   - person has no email and no phone (AG needs a delivery channel)
   - person has no full_name
+  - credential past its expiry date (phase 3 would delete the pass at once)
   - tracking row exists with a non-NULL ag_card_id (already provisioned)
 
 Most PACS hand us a card that already exists and we copy its identity to
@@ -29,6 +30,7 @@ from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
+from .phase3_deletions import expired
 from .writeback import push_allocated_identities
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,8 @@ def run(
             logger.warning("Phase 1: configuration changed — stopping early")
             break
         for cred in creds:
+            if cred.hold:
+                continue
             if not cred.trigger_active:
                 skipped += 1
                 continue
@@ -93,6 +97,16 @@ def run(
                     tracking.update_last_known_ag_state(pid, cred.id, ag_state)
                 continue
 
+            if expired(cred):
+                # Phase 3 deletes a pass whose card has expired, so issuing
+                # one here would issue and delete a pass every cycle.
+                # Extending the card's date in the PACS issues it again.
+                logger.info(
+                    "  %s %s: card expired on %s — skipping",
+                    pid, cred.id, cred.deactivate_date.strftime("%Y-%m-%d"),
+                )
+                skipped += 1
+                continue
             if not person.full_name:
                 logger.warning("  %s: no name — skipping", pid)
                 skipped += 1

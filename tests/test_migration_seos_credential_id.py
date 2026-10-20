@@ -97,7 +97,7 @@ def test_the_migration_runs_once():
 
 
 def test_the_id_no_longer_depends_on_the_slot(
-    make_millennium_adapter, millennium_page, set_slot, seos_ledger
+    make_millennium_adapter
 ):
     """The bug itself: the marker in slot 2 used to yield a different id.
 
@@ -106,24 +106,15 @@ def test_the_id_no_longer_depends_on_the_slot(
     tracking row.
     """
     from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS
-    from tests._fakes import FakeMillenniumClient
-
-    roster = [{"ID": 11587, "IsActive": True, "Name": "Grid, Accessg"}]
+    from tests._fakes import FakeMillenniumClient, export_row
 
     def _ids_for(marker_slot):
-        page = millennium_page
-        for index in (1, 2, 3):
-            if index == marker_slot:
-                page = set_slot(
-                    page, index, card_id="7919", card_number="1",
-                    facility_code="99", card_format="7", active=True,
-                )
-            else:
-                page = set_slot(page, index, card_id="", card_number="", card_format=None)
+        marker = {"card_number": "1", "facility_code": "99", "card_format": "HID 37"}
+        slots = [marker if index == marker_slot else None for index in (1, 2, 3)]
         adapter = make_millennium_adapter(
-            FakeMillenniumClient(roster=roster, pages={"11587": page}), mode=MODE_SEOS,
+            FakeMillenniumClient(rows=[export_row("11587", slots=slots)]), mode=MODE_SEOS,
         )
         list(adapter.list_people())
         return [c.id for c in adapter.list_credentials("11587")]
 
-    assert _ids_for(1) == _ids_for(2) == _ids_for(3) == ["seos"]
+    assert _ids_for(1) == _ids_for(2) == _ids_for(3) == ["card"]

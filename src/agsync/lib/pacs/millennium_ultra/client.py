@@ -5,7 +5,7 @@ operator uses, carrying the forms-auth cookie that the AG Connect side-car
 captured (the login is captcha-gated, so we can never authenticate
 headlessly; see agsync.connect).
 
-Endpoints, all verified against a live install (hosted8.mgiaccess.com):
+Endpoints, all verified against a live install (hosted105.mgiaccess.com):
 
   GET  /Cardholders/CardholdersHelper/GetList/{ignored}?firstLetter=<ascii>
         JSON roster for one initial letter. The path segment is the row the
@@ -66,9 +66,9 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .... import failed_saves
 from ..base import PacsAuthExpired
 from . import export as export_mod
+from . import import_file
 from .html_form import CardholderForm, validation_errors
 
 logger = logging.getLogger(__name__)
@@ -82,6 +82,52 @@ HTTP_TIMEOUT = 60.0
 EXPORT_TIMEOUT_S = 90.0
 EXPORT_POLL_INTERVAL_S = 1.0
 
+# The import job's name, and the name our file is uploaded under.
+IMPORT_OPERATION = "CardholdersImport"
+IMPORT_FILENAME = "agsync-import.csv"
+# "Only update matched records - do not add new": a wrong Employee ID can
+# never create a cardholder. Millennium applies it to cards too, so it also
+# refuses a card in an empty slot.
+IMPORT_RULE_UPDATE_ONLY = 2
+# "Update existing records when matched - plus add new": used only for an
+# import that adds a card, which is the only kind that carries a Card Format
+# column. Every row names a cardholder this sync's export just listed, so no
+# cardholder should ever be added; the log is checked for it.
+IMPORT_RULE_UPDATE_AND_ADD = 3
+
+# The cardholder search screen's form, as it posts a search by Employee ID:
+# every field it sends, with the values it sends for "no criterion".
+_SEARCH_BLANK = (
+    "FirstName LastName MiddleName Sex Address1 Address2 City State Zip Phone "
+    "BirthDay EMail CardholderTypeSearch Card_1_PrintedCardNumber "
+    "Card_1_ActivationDate Card_1_ActiveSearch Card_1_EncodedCardNumber "
+    "Card_1_ExpirationDate Card_1_FacilityCode Card_1_PinCode Card_1_IssueCode "
+    "IssueDate ReIssueDate CompanyEMail MasterArea InternalPhone Supervisor "
+    "Comment1 AdaShuntSearch VehicleModel BadgeDate VehicleColor EmploymentDate "
+    "VehicleYear LicensePlateNo Comment2 UserField3 UserField2 UserField1"
+).split()
+_SEARCH_DEFAULTS = {
+    "MaxRecord": "500",
+    "CardholderType": "Cardholder",
+    "OwnersAsJson": "[]",
+    "Card_1_CardID": "2147483647",
+    "Card_1_CardFormat": "-2147483648",
+    "Card_1_BadgeType": "0",
+    "Card_1_CardClass": "0",
+    "Card_1_Tenant_0": "0",
+    "Card_1_AccessLevels": "{}",
+    "PrimaryLocation": "0",
+    "Department": "0",
+    "EmployeeClass": "0",
+    "ParkingDesignation": "0",
+    "ParkingAssignment": "0",
+    "ID": "0",
+    "TenantsAsJson": "[0]",
+    "CarsAsJson": "[]",
+    "SplitterWidth": "200",
+    "ViewMode": "CardholderSearch",
+}
+
 # What to ask the export for. Images are the field that matters by its
 # absence: with them the job 504s outright on this install, which is what
 # made the endpoint look unusable at first. The rest is the smallest set
@@ -91,6 +137,7 @@ EXPORT_POLL_INTERVAL_S = 1.0
 _EXPORT_FIELDS = (
     (1, "First Name"),
     (2, "Last Name"),
+    (3, "Card Type"),
     (4, "Employee ID"),
     # Contact details, which reach us nowhere else in time. The detail page
     # carries them too, but it is read after list_people has already built
@@ -106,6 +153,18 @@ _EXPORT_FIELDS = (
     (19, "Active"),
     (20, "Card Format"),
     (21, "Facility Code"),
+    # The export screen's fields, plus access levels 6-10: a card we write
+    # copies every level of the card that asked for it, and a short copy
+    # would silently drop some.
+    *(
+        field
+        for n in range(10)
+        for field in (
+            (200 + n, f"Access Level {n + 1}"),
+            (456 + n, f"Access Level {n + 1} Activation Date"),
+            (712 + n, f"Access Level {n + 1} Expiration Date"),
+        )
+    ),
 )
 
 # Smallest gap between two requests to the install, across every client in
@@ -145,21 +204,6 @@ CARD_SLOTS = (1, 2, 3)
 # not so many that one cardholder floods the log.
 MAX_VALIDATION_ERRORS = 10
 
-# What we sent, printed beside why it was refused. Millennium names the
-# field it objects to but not the value it objected to, and the value is
-# usually the whole story — a duplicate card number, a date that came back
-# in a shape it will not parse.
-#
-# This is cardholder data: name, address, phone and email are on the form
-# and will appear in the log. That is a deliberate trade for being able to
-# see a refused save, on an install whose logs stay on the operator's own
-# machine. The anti-forgery token is the one thing held back, because it is
-# a live credential rather than a record.
-_NEVER_LOGGED = frozenset({"__RequestVerificationToken"})
-MAX_LOGGED_VALUE = 120
-MAX_LOGGED_PAYLOAD = 4000
-
-
 def _is_cardholder_form(html: str) -> bool:
     """Is this the cardholder screen coming back, or something else?
 
@@ -173,45 +217,6 @@ def _is_cardholder_form(html: str) -> bool:
         return False
     return True
 
-
-_HEADLINE = (
-    r"<h3[^>]*>(.*?)</h3>",
-    r"<h1[^>]*>(.*?)</h1>",
-    r"<title[^>]*>(.*?)</title>",
-)
-
-
-def _page_headline(html: str) -> str:
-    """Whatever the page leads with, for the error message."""
-    for pattern in _HEADLINE:
-        match = re.search(pattern, html, re.S | re.I)
-        if not match:
-            continue
-        text = " ".join(re.sub(r"<[^>]+>", " ", match.group(1)).split())
-        if text:
-            return text[:120]
-    return "a page carrying no cardholder form"
-
-
-def _describe_payload(form: CardholderForm) -> str:
-    """The form as it goes on the wire, field by field."""
-    try:
-        pairs = form.submitted_pairs()
-    except Exception as e:  # noqa: BLE001 — a diagnostic must not raise
-        return f"(could not describe the payload: {e})"
-    parts = []
-    for name, value in pairs:
-        if name in _NEVER_LOGGED:
-            shown = "[redacted]"
-        elif len(value) > MAX_LOGGED_VALUE:
-            shown = value[:MAX_LOGGED_VALUE] + "…"
-        else:
-            shown = value
-        parts.append(f"{name}={shown!r}")
-    text = ", ".join(parts)
-    if len(text) > MAX_LOGGED_PAYLOAD:
-        text = text[:MAX_LOGGED_PAYLOAD] + f"… ({len(parts)} fields in all)"
-    return text
 
 _EXPORT_REQUEST = {
     "format": 1,
@@ -483,44 +488,158 @@ class MillenniumUltraClient:
         for what the CSV holds and what it leaves out.
 
         Raises MillenniumError if the job fails or does not finish in time.
-        The caller is expected to fall back to reading detail pages — this
-        is an optimisation, and a PACS that will not export is not a PACS
-        that cannot be synced.
         """
         started = self._post_json(
             "/DatabaseFunctions/ExportCardholders/ExportCardholdersNow",
             _EXPORT_REQUEST,
+            referer="/DatabaseFunctions/ExportCardholders",
         )
         if started is not True:
             raise MillenniumError(f"Millennium refused to start the export: {started!r}")
+        # Context still names the archive, and an empty one means the job
+        # finished without producing anything — worth refusing rather than
+        # downloading whatever was left over from a previous run.
+        if not self._wait(export_mod.OPERATION).get("Context"):
+            raise MillenniumError("Export finished without naming its file")
+        return export_mod.unpack(self._fetch_export_file())
 
+    def import_cardholders(self, imported: import_file.ImportFile) -> import_file.ImportLog:
+        """Run one import, and return Millennium's log of it.
+
+        The same steps as the import screen: upload the file with the page's
+        anti-forgery token, say which column fills which field, wait for the
+        job, then read its log. A skipped row is a warning in the log, not a
+        failure here; an error in the log is.
+        """
+        adds_cards = any(f["ID"] == import_file.FIELD_IDS["Card Format"] for f in imported.fields)
+        rule = IMPORT_RULE_UPDATE_AND_ADD if adds_cards else IMPORT_RULE_UPDATE_ONLY
+        lines = imported.csv.splitlines()
+        logger.info(
+            "Millennium import: sending %d cardholder(s) (%s), rule %d, with columns %s",
+            len(lines) - 1,
+            ", ".join(line.split(",", 1)[0] for line in lines[1:]),
+            rule,
+            lines[0] if lines else "",
+        )
+        token = self._page_token("/DatabaseFunctions/ImportCardholders")
+        self._pace()
+        response = self._http.post(
+            self._url("/DatabaseFunctions/ImportCardholders/SelectFields"),
+            files={"ImportFile": (IMPORT_FILENAME, imported.csv.encode(), "text/csv")},
+            data={
+                "FileName": IMPORT_FILENAME,
+                "FileFormat": "1",
+                "FieldHeaders": "true",
+                "__RequestVerificationToken": token,
+            },
+            headers={"Referer": self._url("/DatabaseFunctions/ImportCardholders/Index")},
+        )
+        self._check_auth(response)
+        # The field-mapping page, recognised by its lists' ids rather than by
+        # English text.
+        if response.status_code != 200 or 'id="selected_fields"' not in response.text:
+            raise MillenniumError(
+                f"Millennium did not accept the import file (HTTP {response.status_code})"
+            )
+
+        started = self._post_json(
+            "/DatabaseFunctions/ImportCardholders/ImportCardholdersNow",
+            {
+                "format": 1,
+                "rule": rule,
+                "HeaderIncluded": True,
+                "ImportNewDropDownEntries": False,
+                "Filename": IMPORT_FILENAME,
+                "ImportedFields": imported.fields,
+                "DontReplaceAccessLevel": False,
+            },
+            referer="/DatabaseFunctions/ImportCardholders/SelectFields",
+        )
+        if started is not True:
+            raise MillenniumError(f"Millennium refused to start the import: {started!r}")
+        context = self._wait(IMPORT_OPERATION).get("Context")
+        if not context:
+            raise MillenniumError("Import finished without naming its log")
+
+        text = self._get(f"/DatabaseFunctions/ImportCardholders/GetImportLogFile/{context}").text
+        # Millennium's own account of the import, word for word: it is the
+        # only record of what it did with each row.
+        for line in text.splitlines():
+            if line.strip():
+                logger.info("Millennium import log: %s", line.strip())
+        log = import_file.parse_log(text)
+        if log.counts.get("cardholders added", 0):
+            logger.error(
+                "Millennium import added %d cardholder(s). It should only ever update "
+                "existing ones — check the import log above and the cardholders it names",
+                log.counts["cardholders added"],
+            )
+        if log.errors:
+            raise MillenniumError(f"Millennium's import failed: {'; '.join(log.errors)}")
+        return log
+
+    def find_cardholder_id(self, employee_id: str) -> str:
+        """The record id of the one cardholder with this Employee ID.
+
+        The export carries no record id, and the cardholder page and card
+        deletion are both addressed by one. The search screen answers with
+        its results as JSON in the page; the match is checked exactly, since
+        a search need not be.
+        """
+        token = self._page_token("/Cardholders/Cardholders/Search")
+        form = {name: "" for name in _SEARCH_BLANK} | _SEARCH_DEFAULTS
+        form |= {"EmployeeID": employee_id, "__RequestVerificationToken": token}
+        self._pace()
+        response = self._http.post(
+            self._url("/Cardholders/Cardholders/SearchResult"),
+            files={name: (None, value) for name, value in form.items()},
+            headers={"Referer": self._url("/Cardholders/Cardholders/Search")},
+        )
+        self._check_auth(response)
+        found = re.search(r"var data = (\[.*?\]);\s*</script>", response.text, re.S)
+        if response.status_code != 200 or not found:
+            raise MillenniumError(
+                f"Millennium's search for Employee ID {employee_id} did not return "
+                f"results (HTTP {response.status_code})"
+            )
+        ids = [
+            str(row["ID"]) for row in json.loads(found.group(1))
+            if str(row.get("EmployeeID", "")).strip() == employee_id
+        ]
+        if len(ids) != 1:
+            raise MillenniumError(
+                f"Employee ID {employee_id} matches {len(ids)} cardholders in Millennium"
+            )
+        return ids[0]
+
+    def _page_token(self, path: str) -> str:
+        """The anti-forgery token a page's form posts back."""
+        page = self._get(path).text
+        token = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', page)
+        if not token:
+            raise MillenniumError(f"{path} carries no anti-forgery token")
+        return token.group(1)
+
+    def _wait(self, operation: str) -> dict:
+        """Poll a queued job until it finishes; its final status."""
         deadline = time.time() + EXPORT_TIMEOUT_S
         while time.time() < deadline:
-            status = self._export_status()
+            status = self._operation_status(operation)
             if not isinstance(status, dict):
-                raise MillenniumError(f"Unreadable export status: {status!r}")
+                raise MillenniumError(f"Unreadable {operation} status: {status!r}")
             if status.get("Failed") or (status.get("Error") or ""):
                 raise MillenniumError(
-                    f"Millennium's export failed: {status.get('Error') or 'no detail'}"
+                    f"Millennium's {operation} failed: {status.get('Error') or 'no detail'}"
                 )
             if status.get("Completed") and status.get("Success"):
-                # Context still names the archive, and an empty one means
-                # the job finished without producing anything — worth
-                # refusing rather than downloading whatever was left over
-                # from a previous run. The name no longer forms the URL.
-                name = status.get("Context") or ""
-                if not name:
-                    raise MillenniumError("Export finished without naming its file")
-                logger.debug("Millennium's export produced %s", name)
-                return export_mod.unpack(self._fetch_export_file())
+                return status
             time.sleep(EXPORT_POLL_INTERVAL_S)
-
         raise MillenniumError(
-            f"Millennium's export did not finish within {EXPORT_TIMEOUT_S:.0f}s"
+            f"Millennium's {operation} did not finish within {EXPORT_TIMEOUT_S:.0f}s"
         )
 
-    def _export_status(self) -> Any:
-        """How far along the queued export is.
+    def _operation_status(self, operation: str) -> Any:
+        """How far along a queued job is.
 
         A GET under /api on the ASP.NET Core build, where it used to be a
         POST to /Home/GetLongOperationStatus. The trailing `_` is the UI's
@@ -531,7 +650,7 @@ class MillenniumUltraClient:
         response = self._get(
             "/api/LongOperationStatus",
             params={
-                "operationtype": export_mod.OPERATION,
+                "operationtype": operation,
                 "_": str(int(time.time() * 1000)),
             },
             ajax=True,
@@ -539,7 +658,7 @@ class MillenniumUltraClient:
         try:
             return response.json()
         except ValueError as e:
-            raise MillenniumError(f"Unreadable export status: {e}") from e
+            raise MillenniumError(f"Unreadable {operation} status: {e}") from e
 
     def _fetch_export_file(self) -> bytes:
         """The zip the finished job left behind.
@@ -554,7 +673,7 @@ class MillenniumUltraClient:
         )
         return response.content
 
-    def _post_json(self, path: str, payload: dict[str, Any]) -> Any:
+    def _post_json(self, path: str, payload: dict[str, Any], referer: str) -> Any:
         """POST JSON the way the UI's own XHRs do, and read JSON back."""
         self._pace()
         response = self._http.post(
@@ -565,7 +684,7 @@ class MillenniumUltraClient:
                 "Content-Type": "application/json",
                 "X-Requested-With": "XMLHttpRequest",
                 "Origin": self.base_url,
-                "Referer": self._url("/DatabaseFunctions/ExportCardholders"),
+                "Referer": self._url(referer),
             },
         )
         self._check_auth(response)
@@ -607,11 +726,10 @@ class MillenniumUltraClient:
             # a complaint about the fields, and reading it as one reports a
             # bad field that does not exist and retries forever.
             if not _is_cardholder_form(response.text):
-                self._keep_refused_save(cardholder_id, response, body, [])
                 raise MillenniumError(
-                    f"Millennium answered the save for cardholder "
-                    f"{cardholder_id} with {_page_headline(response.text)!r} "
-                    "rather than the cardholder form — the record is unchanged"
+                    f"Millennium answered the save for cardholder {cardholder_id} "
+                    "with something other than the cardholder form — the record "
+                    "is unchanged"
                 )
             # The rejection and its reasons arrive together — the page is
             # re-rendered with the complaints written into it — so there is
@@ -635,37 +753,34 @@ class MillenniumUltraClient:
                     "other than a bad field",
                     cardholder_id,
                 )
-            logger.error(
-                "Millennium: the refused payload for cardholder %s was %s",
-                cardholder_id, _describe_payload(form),
-            )
-            self._keep_refused_save(cardholder_id, response, body, reasons)
             return False
-        self._keep_refused_save(cardholder_id, response, body, [])
         raise MillenniumError(
             f"Save for cardholder {cardholder_id} -> HTTP {response.status_code}"
         )
 
-    def _keep_refused_save(
-        self,
-        cardholder_id: str | int,
-        response: httpx.Response,
-        body: bytes,
-        reasons: list[str],
-    ) -> None:
-        """Keep the exchange, not just a sentence about it.
+    def delete_card_by_number(
+        self, employee_id: str, facility_code: str, card_number: str
+    ) -> bool:
+        """Delete the card with this facility code and number from a cardholder.
 
-        The log says what was refused and usually why, but the PACS does
-        not always say why — and when it does not, the page it sent back
-        is the only thing left to read.
+        The export names neither the record nor the card's id, so both are
+        read here: the record from a search, the card from that record's
+        page. A card that is not on the cardholder is refused, not guessed.
         """
-        failed_saves.record(
-            vendor="millennium_ultra",
-            cardholder_id=str(cardholder_id),
-            status_code=response.status_code,
-            reasons=reasons,
-            request=body.decode("utf-8", "replace"),
-            response=response.text,
+        record_id = self.find_cardholder_id(employee_id)
+        form = self.get_cardholder_form(record_id)
+        for slot in CARD_SLOTS:
+            prefix = f"Card_{slot}_"
+            if (
+                form.value(prefix + "EncodedCardNumber").strip() == str(card_number)
+                and form.value(prefix + "FacilityCode").strip() == str(facility_code)
+            ):
+                card_id = form.value(prefix + "CardID").strip()
+                if not card_id:
+                    break
+                return self.delete_card(record_id, card_id, form.token)
+        raise MillenniumError(
+            f"Employee ID {employee_id} holds no card {facility_code}/{card_number}"
         )
 
     def delete_card(self, cardholder_id: str | int, card_id: str, token: str) -> bool:

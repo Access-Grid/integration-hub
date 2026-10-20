@@ -21,7 +21,7 @@ from agsync.settings_store import PacsConfig, PacsSession
 
 VENDOR = "millennium_ultra"
 STORED_PARAMS = {
-    "base_url": "https://hosted8.mgiaccess.com",
+    "base_url": "https://hosted105.mgiaccess.com",
     "email_domain": "cards.example.com",
     "notify_email": "security@example.com",
     "trigger_card_format": "7",
@@ -170,13 +170,13 @@ def test_no_cycle_is_started(store, engine):
 
 
 @pytest.mark.parametrize(("given", "expected"), [
-    ("https://hosted8.mgiaccess.com", "https://hosted8.mgiaccess.com"),
+    ("https://hosted105.mgiaccess.com", "https://hosted105.mgiaccess.com"),
     # A trailing slash would make the login path "//Account/LogIn".
-    ("https://hosted8.mgiaccess.com/", "https://hosted8.mgiaccess.com"),
-    ("hosted8.mgiaccess.com", "https://hosted8.mgiaccess.com"),
+    ("https://hosted105.mgiaccess.com/", "https://hosted105.mgiaccess.com"),
+    ("hosted105.mgiaccess.com", "https://hosted105.mgiaccess.com"),
     ("http://10.0.0.5:8080/", "http://10.0.0.5:8080"),
-    ("  https://hosted8.mgiaccess.com  ", "https://hosted8.mgiaccess.com"),
-    ("hosted8.mgiaccess.com:8080", "https://hosted8.mgiaccess.com:8080"),
+    ("  https://hosted105.mgiaccess.com  ", "https://hosted105.mgiaccess.com"),
+    ("hosted105.mgiaccess.com:8080", "https://hosted105.mgiaccess.com:8080"),
     ("http://[::1]:5000/", "http://[::1]:5000"),
 ])
 def test_an_address_is_normalised(store, engine, given, expected):
@@ -186,7 +186,7 @@ def test_an_address_is_normalised(store, engine, given, expected):
 
 
 @pytest.mark.parametrize("given", [
-    "", "   ", "not a url", "ftp://hosted8.mgiaccess.com", "https://",
+    "", "   ", "not a url", "ftp://hosted105.mgiaccess.com", "https://",
     # Both have no "://", so filling in the missing scheme would turn them
     # into a host with a nonsense port rather than refusing them.
     "javascript:alert(1)", "data:text/html,<script>alert(1)</script>",

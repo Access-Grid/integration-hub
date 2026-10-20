@@ -44,13 +44,13 @@ def install(tmp_path, key, monkeypatch):
         "INSERT INTO settings (key, value) VALUES (?, ?)",
         ("pacs_session:millennium_ultra", enc({"auth_cookie": COOKIE})),
     )
-    conn.execute(
-        "INSERT INTO settings (key, value) VALUES (?, ?)",
-        ("millennium_seos_slots", enc({
-            "11591:seos": [{"slot": 2, "card_number": "1255", "facility_code": "2"}],
-            "9146:seos": [{"slot": 3, "card_number": "1299", "facility_code": "2"}],
-        })),
-    )
+    for person, slot, number in (("11591", 2, "1255"), ("9146", 3, "1299")):
+        conn.execute(
+            "INSERT INTO pacs_cards (pacs_person_id, pacs_credential_id, slot, "
+            "facility_code, card_number) VALUES (?, 'seos', ?, ?, ?)",
+            (person, slot, Fernet(key.encode()).encrypt(b"2").decode(),
+             Fernet(key.encode()).encrypt(number.encode()).decode()),
+        )
     conn.execute(
         """
         INSERT INTO ag_credentials (
@@ -150,6 +150,21 @@ def test_a_missing_key_is_reported_rather_than_guessed(install, monkeypatch):
 
     assert "NOT FOUND" in text
     assert "no encryption key was found" in text
+
+
+def test_a_database_from_before_the_table_reads_the_old_blob(install, key):
+    """It never runs migrations, so it must read a ledger still in its blob."""
+    conn = sqlite3.connect(install)
+    conn.execute("DROP TABLE pacs_cards")
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?)",
+        ("millennium_seos_slots", Fernet(key.encode()).encrypt(json.dumps({
+            "11591:seos": [{"slot": 2, "card_number": "1255", "facility_code": "2"}],
+        }).encode()).decode()),
+    )
+    conn.commit()
+    conn.close()
+    assert "11591:seos  ->  2/1255@slot2" in diagnostics.report()
 
 
 def test_a_missing_database_says_so(tmp_path, monkeypatch):

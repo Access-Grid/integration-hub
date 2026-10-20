@@ -13,7 +13,7 @@ DESCRIPTOR = PacsDescriptor(
             "base_url",
             "pacs.millennium_ultra.base_url",
             kind="url",
-            placeholder="https://hosted8.mgiaccess.com",
+            placeholder="https://hosted105.mgiaccess.com",
         ),
         ConnectionField(
             "email_domain",

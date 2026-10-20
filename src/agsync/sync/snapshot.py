@@ -68,6 +68,12 @@ class Snapshot:
             card = self.ag_card_by_id.get(ag_card_id)
             if card is not None:
                 return [card]
+        if sync_ref:
+            # Issued with a reference, but not in this cycle's listing: a
+            # pass issued during this cycle. The token would find every
+            # earlier issue of the credential instead, and phases 3 and 4
+            # would act on their deleted and suspended cards.
+            return []
         if person_id and credential_id:
             cards = self.ag_cards_by_token.get((person_id, credential_id))
             if cards:

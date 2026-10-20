@@ -9,50 +9,45 @@ from __future__ import annotations
 
 import pytest
 
-from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, SeosLedger
+from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, PacsCards
 from tests._fakes import FakeMillenniumClient
 
 
 @pytest.fixture
-def adapter(make_millennium_adapter, millennium_page):
-    client = FakeMillenniumClient(
-        roster=[{"ID": 11587, "Name": "Grid, Accessg"}],
-        pages={"11587": millennium_page},
-    )
-    return make_millennium_adapter(client, mode=MODE_SEOS)
+def adapter(make_millennium_adapter):
+    return make_millennium_adapter(FakeMillenniumClient(), mode=MODE_SEOS)
 
 
-def test_written_card_numbers_are_reported(adapter, seos_ledger):
-    SeosLedger.record("11587", "seos", [
+def test_written_card_numbers_are_reported(adapter):
+    PacsCards.record("11587", "seos", [
         {"slot": 2, "card_number": "1216", "facility_code": "2"},
         {"slot": 3, "card_number": "1217", "facility_code": "2"},
     ])
     assert adapter.written_credentials() == {("11587", "seos"): ["1216", "1217"]}
 
 
-def test_nothing_written_reports_nothing(adapter, seos_ledger):
+def test_nothing_written_reports_nothing(adapter):
     assert adapter.written_credentials() == {}
 
 
-def test_several_cardholders_are_kept_apart(adapter, seos_ledger):
-    SeosLedger.record("11587", "seos",
+def test_several_cardholders_are_kept_apart(adapter):
+    PacsCards.record("11587", "seos",
                       [{"slot": 2, "card_number": "1216", "facility_code": "2"}])
-    SeosLedger.record("8824", "seos",
+    PacsCards.record("8824", "seos",
                       [{"slot": 3, "card_number": "5001", "facility_code": "66"}])
     written = adapter.written_credentials()
     assert written[("11587", "seos")] == ["1216"]
     assert written[("8824", "seos")] == ["5001"]
 
 
-def test_a_read_only_adapter_reports_nothing(make_millennium_adapter, millennium_page):
+def test_a_read_only_adapter_reports_nothing(make_millennium_adapter):
     # DESFire copies cards out; nothing is ever written, so the column has
     # nothing to say rather than saying "not saved" about every row.
-    client = FakeMillenniumClient(roster=[], pages={"11587": millennium_page})
-    desfire = make_millennium_adapter(client)
+    desfire = make_millennium_adapter(FakeMillenniumClient())
     assert desfire.supports_credential_writeback is False
 
 
-def test_the_page_renders_both_states(millennium_page, seos_ledger, monkeypatch):
+def test_the_page_renders_both_states(millennium_page, monkeypatch):
     """Render the template directly: one row written, one not."""
     from types import SimpleNamespace
 
@@ -95,7 +90,7 @@ def test_the_page_derives_the_direction_rather_than_reading_stored_params(monkey
     from agsync.sync.engine import derived_pacs_params
 
     monkeypatch.setattr(
-        "agsync.sync.engine.template_protocol", lambda client, tid: "seos",
+        "agsync.sync.engine.template_shape", lambda client, tid: ("seos", False),
     )
     stored = {"vendor": "millennium_ultra", "params": {"base_url": "https://m.test"}}
     assert "mode" not in stored["params"]

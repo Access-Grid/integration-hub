@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from agsync.lib.pacs.base import Credential, CredentialStatus, Person
-from agsync.lib.pacs.millennium_ultra.adapter import format_datetime, parse_datetime
+from agsync.lib.pacs.millennium_ultra.export import parse_datetime
 from agsync.sync.phases import phase1_provision
 from agsync.sync.snapshot import Snapshot
 
@@ -64,13 +64,18 @@ def _cred(**kwargs) -> Credential:
 # --- dates ---------------------------------------------------------------
 
 
-def test_millennium_dates_round_trip_through_the_install_offset():
-    # -14400 is the offset the browser reported at sign-in; the stored text
-    # is local to it, so a naive parse would be four hours out.
-    text = "08/18/2026 12:00 AM"
-    parsed = parse_datetime(text, -14400)
-    assert parsed == datetime(2026, 8, 18, 4, 0, tzinfo=UTC)
-    assert format_datetime(parsed, -14400) == text
+def test_both_export_date_shapes_are_read():
+    # 24-hour on one install, AM/PM on another; the same instant either way.
+    assert parse_datetime("04/30/2024 18:17:00", 0) == datetime(2024, 4, 30, 18, 17, tzinfo=UTC)
+    assert parse_datetime("4/30/2024 6:17:00 PM", 0) == datetime(2024, 4, 30, 18, 17, tzinfo=UTC)
+
+
+def test_millennium_dates_are_read_against_the_install_offset():
+    # -14400 is the offset the browser reported at sign-in; the export's
+    # text is local to it, so a naive parse would be four hours out.
+    assert parse_datetime("8/18/2026 12:00:00 AM", -14400) == datetime(
+        2026, 8, 18, 4, 0, tzinfo=UTC
+    )
 
 
 @pytest.mark.parametrize("value", ["", "   ", "not a date", "13/45/2026"])

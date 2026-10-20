@@ -39,6 +39,9 @@
   {% if err == 'site_code' %}
     <div class="err">{{ t('settings.site_code.invalid') }}</div>
   {% endif %}
+  {% if err == 'trigger' %}
+    <div class="err">{{ t('settings.trigger.unreadable') }}</div>
+  {% endif %}
   {% if err == 'not_configured' %}
     <div class="err">{{ t('settings.site_code.not_configured') }}</div>
   {% endif %}

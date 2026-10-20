@@ -33,6 +33,12 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         person = snapshot.people.get(tracked.pacs_person_id)
         if person is None:
             continue
+        creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
+        cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
+        if cred is not None and cred.hold:
+            continue
+        expires = getattr(cred, "deactivate_date", None)
+        expiration = expires.isoformat() if expires else ""
 
         changes: dict[str, str] = {}
         if person.full_name and person.full_name != tracked.last_synced_full_name:
@@ -42,9 +48,19 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                 changes["phone_number"] = person.phone
         if person.title != tracked.last_synced_title:
             changes["title"] = person.title
+        # The PACS's expiry. Recorded the first time it is seen, rather than
+        # pushed, so passes issued before this was tracked are not all
+        # rewritten at once; a date the PACS no longer states is not cleared.
+        if (
+            expiration
+            and tracked.last_synced_expiration is not None
+            and expiration != tracked.last_synced_expiration
+        ):
+            changes["expiration_date"] = expiration
 
         email_changed = bool(person.email) and person.email != tracked.last_synced_email
-        if not changes and not email_changed:
+        first_expiry = tracked.last_synced_expiration is None and bool(expiration)
+        if not changes and not email_changed and not first_expiry:
             continue
 
         if email_changed:
@@ -68,7 +84,11 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                         tracked.ag_card_id, ", ".join(changes.keys()),
                     )
                     continue
-                ag.access_cards.update(card_id=tracked.ag_card_id, **changes)
+                # A metadata update: the pass's details change, its
+                # credential does not.
+                ag.access_cards.update(
+                    card_id=tracked.ag_card_id, update_type="metadata", **changes,
+                )
                 updated += 1
             except AccessGridError as e:
                 logger.error("  Field update failed for %s: %s", tracked.ag_card_id, e)
@@ -84,6 +104,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             email=person.email,
             phone=person.phone,
             title=person.title,
+            expiration=expiration or (tracked.last_synced_expiration or ""),
         )
 
     logger.info("Phase 6 done: %d field update(s)", updated)

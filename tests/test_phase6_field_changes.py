@@ -53,6 +53,7 @@ def _tracked(**overrides):
         status="active", last_synced_email="accessg.grid.11587@old.test",
         last_synced_phone="", last_synced_full_name="Accessg Grid",
         last_synced_title="", last_known_ag_state="active", sync_error=None,
+        last_synced_expiration=None,
         retry_count=0, sync_ref="",
     )
     row.update(overrides)

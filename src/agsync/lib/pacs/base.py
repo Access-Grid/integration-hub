@@ -95,6 +95,11 @@ class Credential:
     # there is nothing yet to dedupe against. Set by adapters that write
     # credentials *into* the PACS — see supports_credential_writeback.
     allocate_identity: bool = False
+    # Leave this credential's pass exactly as it is. Set when the PACS shows
+    # something we will not act on — a card moved out of the trigger format,
+    # or a slot holding a different card than we recorded — and no phase
+    # issues, changes, writes back or deletes it until it is cleared.
+    hold: bool = False
     # Pre-encoded credential payload (hex), when the PACS stores one. CDVI
     # keeps a single encoded card `number`; set this to that value so an
     # operator can choose to transmit it verbatim as AccessGrid `file_data`
@@ -284,6 +289,10 @@ class PacsAdapter(Protocol):
     # the PACS can release whatever they occupy.
     @property
     def supports_credential_retirement(self) -> bool: ...
+
+    # Optional. Called once per cycle after every phase, for adapters that
+    # record their PACS writes during the phases and send them together.
+    def finish_cycle(self) -> None: ...
 
     def retire_credentials(
         self,

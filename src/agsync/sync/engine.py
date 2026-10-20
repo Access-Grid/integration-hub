@@ -31,7 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .. import dryrun
-from ..ag import PROTOCOL_SEOS, template_protocol
+from ..ag import PROTOCOL_SEOS, template_shape
 from ..ag import build_client as build_ag_client
 from ..lib.pacs import PacsAuthExpired, get_descriptor
 from ..lib.pacs import build_adapter as build_pacs_adapter
@@ -73,7 +73,7 @@ MAX_CONSECUTIVE_ERRORS = 10
 
 
 def derived_pacs_params(ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]) -> dict[str, Any]:
-    """Fill in `mode` from the AccessGrid template, for adapters that ask.
+    """Fill in `mode` and `pair` from the AccessGrid template, for adapters that ask.
 
     Module-level because the engine is not the only caller: anything that
     builds an adapter to ask what it has done needs the same direction, and
@@ -83,7 +83,7 @@ def derived_pacs_params(ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]) ->
     if descriptor is None or not descriptor.derives_mode_from_template:
         return pacs_cfg
 
-    protocol = template_protocol(ag, ag_cfg["template_id"])
+    protocol, pair = template_shape(ag, ag_cfg["template_id"])
     # An unreadable template must not silently flip a read-only integration
     # into one that writes cards into the PACS.
     mode = "seos" if protocol == PROTOCOL_SEOS else "desfire"
@@ -93,6 +93,7 @@ def derived_pacs_params(ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]) ->
         )
     params = dict(pacs_cfg.get("params") or {})
     params["mode"] = mode
+    params["pair"] = pair
     return {**pacs_cfg, "params": params}
 
 
@@ -462,6 +463,11 @@ class SyncEngine:
                 pacs=pacs,
             )
             result.field_updates = phase6_field_changes.run(snapshot, ag)
+            # Adapters that batch their PACS writes send them now, once the
+            # phases have decided everything this cycle will change.
+            finish = getattr(pacs, "finish_cycle", None)
+            if finish is not None:
+                finish()
         except PacsAuthExpired as e:
             return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)
         except Exception as e:  # noqa: BLE001

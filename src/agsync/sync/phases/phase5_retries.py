@@ -52,6 +52,8 @@ def run(
         person = snapshot.people.get(tracked.pacs_person_id)
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
+        if cred is not None and cred.hold:
+            continue
 
         if person is None or cred is None or not cred.trigger_active:
             # Underlying record is gone or no longer eligible — clear retry.

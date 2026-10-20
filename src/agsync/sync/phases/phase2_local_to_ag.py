@@ -107,8 +107,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
 
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
-        if cred is None:
-            # Credential gone from PACS → phase 3 territory.
+        if cred is None or cred.hold:
+            # Gone from the PACS → phase 3 territory. Held → left alone.
             continue
 
         # Trigger removed → terminate the AG card.
@@ -148,6 +148,13 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                 tracked.pacs_person_id, tracked.pacs_credential_id,
                 tracked.last_known_ag_state, ag_state,
             )
+            continue
+
+        # A card the PACS holds off only until the pass is installed is the
+        # sync's own hold, not anyone revoking it: nothing to push. Seen live
+        # when it was pushed: the holder installed the pass, and this phase
+        # suspended it before phase 4 could switch the card on.
+        if cred.status == CredentialStatus.AWAITING_INSTALL:
             continue
 
         desired = "active" if cred.status == CredentialStatus.ACTIVE else "suspended"
