@@ -69,7 +69,7 @@ EXPORT_COLUMNS = [
         "Printed Card No.", "Encoded Card No.", "Activation Date",
         "Expiration Date", "Active", "Card Format", "Facility Code", "Badge Type",
     )
-]
+] + [f"Card {n} Access Level {k} [Global]" for n in (1, 2, 3) for k in range(1, 11)]
 
 
 def export_row(employee_id, first="Ada", last="Lovelace", email="", phone="", slots=()):
@@ -77,7 +77,8 @@ def export_row(employee_id, first="Ada", last="Lovelace", email="", phone="", sl
 
     `slots` is a list of dicts, one per slot from slot 1: card_number,
     facility_code, card_format (the display name), active, activation and
-    expiration (export date text). An omitted slot, or None, is empty.
+    expiration (export date text), and access_levels (names, from level 1).
+    An omitted slot, or None, is empty.
     """
     row = {
         "Employee ID": employee_id, "First Name": first, "Last Name": last,
@@ -92,6 +93,8 @@ def export_row(employee_id, first="Ada", last="Lovelace", email="", phone="", sl
         row[f"Card {n} Active"] = "True" if slot.get("active", True) else "False"
         row[f"Card {n} Activation Date"] = slot.get("activation", "")
         row[f"Card {n} Expiration Date"] = slot.get("expiration", "")
+        for k, name in enumerate(slot.get("access_levels", ()), start=1):
+            row[f"Card {n} Access Level {k} [Global]"] = name
     return row
 
 

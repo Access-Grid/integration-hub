@@ -38,7 +38,7 @@ import logging
 import re
 from collections.abc import Iterable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from .... import dryrun
 from ..base import (
@@ -73,6 +73,11 @@ NEW_CREDENTIAL_ID = "card"
 # The trigger card's slot takes AccessGrid's first card. A Seos pair has a
 # second (Apple and Google each get one), which needs an empty slot.
 PAIR_EMPTY_SLOTS = 1
+
+# A recorded card not yet in Millennium's final state: the trigger card a new
+# pass is waiting to overwrite ("write"), and AccessGrid's cards waiting for
+# the import to put them there ("insert").
+UNWRITTEN = ("write", "insert")
 
 
 def _first_valid_email(*candidates: str) -> str:
@@ -263,7 +268,7 @@ class MillenniumUltraAdapter:
 
     @property
     def supports_credential_writeback(self) -> bool:
-        return False
+        return self.mode == MODE_SEOS
 
     @property
     def supports_credential_retirement(self) -> bool:
@@ -287,7 +292,8 @@ class MillenniumUltraAdapter:
         boxes = {(s.facility_code, s.card_number): s.active for s in holder.slots if not s.empty}
         cards = [
             e for e in entries
-            if (e["facility_code"], e["card_number"]) in boxes and e.get("pending") != "write"
+            if (e["facility_code"], e["card_number"]) in boxes
+            and e.get("pending") not in UNWRITTEN
         ]
         if not cards:
             return False
@@ -320,17 +326,22 @@ class MillenniumUltraAdapter:
         pending: list[tuple[str, str, list[dict]]] = []
         for key, entries in PacsCards.all().items():
             pid, _, credential_id = key.partition(":")
-            switches = [e for e in entries if e.get("pending") in ("activate", "deactivate")]
+            changes = [
+                e for e in entries if e.get("pending") in ("activate", "deactivate", "insert")
+            ]
             holder = self._cardholders.get(pid)
-            if not switches or holder is None:
+            if not changes or holder is None:
                 continue
             row = rows.setdefault(
                 pid, import_file.Row(pid, holder.first_name, holder.last_name)
             )
-            for e in switches:
+            for e in changes:
                 row.cells[(e["slot"], "Encoded Card No.")] = e["card_number"]
                 row.cells[(e["slot"], "Facility Code")] = e["facility_code"]
-                row.cells[(e["slot"], "Active")] = str(e["pending"] == "activate")
+                if e["pending"] == "insert":
+                    row.cells.update(self._new_card_cells(e["slot"], entries, holder))
+                else:
+                    row.cells[(e["slot"], "Active")] = str(e["pending"] == "activate")
             pending.append((pid, credential_id, entries))
         if not rows:
             return
@@ -348,15 +359,78 @@ class MillenniumUltraAdapter:
         for pid, credential_id, entries in pending:
             if pid in skipped:
                 continue
+            if any(e.get("pending") == "insert" for e in entries):
+                # AccessGrid's cards are in: the trigger card they replaced
+                # is no longer on the cardholder.
+                entries = [e for e in entries if e.get("pending") != "write"]
             for e in entries:
-                if e.get("pending") in ("activate", "deactivate"):
+                if e.get("pending") in ("activate", "deactivate", "insert"):
                     e["active"] = e.pop("pending") == "activate"
             PacsCards.record(pid, credential_id, entries)
+
+    def _new_card_cells(
+        self, slot: int, entries: list[dict], holder: export.Cardholder
+    ) -> dict[tuple[int, str], str]:
+        """A card we write: the trigger format, the trigger card's access
+        levels, activated now, and inactive until the pass is installed."""
+        trigger = next(
+            (s for s in holder.slots for e in entries
+             if e.get("pending") == "write"
+             and (s.facility_code, s.card_number) == (e["facility_code"], e["card_number"])),
+            None,
+        )
+        now = datetime.now(UTC) + timedelta(seconds=self._offset_seconds)
+        hour = now.hour % 12 or 12
+        return {
+            (slot, "Card Format"): self._trigger_label,
+            (slot, "Activation Date"):
+                f"{now.month}/{now.day}/{now.year} {hour}:{now.minute:02d} "
+                f"{'AM' if now.hour < 12 else 'PM'}",
+            (slot, "Active"): "False",
+            **import_file.access_level_cells(slot, trigger.access_levels if trigger else ()),
+        }
 
     def write_back_credentials(
         self, person_id: str, credential_id: str, identities: list[CredentialIdentity]
     ) -> bool:
-        return False
+        """Record AccessGrid's cards for a pass that has just been issued.
+
+        Only a pass whose trigger card is still waiting to be overwritten is
+        written to; once its cards are in, later offers change nothing. The
+        first card goes into the trigger card's slot, a pair's second into
+        an empty one. finish_cycle sends them.
+        """
+        pid = str(person_id)
+        holder = self._cardholders.get(pid)
+        entries = PacsCards.get(pid, credential_id)
+        trigger = next((e for e in entries if e.get("pending") == "write"), None)
+        if holder is None or trigger is None:
+            return False
+        recorded = {(e["facility_code"], e["card_number"]) for e in entries}
+        new = [
+            i for i in identities
+            if (str(i.site_code), str(i.card_number)) not in recorded
+        ]
+        if not new:
+            return True
+        taken = {
+            e["slot"] for cards in PacsCards.entries_for_person(pid).values() for e in cards
+        }
+        empty = [s.index for s in holder.slots if s.empty and s.index not in taken]
+        slots = [trigger["slot"]] + empty
+        if any(e.get("pending") == "insert" for e in entries) or len(new) > len(slots):
+            logger.warning(
+                "Millennium: no room on cardholder %s for %d card(s) of %s — not writing",
+                pid, len(new), credential_id,
+            )
+            return False
+        for identity, slot in zip(new, slots, strict=False):
+            entries.append({
+                "slot": slot, "facility_code": str(identity.site_code),
+                "card_number": str(identity.card_number), "pending": "insert",
+            })
+        PacsCards.record(pid, credential_id, entries)
+        return True
 
     def retire_credentials(
         self, person_id: str, credential_id: str, identities: list[CredentialIdentity]
@@ -575,7 +649,8 @@ class MillenniumUltraAdapter:
                     PacsCards.record(pid, owner, entries)
                 continue
             recorded = next(
-                (e for entries in mine.values() for e in entries if e["slot"] == slot.index),
+                (e for entries in mine.values() for e in entries
+                 if e["slot"] == slot.index and e.get("pending") != "insert"),
                 None,
             )
             if recorded is not None:
@@ -651,7 +726,7 @@ class MillenniumUltraAdapter:
         trigger_slot = entries[0]["slot"] if entries else None
         # A trigger card still awaiting AccessGrid's card says nothing about
         # the pass: its Active box is the operator's placeholder.
-        ledger = [e for e in entries if not e.get("pending")]
+        ledger = [e for e in entries if e.get("pending") not in UNWRITTEN]
 
         # Once written, the state of the cards we wrote drives the pass.
         #
