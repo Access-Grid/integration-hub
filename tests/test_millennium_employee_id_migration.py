@@ -19,6 +19,9 @@ from agsync.sync import tracking
 from tests._fakes import FakeMillenniumClient, export_row
 
 
+GONE = object()
+
+
 def _adapter(make_millennium_adapter, employee_ids, **kwargs):
     """`employee_ids` maps record id -> the EmployeeID its page holds, or an
     exception to raise when it is read."""
@@ -30,7 +33,11 @@ def _adapter(make_millennium_adapter, employee_ids, **kwargs):
         value = employee_ids[record_id]
         if isinstance(value, Exception):
             raise value
-        return SimpleNamespace(value=lambda name: value if name == "EmployeeID" else "")
+        # A deleted record's page is an empty form: no ID of its own.
+        page_id = "" if value is GONE else record_id
+        return SimpleNamespace(
+            value=lambda name: {"EmployeeID": "" if value is GONE else value, "ID": page_id}.get(name, "")
+        )
 
     client.get_cardholder_form = get_cardholder_form
     return make_millennium_adapter(client, migrated=False, **kwargs), client
@@ -103,6 +110,22 @@ def test_a_record_that_cannot_move_stops_everything(make_millennium_adapter, cap
     # Nothing moved, and it will try again next cycle.
     assert tracking.get("11591", "seos") and tracking.get("11592", "seos")
     assert not get_json(migrate.DONE_KEY)
+
+
+def test_a_deleted_record_does_not_stop_the_others(make_millennium_adapter, caplog):
+    """Seen on-site: a tracked record deleted from Millennium, whose page is
+    an empty form. It is set aside, under a key no export row matches, so
+    phase 3 revokes its pass; everyone else moves."""
+    _track("11591")
+    _track("11652")
+    adapter, _ = _adapter(make_millennium_adapter, {"11591": "33137", "11652": GONE})
+
+    list(adapter.list_people())
+
+    assert tracking.get("33137", "seos").ag_card_id == "card-11591"
+    assert tracking.get("gone:11652", "seos").ag_card_id == "card-11652"
+    assert "cardholder record 11652 no longer exists" in caplog.text
+    assert get_json(migrate.DONE_KEY) is True
 
 
 def test_an_expired_session_is_not_a_migration_failure(make_millennium_adapter):
