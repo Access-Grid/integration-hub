@@ -117,3 +117,26 @@ def test_a_dormant_card_moved_back_is_tracked_again(make_millennium_adapter):
     assert cred.hold is False
     assert "status" not in SeosLedger.get(PID, "seos")[0]
     assert len(SeosLedger.all()) == 1, "and no second pass was issued for it"
+
+
+# --- telling somebody ----------------------------------------------------
+
+
+def test_an_error_is_mailed_once_per_card(make_millennium_adapter, monkeypatch):
+    from agsync import notifications
+
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(notifications, "send_mail", lambda to, subject, body: sent.append((to, body)))
+    monkeypatch.setattr(
+        notifications.PacsConfig, "load", lambda: {"params": {"notify_email": "ops@example.com"}},
+    )
+    notifications.reset_throttle()
+
+    _record(1, "5001")
+    _creds(make_millennium_adapter, _card("9999"))
+    _creds(make_millennium_adapter, _card("9999"))  # the next cycle
+
+    assert len(sent) == 1
+    to, body = sent[0]
+    assert to == "ops@example.com"
+    assert "slot 1 holds card 66/9999, but we recorded 66/5001" in body

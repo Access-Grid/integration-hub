@@ -578,17 +578,18 @@ class MillenniumUltraAdapter:
             )
             if recorded is not None:
                 held.update(cid for cid, entries in mine.items() if recorded in entries)
-                logger.error(
-                    "Millennium: cardholder %s slot %d holds card %s/%s, but we recorded "
-                    "%s/%s there — not issuing",
-                    pid, slot.index, *card, recorded["facility_code"], recorded["card_number"],
+                _card_problem(
+                    pid, card,
+                    f"Millennium: cardholder {pid} slot {slot.index} holds card "
+                    f"{card[0]}/{card[1]}, but we recorded {recorded['facility_code']}/"
+                    f"{recorded['card_number']} there — not issuing",
                 )
                 continue
             if not mine and (self._card_recorded_elsewhere(pid, card) or _tracked_pass(pid)):
-                logger.error(
-                    "Millennium: cardholder %s's trigger card %s/%s does not match what we "
-                    "recorded — not issuing",
-                    pid, *card,
+                _card_problem(
+                    pid, card,
+                    f"Millennium: cardholder {pid}'s trigger card {card[0]}/{card[1]} "
+                    "does not match what we recorded — not issuing",
                 )
                 continue
             empty = [s for s in slots if s.empty]
@@ -727,6 +728,14 @@ class MillenniumUltraAdapter:
                 ],
             },
         )
+
+
+def _card_problem(pid: str, card: tuple[str, str], problem: str) -> None:
+    """A card we will not act on: logged here, and mailed to the operator."""
+    from .... import notifications
+
+    logger.error("%s", problem)
+    notifications.notify_card_problem(f"{pid}:{card[0]}/{card[1]}", problem)
 
 
 def _tracked_pass(pid: str) -> bool:
