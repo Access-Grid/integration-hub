@@ -141,6 +141,33 @@ def _release_card_ids_on_deleted_rows(conn: sqlite3.Connection) -> None:
     )
 
 
+def _legacy_cards_wait_for_install(conn: sqlite3.Connection) -> None:
+    """Record as ours the Active box of cards on never-installed passes.
+
+    Older ledgers did not record the Active box we wrote, and a card we
+    wrote off to wait for its pass's install then read as one an operator
+    switched off, which suspends the pass. Seen on-site: four passes still
+    waiting to be installed would have been suspended, and their cards
+    never switched on.
+
+    Only passes AccessGrid has never reported installed: a card switched off
+    on a live pass is still an operator's decision.
+    """
+    conn.execute(
+        """
+        UPDATE pacs_cards SET active = 0
+         WHERE active IS NULL
+           AND EXISTS (
+               SELECT 1 FROM ag_credentials t
+                WHERE t.pacs_person_id = pacs_cards.pacs_person_id
+                  AND t.pacs_credential_id = pacs_cards.pacs_credential_id
+                  AND t.ag_card_id IS NOT NULL
+                  AND t.last_known_ag_state = 'created'
+           )
+        """
+    )
+
+
 def _drop_abandoned_desfire_rows(conn: sqlite3.Connection) -> None:
     """Remove tracking rows left behind by a spell in DESFire mode.
 
@@ -294,6 +321,7 @@ MIGRATIONS: list[tuple[str, Step]] = [
         "012_last_synced_expiration",
         "ALTER TABLE ag_credentials ADD COLUMN last_synced_expiration TEXT;",
     ),
+    ("013_legacy_cards_wait_for_install", _legacy_cards_wait_for_install),
 ]
 
 
