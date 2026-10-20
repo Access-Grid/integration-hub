@@ -90,7 +90,7 @@ def test_the_page_derives_the_direction_rather_than_reading_stored_params(monkey
     from agsync.sync.engine import derived_pacs_params
 
     monkeypatch.setattr(
-        "agsync.sync.engine.template_protocol", lambda client, tid: "seos",
+        "agsync.sync.engine.template_shape", lambda client, tid: ("seos", False),
     )
     stored = {"vendor": "millennium_ultra", "params": {"base_url": "https://m.test"}}
     assert "mode" not in stored["params"]

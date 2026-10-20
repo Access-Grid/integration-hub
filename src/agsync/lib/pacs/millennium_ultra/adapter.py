@@ -223,6 +223,7 @@ class MillenniumUltraAdapter:
         trigger_card_format: str = "",
         trigger_card_format_label: str = "",
         mode: str = MODE_DESFIRE,
+        pair: bool = False,
         auth_cookie: str = "",
         company_name: str = "",
         time_offset: str = "",
@@ -235,6 +236,10 @@ class MillenniumUltraAdapter:
         self.notify_email = notify_email
         self.trigger_card_format = str(trigger_card_format or "")
         self.mode = MODE_SEOS if mode == MODE_SEOS else MODE_DESFIRE
+        # Whether the AccessGrid template is a pair (Apple + Google). A Seos
+        # pair is two card identities to write back; any other pair shares
+        # the Millennium card's one.
+        self.pair = bool(pair)
         self._offset_seconds = int(time_offset or session.get("time_offset") or 0)
         self._client = MillenniumUltraClient(
             base_url=self.base_url,

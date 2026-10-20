@@ -20,6 +20,7 @@ __all__ = [
     "AccessGridError",
     "build_client",
     "template_protocol",
+    "template_shape",
     "test_connection",
 ]
 
@@ -33,25 +34,30 @@ def build_client(account_id: str, secret_key: str) -> AccessGrid:
     return AccessGrid(account_id=account_id, secret_key=secret_key)
 
 
-def template_protocol(client: AccessGrid, template_id: str) -> str:
-    """The credential technology a card template issues, e.g. "seos".
+def template_shape(client: AccessGrid, template_id: str) -> tuple[str, bool]:
+    """(protocol, is_pair) for a card template, e.g. ("seos", True).
 
-    A template id can name a pair (one Apple template, one Android), in
-    which case both halves carry the same protocol and either will do.
-    Returns "" when it cannot be determined, which callers should treat as
-    "assume the read-only direction" rather than guessing.
+    A template id can name a pair (one Apple template, one Android), which
+    is read back as a list; both halves carry the same protocol. The
+    protocol is "" when it cannot be determined, which callers should treat
+    as "assume the read-only direction" rather than guessing.
     """
     try:
         result = client.console.read_template(template_id)
     except Exception as e:  # noqa: BLE001 — never let this break a sync cycle
         logger.warning("Could not read card template %s: %s", template_id, e)
-        return ""
+        return "", False
     templates = result if isinstance(result, list) else [result]
-    for template in templates:
-        protocol = (getattr(template, "protocol", "") or "").strip().lower()
-        if protocol:
-            return protocol
-    return ""
+    protocol = next(
+        (p for t in templates if (p := (getattr(t, "protocol", "") or "").strip().lower())),
+        "",
+    )
+    return protocol, len(templates) > 1
+
+
+def template_protocol(client: AccessGrid, template_id: str) -> str:
+    """The credential technology a card template issues, e.g. "seos"."""
+    return template_shape(client, template_id)[0]
 
 
 def test_connection(account_id: str, secret_key: str, template_id: str) -> tuple[bool, str]:

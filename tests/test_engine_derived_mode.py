@@ -29,9 +29,9 @@ def _ag_cfg():
     return {"account_id": "a", "api_secret": "s", "template_id": "tpl"}
 
 
-def _with_protocol(monkeypatch, protocol):
+def _with_protocol(monkeypatch, protocol, pair=False):
     monkeypatch.setattr(
-        "agsync.sync.engine.template_protocol", lambda client, tid: protocol,
+        "agsync.sync.engine.template_shape", lambda client, tid: (protocol, pair),
     )
 
 
@@ -138,3 +138,21 @@ def test_a_slow_cycle_still_backs_off():
 
     assert interval(150) > MIN_INTERVAL_S
     assert interval(400) == MAX_INTERVAL_S
+
+
+@pytest.mark.parametrize("pair", [True, False])
+def test_whether_the_template_is_a_pair_is_passed_on(engine, monkeypatch, pair):
+    _with_protocol(monkeypatch, "seos", pair=pair)
+    out = engine._with_derived_mode(object(), _ag_cfg(), _pacs_cfg())
+    assert out["params"]["pair"] is pair
+
+
+def test_a_template_read_back_as_a_list_is_a_pair():
+    from agsync.ag import template_shape
+
+    def client(result):
+        return SimpleNamespace(console=SimpleNamespace(read_template=lambda tid: result))
+
+    seos = SimpleNamespace(protocol="Seos")
+    assert template_shape(client([seos, seos]), "tpl") == ("seos", True)
+    assert template_shape(client(seos), "tpl") == ("seos", False)
