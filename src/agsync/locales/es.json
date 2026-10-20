@@ -79,7 +79,7 @@
   "settings.email_domain.invalid": "Eso no parece un nombre de dominio.",
   "settings.email_domain.label": "Dominio",
   "settings.email_domain.saved": "Dominio de correo guardado. Se ha puesto en cola una sincronización.",
-  "settings.email_domain.subtitle": "Este PACS no guarda direcciones de correo, así que se deriva una por titular con el formato nombre.apellido.<id>@<dominio>. Cambiar el dominio cambia todas las direcciones, y las nuevas se envían a AccessGrid en el siguiente ciclo, incluidos los pases ya emitidos.",
+  "settings.email_domain.subtitle": "Un titular sin un correo electrónico válido recibe uno derivado con el formato nombre.apellido.<Employee ID>@<dominio>. Cambiar el dominio cambia la dirección de los pases emitidos después; un pase ya emitido conserva la dirección a la que se envió.",
   "settings.email_domain.title": "Direcciones de correo sintetizadas",
   "settings.extra_metadata": "Metadatos adicionales de tarjeta",
   "settings.extra_metadata.add_row": "Agregar fila",

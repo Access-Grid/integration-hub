@@ -79,7 +79,7 @@
   "settings.email_domain.invalid": "That does not look like a domain name.",
   "settings.email_domain.label": "Domain",
   "settings.email_domain.saved": "Email domain saved. A sync has been queued.",
-  "settings.email_domain.subtitle": "This PACS stores no email addresses, so one is derived per cardholder as first.last.<record id>@<domain>. Changing the domain changes every address, and the new ones are pushed to AccessGrid on the next cycle — including for passes already issued.",
+  "settings.email_domain.subtitle": "A cardholder with no valid email address gets one derived as first.last.<Employee ID>@<domain>. Changing the domain changes the address for passes issued afterwards; a pass already issued keeps the address it was sent to.",
   "settings.email_domain.title": "Synthesized email addresses",
   "settings.extra_metadata": "Extra card metadata",
   "settings.extra_metadata.add_row": "Add row",

@@ -921,9 +921,9 @@ HELP_TEXT: dict[str, dict[str, str]] = {
     "en": {
         "pacs.millennium_ultra.base_url": "Millennium Ultra login URL (e.g. https://hosted105.mgiaccess.com)",
         "pacs.millennium_ultra.email_domain": "Domain for synthesized email addresses (e.g. cards.example.com)",
-        "pacs.millennium_ultra.notify_email": "Notification email (used when the Millennium session expires)",
-        "pacs.millennium_ultra.mode_desfire": "Your AccessGrid card template issues DESFire, so cards read from Millennium: the facility code and card number on each trigger card are copied out to AccessGrid. Nothing is written back.",
-        "pacs.millennium_ultra.mode_seos": "Your AccessGrid card template issues HID Seos, so cards are written into Millennium: AccessGrid allocates the facility code and card number, and the sync engine writes them into each trigger cardholder's empty card slots.",
+        "pacs.millennium_ultra.notify_email": "Notification email (used when the Millennium session expires, and for cards the sync will not act on)",
+        "pacs.millennium_ultra.mode_desfire": "Your AccessGrid card template issues DESFire, so cards are read from Millennium: the facility code and card number on each trigger card are copied out to AccessGrid. The only thing changed in Millennium is the card's Active box.",
+        "pacs.millennium_ultra.mode_seos": "Your AccessGrid card template issues HID Seos, so cards are written into Millennium: AccessGrid allocates the facility code and card number, and the sync engine writes them over the trigger card, and a pair's second card into an empty slot.",
         "pacs.millennium_ultra.trigger_help": (
             "Millennium Ultra has no API and its login is protected by a "
             "captcha, so this integration works through a session you open "
@@ -931,24 +931,23 @@ HELP_TEXT: dict[str, dict[str, str]] = {
             "hands the session back encrypted. Then choose the card format "
             "that acts as the enrollment trigger — any cardholder holding a "
             "card in that format gets an AccessGrid pass on the next cycle. "
-            "In DESFire mode the card's facility code and number are copied "
-            "out to AccessGrid. In Seos mode AccessGrid mints them and the "
-            "sync engine writes them into the cardholder's empty card slots, "
-            "which is why a cardholder needs two free slots before Seos will "
-            "provision — a phone and a watch install use one each. "
-            "Cardholders here store no email address, so one is synthesized "
-            "from the name and Employee ID against the domain above; hand the "
-            "pass out with the QR code on the Credentials page. Suspending or "
-            "resuming a pass toggles the card's Active box; access levels, "
-            "photos and every other field are left exactly as they are."
+            "Cardholders are matched by Employee ID, so each needs a unique "
+            "one. In DESFire mode the card's facility code and number are "
+            "copied out to AccessGrid. In Seos mode AccessGrid mints them and "
+            "the sync engine writes them over the trigger card, with the "
+            "trigger card's access levels; a pair's second card needs one "
+            "empty slot. A cardholder with no valid email address gets one "
+            "synthesized from their name and Employee ID against the domain "
+            "above. Suspending or resuming a pass switches the card's Active "
+            "box."
         ),
     },
     "es": {
         "pacs.millennium_ultra.base_url": "URL de inicio de sesión de Millennium Ultra (p. ej. https://hosted105.mgiaccess.com)",
         "pacs.millennium_ultra.email_domain": "Dominio para las direcciones de correo sintetizadas (p. ej. cards.example.com)",
-        "pacs.millennium_ultra.notify_email": "Correo de notificación (se usa cuando caduca la sesión de Millennium)",
-        "pacs.millennium_ultra.mode_desfire": "Su plantilla de AccessGrid emite DESFire, así que las tarjetas se leen desde Millennium: el código de instalación y el número de cada tarjeta disparadora se copian a AccessGrid. No se escribe nada de vuelta.",
-        "pacs.millennium_ultra.mode_seos": "Su plantilla de AccessGrid emite HID Seos, así que las tarjetas se escriben en Millennium: AccessGrid asigna el código de instalación y el número de tarjeta, y el motor de sincronización los escribe en las ranuras libres de cada titular disparador.",
+        "pacs.millennium_ultra.notify_email": "Correo de notificación (se usa cuando caduca la sesión de Millennium y para las tarjetas sobre las que la sincronización no actúa)",
+        "pacs.millennium_ultra.mode_desfire": "Su plantilla de AccessGrid emite DESFire, así que las tarjetas se leen desde Millennium: el código de instalación y el número de cada tarjeta disparadora se copian a AccessGrid. Lo único que se cambia en Millennium es la casilla Activa de la tarjeta.",
+        "pacs.millennium_ultra.mode_seos": "Su plantilla de AccessGrid emite HID Seos, así que las tarjetas se escriben en Millennium: AccessGrid asigna el código de instalación y el número de tarjeta, y el motor de sincronización los escribe sobre la tarjeta disparadora, y la segunda tarjeta de un par en una ranura libre.",
         "pacs.millennium_ultra.trigger_help": (
             "Millennium Ultra no tiene API y su inicio de sesión está "
             "protegido por un captcha, por lo que esta integración funciona "
@@ -957,19 +956,16 @@ HELP_TEXT: dict[str, dict[str, str]] = {
             "cifrada. Después elija el formato de tarjeta que actúa como "
             "disparador de inscripción: cualquier titular con una tarjeta de "
             "ese formato recibirá un pase de AccessGrid en el siguiente "
-            "ciclo. En modo DESFire se copian a AccessGrid el código de "
-            "instalación y el número de la tarjeta. En modo Seos, AccessGrid "
-            "los genera y el motor de sincronización los escribe en las "
-            "ranuras de tarjeta libres del titular; por eso Seos exige dos "
-            "ranuras libres, ya que una instalación en teléfono y otra en "
-            "reloj usan una cada una. Aquí los titulares no guardan correo "
-            "electrónico, así que se sintetiza uno a partir del nombre y del "
-            "identificador con el dominio indicado arriba; entregue el pase "
-            "con el código QR de la página Credenciales. Suspender o "
-            "reanudar un pase cambia la casilla Activa de la tarjeta; los "
-            "niveles de acceso, las fotos y todos los demás campos quedan "
-            "intactos."
+            "ciclo. Los titulares se identifican por su Employee ID, así que "
+            "cada uno necesita uno único. En modo DESFire se copian a "
+            "AccessGrid el código de instalación y el número de la tarjeta. "
+            "En modo Seos, AccessGrid los genera y el motor de sincronización "
+            "los escribe sobre la tarjeta disparadora, con los niveles de "
+            "acceso de esa tarjeta; la segunda tarjeta de un par necesita una "
+            "ranura libre. Un titular sin un correo electrónico válido recibe "
+            "uno sintetizado a partir de su nombre y su Employee ID con el "
+            "dominio indicado arriba. Suspender o reanudar un pase cambia la "
+            "casilla Activa de la tarjeta."
         ),
     },
 }
-
