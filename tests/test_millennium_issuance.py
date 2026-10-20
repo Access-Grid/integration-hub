@@ -66,8 +66,8 @@ def test_rows_7_8_a_new_trigger_card_beside_a_recorded_one_is_a_new_pass(
 ):
     _record(1, "5001")
     creds = _creds(make_millennium_adapter, _card("5001"), _card("1"))
-    assert set(creds) == {"seos", "seos-2"}
-    assert creds["seos-2"].allocate_identity is True
+    assert set(creds) == {"seos", "card"}
+    assert creds["card"].allocate_identity is True
 
 
 def test_rows_9_11_a_card_recorded_on_somebody_else_is_an_error(
@@ -94,13 +94,13 @@ def test_rows_9_11_a_tracked_pass_with_no_card_recorded_is_an_error(
 def test_row_12_a_new_cardholder_with_a_new_trigger_card_gets_a_pass(make_millennium_adapter):
     """Recorded at once, so the next cycle sees a known card, not a new one."""
     [cred] = _creds(make_millennium_adapter, _card("1", active=False)).values()
-    assert cred.id == "seos"
+    assert cred.id == "card"
     # The marker's own unticked box is a placeholder, not the pass's state.
     assert cred.status is CredentialStatus.ACTIVE
-    assert SeosLedger.get(PID, "seos") == [
+    assert SeosLedger.get(PID, "card") == [
         {"slot": 1, "card_number": "1", "facility_code": "66", "pending": "write"},
     ]
-    assert set(_creds(make_millennium_adapter, _card("1", active=False))) == {"seos"}
+    assert set(_creds(make_millennium_adapter, _card("1", active=False))) == {"card"}
 
 
 def test_a_card_moved_out_of_the_trigger_format_is_dormant_and_held(make_millennium_adapter):

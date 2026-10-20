@@ -117,4 +117,4 @@ def test_the_id_no_longer_depends_on_the_slot(
         list(adapter.list_people())
         return [c.id for c in adapter.list_credentials("11587")]
 
-    assert _ids_for(1) == _ids_for(2) == _ids_for(3) == ["seos"]
+    assert _ids_for(1) == _ids_for(2) == _ids_for(3) == ["card"]

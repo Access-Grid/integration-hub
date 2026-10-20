@@ -117,7 +117,7 @@ def test_an_empty_export_fails_the_cycle(make_millennium_adapter):
 def test_slot_with_the_trigger_format_enrolls(make_millennium_adapter):
     adapter = _adapter(make_millennium_adapter, export_row("33137", slots=[_card()]))
     [cred] = _creds(adapter)
-    assert cred.id == "slot1"
+    assert cred.id == "card"
     assert cred.card_number == "1234"
     assert cred.site_code == "66"
     assert cred.trigger_active is True
@@ -172,7 +172,7 @@ def test_seos_credential_asks_accessgrid_to_allocate(make_millennium_adapter, se
         make_millennium_adapter, export_row("33137", slots=[_card()]), mode=MODE_SEOS,
     )
     [cred] = _creds(adapter)
-    assert cred.id == "seos"
+    assert cred.id == "card"
     assert cred.allocate_identity is True
     # Nothing of ours may reach AccessGrid, or it would not allocate.
     assert cred.card_number == ""

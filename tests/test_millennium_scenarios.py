@@ -81,7 +81,7 @@ def test_s1_an_enrolled_cardholder_is_provisioned_with_no_identity_of_ours(
     from agsync.sync.phases import phase1_provision
 
     adapter, _ = _adapter(make_millennium_adapter, _enrolled())
-    cred = _credential(adapter)
+    cred = _credential(adapter, "card")
     assert cred.trigger_active is True
     assert cred.allocate_identity is True
 

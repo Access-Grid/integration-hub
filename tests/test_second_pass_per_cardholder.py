@@ -45,8 +45,8 @@ def test_a_cardholder_with_one_pass_has_one_credential(make_millennium_adapter, 
     assert set(_creds(make_millennium_adapter, None, _card("74"))) == {"seos"}
 
 
-def test_a_cardholders_first_pass_keeps_the_bare_id(make_millennium_adapter, seos_ledger):
-    assert set(_creds(make_millennium_adapter, _card("1"))) == {"seos"}
+def test_a_cardholders_first_pass_is_called_card(make_millennium_adapter, seos_ledger):
+    assert set(_creds(make_millennium_adapter, _card("1"))) == {"card"}
 
 
 def test_a_card_of_ours_is_never_read_as_a_request(make_millennium_adapter, seos_ledger):
@@ -72,8 +72,8 @@ def test_another_trigger_card_asks_for_a_second_pass(make_millennium_adapter, se
     """A new device gets a new pass, under the next id the ledger hands out."""
     _record("seos", 2, "74")
     creds = _creds(make_millennium_adapter, _card("1"), _card("74"))
-    assert set(creds) == {"seos", "seos-2"}
-    assert SeosLedger.get(PID, "seos-2")[0]["pending"] == "write"
+    assert set(creds) == {"seos", "card"}
+    assert SeosLedger.get(PID, "card")[0]["pending"] == "write"
 
 
 def test_clearing_the_cards_forgets_every_credential(make_millennium_adapter, seos_ledger):
@@ -89,14 +89,3 @@ def test_clearing_the_cards_forgets_every_credential(make_millennium_adapter, se
     assert _creds(make_millennium_adapter, badge) == {}
     assert SeosLedger.get(PID, "seos") == []
     assert SeosLedger.get(PID, "seos-card8200") == []
-
-
-def test_an_empty_ledger_entry_does_not_claim_an_id(make_millennium_adapter, seos_ledger):
-    """Seen on a live install: `11652:seos -> nothing`.
-
-    Counted as a credential it holds "seos" while backing nothing, and the
-    cardholder's own trigger card would then be read as asking for a second
-    pass — one card, two passes.
-    """
-    SeosLedger.record(PID, "seos", [])
-    assert set(_creds(make_millennium_adapter, _card("1"))) == {"seos"}

@@ -64,8 +64,9 @@ logger = logging.getLogger(__name__)
 MODE_DESFIRE = "desfire"
 MODE_SEOS = "seos"
 
-# The credential id for a cardholder's Seos pass.
-SEOS_CREDENTIAL_ID = "seos"
+# The id a new pass is recorded under, then "card-2", "card-3"... Passes
+# recorded before keep the id they were issued under ("seos", "slot2").
+NEW_CREDENTIAL_ID = "card"
 
 # The trigger card's slot takes AccessGrid's first card. A Seos pair has a
 # second (Apple and Google each get one), which needs an empty slot.
@@ -360,14 +361,19 @@ class MillenniumUltraAdapter:
             # credential.
             raise PacsRecordUnavailable(f"cardholder {pid} is not in this cycle's export")
         slots = list(row.slots)
-        triggers = [s for s in slots if self._is_trigger(s)]
         if self.mode == MODE_DESFIRE:
-            return [self._desfire_credential(pid, s) for s in triggers]
-        if not triggers and pid in self._ours:
-            # Drop the record of any pass whose cards are all gone. A card
-            # still there in another format is dormant, not gone.
+            self._adopt_slot_ids(pid, slots)
+        if (
+            self.mode == MODE_SEOS
+            and pid in self._ours
+            and not any(self._is_trigger(s) for s in slots)
+        ):
+            # Drop the record of any pass whose cards are all gone, which is
+            # what lets phase 3 delete it. A card still there in another
+            # format is dormant, not gone. A Seos pass with a trigger card
+            # left is kept, and reads as suspended.
             self._forget_if_nothing_remains(pid, slots)
-        return self._seos_credentials(pid, slots)
+        return self._credentials(pid, slots)
 
     # -- writes: none until Millennium's import is wired in ----------------
 
@@ -498,9 +504,46 @@ class MillenniumUltraAdapter:
             and not slot.empty
         )
 
-    def _desfire_credential(self, pid: str, slot: Slot) -> Credential:
+    def _adopt_slot_ids(self, pid: str, slots: list[Slot]) -> None:
+        """Record the cards behind DESFire passes tracked from before pacs_cards.
+
+        Those passes were keyed by slot ("slot2"). Each is recorded once,
+        under that id, against the card now in that slot. A slot that is
+        empty by now held a card that was deleted, and its pass is revoked.
+        """
+        from ....db.connection import execute
+
+        if SeosLedger.entries_for_person(pid):
+            return
+        for row in execute(
+            "SELECT pacs_credential_id FROM ag_credentials WHERE pacs_person_id = ? "
+            "AND status != 'deleted' AND pacs_credential_id LIKE 'slot%'",
+            (pid,),
+        ):
+            slot = next(
+                (s for s in slots
+                 if f"slot{s.index}" == row["pacs_credential_id"] and self._is_trigger(s)),
+                None,
+            )
+            if slot is not None:
+                SeosLedger.record(pid, row["pacs_credential_id"], [{
+                    "slot": slot.index,
+                    "facility_code": slot.facility_code,
+                    "card_number": slot.card_number,
+                }])
+
+    def _desfire_credential(
+        self, pid: str, credential_id: str, entries: list[dict], slots: list[Slot]
+    ) -> Credential | None:
+        """A pass carrying the Millennium card's own identity and state."""
+        cards = {(e["facility_code"], e["card_number"]) for e in entries}
+        slot = next(
+            (s for s in slots if (s.facility_code, s.card_number) in cards), None
+        )
+        if slot is None:
+            return None
         return Credential(
-            id=f"slot{slot.index}",
+            id=credential_id,
             person_id=pid,
             card_number=slot.card_number,
             site_code=slot.facility_code,
@@ -515,7 +558,7 @@ class MillenniumUltraAdapter:
             raw={"slot": slot.index},
         )
 
-    def _seos_credentials(self, pid: str, slots: list[Slot]) -> list[Credential]:
+    def _credentials(self, pid: str, slots: list[Slot]) -> list[Credential]:
         """One credential per pass this cardholder holds or has just asked for.
 
         Each trigger-format slot is checked against `pacs_cards`:
@@ -525,9 +568,9 @@ class MillenniumUltraAdapter:
           * the slot is recorded with a different card → error, no pass
           * the card is recorded on somebody else, or we track a pass for a
             cardholder we hold no card of → error, no pass
-          * otherwise a new pass. Its trigger card is recorded now, awaiting
-            the write of AccessGrid's card; phase 1 issues it, and keeps
-            trying until it has.
+          * otherwise a new pass. Its trigger card is recorded now (in Seos,
+            awaiting the write of AccessGrid's card); phase 1 issues it, and
+            keeps trying until it has.
 
         A pass is *held* — left exactly as it is by every phase — while one
         of its cards sits on the cardholder in another format (dormant), or
@@ -592,8 +635,9 @@ class MillenniumUltraAdapter:
                     "does not match what we recorded — not issuing",
                 )
                 continue
+            seos = self.mode == MODE_SEOS
             empty = [s for s in slots if s.empty]
-            needed = PAIR_EMPTY_SLOTS if self.pair else 0
+            needed = PAIR_EMPTY_SLOTS if seos and self.pair else 0
             if len(empty) < needed:
                 logger.info(
                     "Millennium: skipping cardholder %s — a pass needs %d free card "
@@ -601,18 +645,30 @@ class MillenniumUltraAdapter:
                     pid, needed, len(empty),
                 )
                 continue
-            credential_id, n = SEOS_CREDENTIAL_ID, 2
+            credential_id, n = NEW_CREDENTIAL_ID, 2
             while credential_id in mine:
-                credential_id, n = f"{SEOS_CREDENTIAL_ID}-{n}", n + 1
+                credential_id, n = f"{NEW_CREDENTIAL_ID}-{n}", n + 1
             mine[credential_id] = [{
                 "slot": slot.index, "facility_code": card[0], "card_number": card[1],
-                "pending": "write",
+                **({"pending": "write"} if seos else {}),
             }]
             SeosLedger.record(pid, credential_id, mine[credential_id])
 
+        build = self._seos_credential if self.mode == MODE_SEOS else self._desfire_credential
         out: list[Credential] = []
         for credential_id, entries in sorted(mine.items()):
-            credential = self._seos_credential(pid, credential_id, entries, slots)
+            credential = build(pid, credential_id, entries, slots)
+            if credential is None and credential_id in held:
+                # Its slot holds a card we did not record: reported as it
+                # was, so the hold keeps its pass alive.
+                credential = Credential(
+                    id=credential_id, person_id=pid, trigger_active=True,
+                    card_number=entries[0]["card_number"],
+                    site_code=entries[0]["facility_code"],
+                )
+            elif credential is None:
+                # A DESFire card that is gone: phase 3 revokes its pass.
+                SeosLedger.forget(pid, credential_id)
             if credential is not None:
                 out.append(replace(credential, hold=credential_id in held))
         return out

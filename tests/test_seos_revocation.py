@@ -24,8 +24,8 @@ def _card(number, active=True, card_format=TRIGGER):
     }
 
 
-def _status(make_millennium_adapter, *, slot2=None, slot3=None, marker=False):
-    """The `seos` credential's status for a cardholder holding these cards.
+def _status(make_millennium_adapter, *, slot2=None, slot3=None, marker=False, cid="seos"):
+    """The `cid` credential's status for a cardholder holding these cards.
 
     Slot 1 is the cardholder's own badge, in another format unless `marker`.
     A trigger-format card we did not write is somebody asking for a pass.
@@ -35,8 +35,8 @@ def _status(make_millennium_adapter, *, slot2=None, slot3=None, marker=False):
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
     list(adapter.list_people())
     creds = {c.id: c for c in adapter.list_credentials(PID)}
-    assert "seos" in creds, f"no seos credential in {sorted(creds)}"
-    return creds["seos"].status
+    assert cid in creds, f"no {cid} credential in {sorted(creds)}"
+    return creds[cid].status
 
 
 def _ledger(*numbers, slots=(2, 3)):
@@ -114,4 +114,4 @@ def test_a_card_moved_to_another_slot_is_still_recognised(
 def test_before_anything_is_written_the_pass_is_active(make_millennium_adapter, seos_ledger):
     # Nothing in the ledger yet: the pass has just been issued and its cards
     # are about to be written in. It must not read as revoked.
-    assert _status(make_millennium_adapter, marker=True) is CredentialStatus.ACTIVE
+    assert _status(make_millennium_adapter, marker=True, cid="card") is CredentialStatus.ACTIVE

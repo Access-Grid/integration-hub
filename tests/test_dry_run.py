@@ -201,7 +201,7 @@ def test_reading_still_happens(dry, make_millennium_adapter, seos_ledger):
     adapter = make_millennium_adapter(client, mode=MODE_SEOS)
     list(adapter.list_people())
 
-    assert [c.id for c in adapter.list_credentials(PID)] == ["seos"]
+    assert [c.id for c in adapter.list_credentials(PID)] == ["card"]
 
 
 # =====================================================================
