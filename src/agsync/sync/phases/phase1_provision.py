@@ -73,6 +73,8 @@ def run(
             logger.warning("Phase 1: configuration changed — stopping early")
             break
         for cred in creds:
+            if cred.hold:
+                continue
             if not cred.trigger_active:
                 skipped += 1
                 continue

@@ -86,7 +86,7 @@ def wired(monkeypatch):
         snap = Snapshot()
         snap.ag_cards_by_sync_ref["ref-1"] = [card]
         snap.credentials_by_person["11618"] = [
-            SimpleNamespace(id="seos", status=pacs_status, allocate_identity=True),
+            SimpleNamespace(id="seos", status=pacs_status, allocate_identity=True, hold=False),
         ]
         return snap, _Pacs(), _Ag(card)
     return _build
@@ -152,7 +152,7 @@ def test_phase2_does_not_push_the_hold_back_to_accessgrid(monkeypatch):
     snap.credentials_by_person["11618"] = [
         SimpleNamespace(
             id="seos", status=CredentialStatus.SUSPENDED,
-            allocate_identity=True, trigger_active=True,
+            allocate_identity=True, trigger_active=True, hold=False,
         ),
     ]
 
@@ -187,7 +187,7 @@ def test_a_read_only_pacs_still_reports_a_revocation_before_install(monkeypatch)
     snap.credentials_by_person["p1"] = [
         SimpleNamespace(
             id="tok-1", status=CredentialStatus.SUSPENDED,
-            allocate_identity=False, trigger_active=True,
+            allocate_identity=False, trigger_active=True, hold=False,
         ),
     ]
 

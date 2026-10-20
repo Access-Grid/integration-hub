@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from ..base import (
@@ -144,6 +145,8 @@ class SeosLedger:
                 entry["active"] = bool(r["active"])
             if r["pending"]:
                 entry["pending"] = r["pending"]
+            if r["status"] == "dormant":
+                entry["status"] = "dormant"
             out.setdefault(f"{r['pacs_person_id']}:{r['pacs_credential_id']}", []).append(entry)
         return out
 
@@ -189,13 +192,14 @@ class SeosLedger:
             active = entry["active"] if "active" in entry else known.get((facility_code, card_number))
             db.execute(
                 "INSERT INTO pacs_cards (pacs_person_id, pacs_credential_id, "
-                "slot, facility_code, card_number, active, pending) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "slot, facility_code, card_number, active, pending, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     person_id, credential_id, entry.get("slot"),
                     encrypt(facility_code), encrypt(card_number),
                     int(active) if isinstance(active, bool) else None,
                     entry.get("pending"),
+                    entry.get("status") or "live",
                 ),
             )
 
@@ -357,15 +361,12 @@ class MillenniumUltraAdapter:
             raise PacsRecordUnavailable(f"cardholder {pid} is not in this cycle's export")
         slots = list(row.slots)
         triggers = [s for s in slots if self._is_trigger(s)]
-        if not triggers:
-            if pid in self._ours:
-                # Our own cards carry the trigger format, so a cardholder with
-                # no trigger slot holds none of them; drop the record of them.
-                self._forget_if_nothing_remains(pid, slots)
-            return []
-
         if self.mode == MODE_DESFIRE:
             return [self._desfire_credential(pid, s) for s in triggers]
+        if not triggers and pid in self._ours:
+            # Drop the record of any pass whose cards are all gone. A card
+            # still there in another format is dormant, not gone.
+            self._forget_if_nothing_remains(pid, slots)
         return self._seos_credentials(pid, slots)
 
     # -- writes: none until Millennium's import is wired in ----------------
@@ -527,8 +528,32 @@ class MillenniumUltraAdapter:
           * otherwise a new pass. Its trigger card is recorded now, awaiting
             the write of AccessGrid's card; phase 1 issues it, and keeps
             trying until it has.
+
+        A pass is *held* — left exactly as it is by every phase — while one
+        of its cards sits on the cardholder in another format (dormant), or
+        while its slot holds a card we did not record.
         """
         mine = SeosLedger.entries_for_person(pid)
+        held: set[str] = set()
+        present = {(s.facility_code, s.card_number): s for s in slots if not s.empty}
+        for credential_id, entries in mine.items():
+            changed = False
+            for e in entries:
+                there = present.get((e["facility_code"], e["card_number"]))
+                dormant = there is not None and not self._is_trigger(there)
+                if dormant != (e.get("status") == "dormant"):
+                    e["status"] = "dormant" if dormant else "live"
+                    changed = True
+                    logger.info(
+                        "Millennium: cardholder %s card %s/%s %s the trigger format — %s",
+                        pid, e["facility_code"], e["card_number"],
+                        "left" if dormant else "is back in",
+                        "holding its pass" if dormant else "tracking it again",
+                    )
+                if dormant:
+                    held.add(credential_id)
+            if changed:
+                SeosLedger.record(pid, credential_id, entries)
         for slot in slots:
             if not self._is_trigger(slot):
                 continue
@@ -552,6 +577,7 @@ class MillenniumUltraAdapter:
                 None,
             )
             if recorded is not None:
+                held.update(cid for cid, entries in mine.items() if recorded in entries)
                 logger.error(
                     "Millennium: cardholder %s slot %d holds card %s/%s, but we recorded "
                     "%s/%s there — not issuing",
@@ -587,7 +613,7 @@ class MillenniumUltraAdapter:
         for credential_id, entries in sorted(mine.items()):
             credential = self._seos_credential(pid, credential_id, entries, slots)
             if credential is not None:
-                out.append(credential)
+                out.append(replace(credential, hold=credential_id in held))
         return out
 
     @staticmethod

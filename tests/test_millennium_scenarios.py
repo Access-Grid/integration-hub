@@ -296,7 +296,7 @@ def test_s12_phase_3_deletes_a_pass_whose_card_expired(monkeypatch):
     snap = Snapshot()
     snap.people["11587"] = SimpleNamespace(id="11587", full_name="Accessg Grid", active=True)
     snap.credentials_by_person["11587"] = [SimpleNamespace(
-        id="seos", status=CredentialStatus.ACTIVE, trigger_active=True,
+        id="seos", status=CredentialStatus.ACTIVE, trigger_active=True, hold=False,
         allocate_identity=True,
         deactivate_date=datetime(2020, 1, 2, tzinfo=UTC),
     )]
@@ -318,7 +318,7 @@ def test_s12_a_card_still_in_date_is_left_alone(monkeypatch):
     snap = Snapshot()
     snap.people["11587"] = SimpleNamespace(id="11587", full_name="Accessg Grid", active=True)
     snap.credentials_by_person["11587"] = [SimpleNamespace(
-        id="seos", status=CredentialStatus.ACTIVE, trigger_active=True,
+        id="seos", status=CredentialStatus.ACTIVE, trigger_active=True, hold=False,
         allocate_identity=True,
         deactivate_date=datetime(2099, 1, 1, tzinfo=UTC),
     )]
@@ -340,7 +340,7 @@ def test_s12_a_card_with_no_expiry_is_not_expired(monkeypatch):
     snap = Snapshot()
     snap.people["11587"] = SimpleNamespace(id="11587", full_name="Accessg Grid", active=True)
     snap.credentials_by_person["11587"] = [SimpleNamespace(
-        id="seos", status=CredentialStatus.ACTIVE, trigger_active=True,
+        id="seos", status=CredentialStatus.ACTIVE, trigger_active=True, hold=False,
         allocate_identity=True, deactivate_date=None,
     )]
     deleted: list[str] = []
@@ -369,7 +369,7 @@ def test_s12_expiries_are_rationed_per_cycle(monkeypatch):
             id=row.pacs_person_id, full_name="x", active=True,
         )
         snap.credentials_by_person[row.pacs_person_id] = [SimpleNamespace(
-            id="seos", status=CredentialStatus.ACTIVE, trigger_active=True,
+            id="seos", status=CredentialStatus.ACTIVE, trigger_active=True, hold=False,
             allocate_identity=True,
             deactivate_date=datetime(2020, 1, 2, tzinfo=UTC),
         )]

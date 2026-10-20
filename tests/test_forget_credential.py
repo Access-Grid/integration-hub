@@ -69,13 +69,15 @@ def test_a_new_pass_is_not_suspended_by_the_one_before_it(
 def test_a_recorded_card_still_in_a_slot_is_not_forgotten(
     make_millennium_adapter, seos_ledger
 ):
-    """The guard. Only reachable if an operator changes our card's format.
+    """An operator changed our card's format: the card is dormant, not gone.
 
-    Forgetting here would lose the one fact that makes the card ours.
+    Forgetting it would lose the one fact that makes the card ours, and its
+    pass would be deleted. It is kept, and its pass held as it is.
     """
     _record()
-    assert _read(make_millennium_adapter, _card("1238", card_format=OTHER)) == []
-    assert [e["card_number"] for e in SeosLedger.get(PID, "seos")] == ["1238"]
+    [cred] = _read(make_millennium_adapter, _card("1238", card_format=OTHER))
+    assert cred.hold is True
+    assert SeosLedger.get(PID, "seos")[0]["status"] == "dormant"
 
 
 def test_a_cardholder_we_hold_nothing_on_is_left_alone(

@@ -107,8 +107,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
 
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
-        if cred is None:
-            # Credential gone from PACS → phase 3 territory.
+        if cred is None or cred.hold:
+            # Gone from the PACS → phase 3 territory. Held → left alone.
             continue
 
         # Trigger removed → terminate the AG card.

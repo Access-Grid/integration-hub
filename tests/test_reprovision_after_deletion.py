@@ -79,7 +79,7 @@ def _provision_once(monkeypatch, tracked):
         title="", active=True,
     )
     cred = SimpleNamespace(
-        id="seos", trigger_active=True, status=None, site_code="",
+        id="seos", trigger_active=True, status=None, site_code="", hold=False,
         allocate_identity=True, card_number="", file_data=None,
         activate_date=None, deactivate_date=None,
     )

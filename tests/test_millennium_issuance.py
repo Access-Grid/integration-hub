@@ -51,7 +51,8 @@ def test_rows_3_4_a_different_card_in_a_recorded_slot_is_an_error(
         creds = _creds(make_millennium_adapter, _card("9999"))
     assert "slot 1 holds card 66/9999, but we recorded 66/5001" in caplog.text
     assert set(creds) == {"seos"}, "the recorded pass is reported, nothing new"
-    assert creds["seos"].status is CredentialStatus.SUSPENDED  # its card is gone
+    # Held, not suspended: left alone until somebody looks at the error.
+    assert creds["seos"].hold is True
 
 
 def test_rows_5_6_a_recorded_card_that_moved_slot_is_followed(make_millennium_adapter):
@@ -100,3 +101,19 @@ def test_row_12_a_new_cardholder_with_a_new_trigger_card_gets_a_pass(make_millen
         {"slot": 1, "card_number": "1", "facility_code": "66", "pending": "write"},
     ]
     assert set(_creds(make_millennium_adapter, _card("1", active=False))) == {"seos"}
+
+
+def test_a_card_moved_out_of_the_trigger_format_is_dormant_and_held(make_millennium_adapter):
+    _record(1, "5001")
+    [cred] = _creds(make_millennium_adapter, _card("5001", card_format="Wiegand Card")).values()
+    assert cred.hold is True
+    assert SeosLedger.get(PID, "seos")[0]["status"] == "dormant"
+
+
+def test_a_dormant_card_moved_back_is_tracked_again(make_millennium_adapter):
+    _record(1, "5001")
+    _creds(make_millennium_adapter, _card("5001", card_format="Wiegand Card"))
+    [cred] = _creds(make_millennium_adapter, _card("5001")).values()
+    assert cred.hold is False
+    assert "status" not in SeosLedger.get(PID, "seos")[0]
+    assert len(SeosLedger.all()) == 1, "and no second pass was issued for it"

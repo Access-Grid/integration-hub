@@ -33,6 +33,9 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         person = snapshot.people.get(tracked.pacs_person_id)
         if person is None:
             continue
+        creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
+        if any(c.id == tracked.pacs_credential_id and c.hold for c in creds):
+            continue
 
         changes: dict[str, str] = {}
         if person.full_name and person.full_name != tracked.last_synced_full_name:
