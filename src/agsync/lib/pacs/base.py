@@ -290,6 +290,10 @@ class PacsAdapter(Protocol):
     @property
     def supports_credential_retirement(self) -> bool: ...
 
+    # Optional. Called once per cycle after every phase, for adapters that
+    # record their PACS writes during the phases and send them together.
+    def finish_cycle(self) -> None: ...
+
     def retire_credentials(
         self,
         person_id: str,

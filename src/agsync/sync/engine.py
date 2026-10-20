@@ -463,6 +463,11 @@ class SyncEngine:
                 pacs=pacs,
             )
             result.field_updates = phase6_field_changes.run(snapshot, ag)
+            # Adapters that batch their PACS writes send them now, once the
+            # phases have decided everything this cycle will change.
+            finish = getattr(pacs, "finish_cycle", None)
+            if finish is not None:
+                finish()
         except PacsAuthExpired as e:
             return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)
         except Exception as e:  # noqa: BLE001

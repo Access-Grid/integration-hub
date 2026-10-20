@@ -40,6 +40,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from .... import dryrun
 from ..base import (
     ConnectionResult,
     Credential,
@@ -49,7 +50,7 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
-from . import export, migrate
+from . import export, import_file, migrate
 from .client import (
     ANTIFORGERY_COOKIE_PREFIX,
     COMPANY_COOKIE,
@@ -254,11 +255,11 @@ class MillenniumUltraAdapter:
             self._forget_if_nothing_remains(pid, slots)
         return self._credentials(pid, slots)
 
-    # -- writes: none until Millennium's import is wired in ----------------
+    # -- writes: recorded in pacs_cards, sent by finish_cycle -------------
 
     @property
     def supports_status_writeback(self) -> bool:
-        return False
+        return True
 
     @property
     def supports_credential_writeback(self) -> bool:
@@ -271,7 +272,86 @@ class MillenniumUltraAdapter:
     def update_credential_status(
         self, person_id: str, credential_id: str, status: CredentialStatus
     ) -> bool:
-        return False
+        """Switch the pass's cards' Active boxes, at the end of this cycle.
+
+        Recorded as pending in pacs_cards; finish_cycle sends it. A card we
+        switched on that is now off was switched off by an operator, and is
+        not switched back on.
+        """
+        pid = str(person_id)
+        holder = self._cardholders.get(pid)
+        entries = PacsCards.get(pid, credential_id)
+        if holder is None or not entries:
+            return False
+        want = status is CredentialStatus.ACTIVE
+        boxes = {(s.facility_code, s.card_number): s.active for s in holder.slots if not s.empty}
+        cards = [
+            e for e in entries
+            if (e["facility_code"], e["card_number"]) in boxes and e.get("pending") != "write"
+        ]
+        if not cards:
+            return False
+        if want and any(
+            e.get("active") is True and not boxes[(e["facility_code"], e["card_number"])]
+            for e in cards
+        ):
+            logger.warning(
+                "Millennium: cardholder %s credential %s was switched off in Millennium "
+                "after we switched it on — leaving it off",
+                pid, credential_id,
+            )
+            return False
+        for e in cards:
+            if boxes[(e["facility_code"], e["card_number"])] == want:
+                e["active"] = want
+                e.pop("pending", None)
+            else:
+                e["pending"] = "activate" if want else "deactivate"
+        PacsCards.record(pid, credential_id, entries)
+        return True
+
+    def finish_cycle(self) -> None:
+        """Send this cycle's pending card changes as one import.
+
+        A cardholder the import log skips keeps its changes pending, and is
+        tried again next cycle.
+        """
+        rows: dict[str, import_file.Row] = {}
+        pending: list[tuple[str, str, list[dict]]] = []
+        for key, entries in PacsCards.all().items():
+            pid, _, credential_id = key.partition(":")
+            switches = [e for e in entries if e.get("pending") in ("activate", "deactivate")]
+            holder = self._cardholders.get(pid)
+            if not switches or holder is None:
+                continue
+            row = rows.setdefault(
+                pid, import_file.Row(pid, holder.first_name, holder.last_name)
+            )
+            for e in switches:
+                row.cells[(e["slot"], "Encoded Card No.")] = e["card_number"]
+                row.cells[(e["slot"], "Facility Code")] = e["facility_code"]
+                row.cells[(e["slot"], "Active")] = str(e["pending"] == "activate")
+            pending.append((pid, credential_id, entries))
+        if not rows:
+            return
+        if dryrun.active():
+            dryrun.would("switch Active on %d Millennium cardholder(s): %s",
+                          len(rows), ", ".join(sorted(rows)))
+            return
+
+        skipped: set[str] = set()
+        for imported in import_file.build(list(rows.values())):
+            log = self._client.import_cardholders(imported)
+            for warning in log.warnings:
+                logger.warning("Millennium's import: %s", warning)
+            skipped |= log.skipped()
+        for pid, credential_id, entries in pending:
+            if pid in skipped:
+                continue
+            for e in entries:
+                if e.get("pending") in ("activate", "deactivate"):
+                    e["active"] = e.pop("pending") == "activate"
+            PacsCards.record(pid, credential_id, entries)
 
     def write_back_credentials(
         self, person_id: str, credential_id: str, identities: list[CredentialIdentity]
