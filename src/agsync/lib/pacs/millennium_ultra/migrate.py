@@ -100,6 +100,10 @@ def ensure(adapter) -> None:
     except BaseException:
         db.execute("ROLLBACK")
         raise
+    for record_id, employee_id in sorted(employee_ids.items()):
+        logger.info(
+            "Millennium: cardholder record %s is now Employee ID %s", record_id, employee_id,
+        )
     logger.info(
         "Millennium: moved %d cardholder(s) from record ids to Employee IDs",
         len(employee_ids),

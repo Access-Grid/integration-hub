@@ -234,3 +234,21 @@ def test_the_ledger_stores_card_identity_encrypted():
     [row] = execute("SELECT card_number, facility_code FROM pacs_cards")
     assert "5001" not in row["card_number"] and "66" != row["facility_code"]
     assert PacsCards.get("33137", "seos")[0]["card_number"] == "5001"
+
+
+def test_every_change_to_the_ledger_is_logged(caplog):
+    """So the Logs tab shows what the sync is tracking, card by card."""
+    import logging
+
+    card = {"slot": 1, "card_number": "5001", "facility_code": "66", "pending": "write"}
+    with caplog.at_level(logging.INFO):
+        PacsCards.record("33137", "card", [card])
+        PacsCards.record("33137", "card", [{**card, "slot": 3, "pending": None}])
+        PacsCards.forget("33137", "card")
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Millennium cards:")]
+    assert lines == [
+        "Millennium cards: 33137 card — now tracking card 66/5001 "
+        "(slot 1, waiting for AccessGrid's card to replace it)",
+        "Millennium cards: 33137 card — card 66/5001: moved to slot 3; done",
+        "Millennium cards: 33137 card — no longer tracking card 66/5001",
+    ]

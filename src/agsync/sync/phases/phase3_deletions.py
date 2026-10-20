@@ -34,12 +34,12 @@ from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
-from .writeback import deleted_identities_from_cards
+from .writeback import deleted_identities_from_cards, identities_from_cards
 
 logger = logging.getLogger(__name__)
 
 
-def _expired(cred) -> bool:
+def expired(cred) -> bool:
     """Has this credential passed the date the PACS gave it?
 
     Only ever True on a date the PACS actually stated: a credential with no
@@ -116,7 +116,7 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
             reason = f"person {tracked.pacs_person_id} no longer in PACS"
         elif cred is None:
             reason = f"credential {tracked.pacs_credential_id} no longer on person"
-        elif _expired(cred):
+        elif expired(cred):
             # Whatever the Active box says. A card past its date is not a
             # credential any more, and the pass on the holder's phone is the
             # half the PACS cannot switch off by itself.
@@ -136,6 +136,21 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
         if reason is None:
             continue
 
+        # An expired card's pass is deleted, and the cards we wrote for it
+        # go from the PACS too: re-issuing is then adding a trigger card, as
+        # the first time. Read before the delete, while the pass is listed.
+        expired_cards: list = []
+        if (
+            pacs is not None
+            and getattr(pacs, "supports_credential_retirement", False)
+            and cred is not None
+            and expired(cred)
+        ):
+            expired_cards = snapshot.detailed_cards(
+                ag, tracked.ag_card_id, tracked.pacs_person_id,
+                tracked.pacs_credential_id, tracked.sync_ref,
+            )
+
         try:
             logger.info("  Deleting AG card %s — %s", tracked.ag_card_id, reason)
             if dryrun.active():
@@ -146,6 +161,11 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
                 tracked.pacs_person_id, tracked.pacs_credential_id,
             )
             deleted += 1
+            if expired_cards:
+                pacs.retire_credentials(
+                    tracked.pacs_person_id, tracked.pacs_credential_id,
+                    identities_from_cards(expired_cards),
+                )
         except AccessGridError as e:
             msg = str(e).lower()
             if "not found" in msg or "404" in msg:

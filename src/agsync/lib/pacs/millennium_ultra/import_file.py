@@ -152,13 +152,26 @@ class ImportLog:
     counts: dict[str, int]  # e.g. {"cardholders updated": 1, "cards skipped": 2}
     warnings: list[str]
     errors: list[str]
+    # Every "has been skipped" line, whatever its level: Millennium reports
+    # some skips as Information, e.g. "Card '1328, 2' has been skipped
+    # (Import rule is Only Update)".
+    skips: list[str] = field(default_factory=list)
 
     def skipped(self) -> set[str]:
-        """Employee IDs a warning names: rows, or cards on them, not applied."""
+        """Employee IDs a skip or warning names: rows, or cards on them, not applied."""
         return {
             m.group(1)
-            for w in self.warnings
-            if (m := re.search(r"'Employee ID:([^']*)'", w))
+            for line in (*self.skips, *self.warnings)
+            if (m := re.search(r"'Employee ID:([^']*)'", line))
+        }
+
+    def skipped_cards(self) -> dict[tuple[str, str], str]:
+        """(facility code, card number) -> Millennium's line, for each card it
+        skipped. It names a card as 'number, facility'."""
+        return {
+            (m.group(2).strip(), m.group(1).strip()): line
+            for line in self.skips
+            if (m := re.search(r"Card '([^,']+),\s*([^']+)' has been skipped", line))
         }
 
 
@@ -170,13 +183,16 @@ def parse_log(text: str) -> ImportLog:
     counts: dict[str, int] = {}
     warnings: list[str] = []
     errors: list[str] = []
+    skips: list[str] = []
     for line in text.splitlines():
         if match := _LINE.match(line):
             level, message = match.groups()
+            if "has been skipped" in message:
+                skips.append(message.strip())
             if level == "Warning":
                 warnings.append(message.strip())
             elif level == "Error":
                 errors.append(message.strip())
         elif match := _COUNT.match(line):
             counts[match.group(2)] = int(match.group(1))
-    return ImportLog(counts=counts, warnings=warnings, errors=errors)
+    return ImportLog(counts=counts, warnings=warnings, errors=errors, skips=skips)

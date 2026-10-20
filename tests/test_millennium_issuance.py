@@ -140,3 +140,35 @@ def test_an_error_is_mailed_once_per_card(make_millennium_adapter, monkeypatch):
     to, body = sent[0]
     assert to == "ops@example.com"
     assert "slot 1 holds card 66/9999, but we recorded 66/5001" in body
+
+
+# --- room taken after the pass was recorded ------------------------------
+
+
+def _pair(make_millennium_adapter, *slots) -> dict:
+    client = FakeMillenniumClient(rows=[export_row(PID, slots=slots)])
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS, pair=True)
+    list(adapter.list_people())
+    return {c.id: c for c in adapter.list_credentials(PID)}
+
+
+def test_a_pass_not_yet_issued_waits_when_its_room_is_taken(make_millennium_adapter, caplog):
+    """Seen live: the test card was recorded while slots 2 and 3 were empty,
+    then two other cards were added before any pass was issued."""
+    other = _card("33", card_format="Wiegand Card")
+    assert set(_pair(make_millennium_adapter, _card("1"))) == {"card"}
+    with caplog.at_level(logging.INFO):
+        assert _pair(make_millennium_adapter, _card("1"), other, other) == {}
+    assert f"skipping cardholder {PID} — a pass needs 1 free card slot(s), found 0" in caplog.text
+    assert PacsCards.get(PID, "card"), "still recorded, for when room appears"
+    assert set(_pair(make_millennium_adapter, _card("1"), other)) == {"card"}
+
+
+def test_an_issued_pass_is_reported_whatever_the_room(make_millennium_adapter):
+    other = _card("33", card_format="Wiegand Card")
+    _pair(make_millennium_adapter, _card("1"))
+    tracking.upsert(
+        pacs_person_id=PID, pacs_credential_id="card", ag_card_id="pass-1",
+        full_name="x", employee_id=PID, status="active",
+    )
+    assert set(_pair(make_millennium_adapter, _card("1"), other, other)) == {"card"}

@@ -57,6 +57,16 @@ def test_tracking_and_ledger_move_to_employee_ids(make_millennium_adapter):
     assert get_json(migrate.DONE_KEY) is True
 
 
+def test_each_move_is_logged(make_millennium_adapter, caplog):
+    import logging
+
+    _track("11591")
+    adapter, _ = _adapter(make_millennium_adapter, {"11591": "33137"})
+    with caplog.at_level(logging.INFO):
+        list(adapter.list_people())
+    assert "cardholder record 11591 is now Employee ID 33137" in caplog.text
+
+
 def test_it_runs_once(make_millennium_adapter):
     _track("11591")
     adapter, client = _adapter(make_millennium_adapter, {"11591": "33137"})

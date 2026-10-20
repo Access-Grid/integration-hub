@@ -353,21 +353,32 @@ class MillenniumUltraAdapter:
             return
 
         skipped: set[str] = set()
+        skipped_cards: dict[tuple[str, str], str] = {}
         for imported in import_file.build(list(rows.values())):
             log = self._client.import_cardholders(imported)
-            for warning in log.warnings:
-                logger.warning("Millennium's import: %s", warning)
             skipped |= log.skipped()
+            skipped_cards |= log.skipped_cards()
         for pid, credential_id, entries in pending:
             if pid in skipped:
                 continue
-            if any(e.get("pending") == "insert" for e in entries):
+            taken = False
+            for e in entries:
+                if e.get("pending") not in ("activate", "deactivate", "insert"):
+                    continue
+                card = (e["facility_code"], e["card_number"])
+                if card in skipped_cards:
+                    logger.error(
+                        "Millennium did not take card %s/%s for %s — keeping it to try "
+                        "again: %s",
+                        *card, pid, skipped_cards[card],
+                    )
+                    continue
+                taken = taken or e["pending"] == "insert"
+                e["active"] = e.pop("pending") == "activate"
+            if taken:
                 # AccessGrid's cards are in: the trigger card they replaced
                 # is no longer on the cardholder.
                 entries = [e for e in entries if e.get("pending") != "write"]
-            for e in entries:
-                if e.get("pending") in ("activate", "deactivate", "insert"):
-                    e["active"] = e.pop("pending") == "activate"
             PacsCards.record(pid, credential_id, entries)
 
     def _delete_cards(self) -> None:
@@ -413,13 +424,21 @@ class MillenniumUltraAdapter:
         self, slot: int, entries: list[dict], holder: export.Cardholder
     ) -> dict[tuple[int, str], str]:
         """A card we write: the trigger format, the trigger card's access
-        levels, activated now, and inactive until the pass is installed."""
-        trigger = next(
-            (s for s in holder.slots for e in entries
-             if e.get("pending") == "write"
-             and (s.facility_code, s.card_number) == (e["facility_code"], e["card_number"])),
-            None,
-        )
+        levels, activated now, and inactive until the pass is installed.
+
+        The levels come from the trigger card while it is still there. Once
+        it has been replaced, they come from the card of this pass that took
+        its place, which kept them: a second card that failed and is retried
+        later must not go in with none.
+        """
+        on_holder = {(s.facility_code, s.card_number): s for s in holder.slots if not s.empty}
+        ours = [
+            on_holder[(e["facility_code"], e["card_number"])]
+            for e in sorted(entries, key=lambda e: e.get("pending") != "write")
+            if e.get("pending") != "insert"
+            and (e["facility_code"], e["card_number"]) in on_holder
+        ]
+        trigger = next((c for c in ours if c.access_levels), None)
         now = datetime.now(UTC) + timedelta(seconds=self._offset_seconds)
         hour = now.hour % 12 or 12
         return {
@@ -730,14 +749,7 @@ class MillenniumUltraAdapter:
                 )
                 continue
             seos = self.mode == MODE_SEOS
-            empty = [s for s in slots if s.empty]
-            needed = PAIR_EMPTY_SLOTS if seos and self.pair else 0
-            if len(empty) < needed:
-                logger.info(
-                    "Millennium: skipping cardholder %s — a pass needs %d free card "
-                    "slot(s), found %d",
-                    pid, needed, len(empty),
-                )
+            if not self._has_room(pid, slots):
                 continue
             credential_id, n = NEW_CREDENTIAL_ID, 2
             while credential_id in mine:
@@ -751,6 +763,14 @@ class MillenniumUltraAdapter:
         build = self._seos_credential if self.mode == MODE_SEOS else self._desfire_credential
         out: list[Credential] = []
         for credential_id, entries in sorted(mine.items()):
+            if (
+                all(e.get("pending") == "write" for e in entries)
+                and not _tracked_pass(pid, credential_id)
+                and not self._has_room(pid, slots)
+            ):
+                # Recorded but not issued yet, and the room it was recorded
+                # with has since been taken. It waits until there is room.
+                continue
             credential = build(pid, credential_id, entries, slots)
             if credential is None and credential_id in held:
                 # Its slot holds a card we did not record: reported as it
@@ -766,6 +786,19 @@ class MillenniumUltraAdapter:
             if credential is not None:
                 out.append(replace(credential, hold=credential_id in held))
         return out
+
+    def _has_room(self, pid: str, slots: list[Slot]) -> bool:
+        """Whether a new Seos pair pass has an empty slot for its second card."""
+        needed = PAIR_EMPTY_SLOTS if self.mode == MODE_SEOS and self.pair else 0
+        empty = len([s for s in slots if s.empty])
+        if empty < needed:
+            logger.info(
+                "Millennium: skipping cardholder %s — a pass needs %d free card "
+                "slot(s), found %d",
+                pid, needed, empty,
+            )
+            return False
+        return True
 
     @staticmethod
     def _card_recorded_elsewhere(pid: str, card: tuple[str, str]) -> bool:
@@ -819,6 +852,7 @@ class MillenniumUltraAdapter:
         activate_date = max(starts) if starts else None
 
         status = CredentialStatus.ACTIVE
+        held_for_install = False
         for entry in ledger:
             key = (str(entry.get("facility_code")), str(entry.get("card_number")))
             slot = live.get(key)
@@ -831,6 +865,11 @@ class MillenniumUltraAdapter:
                 status = CredentialStatus.SUSPENDED
                 break
             if not slot.active:
+                if entry.get("active") is False:
+                    # Off because we wrote it off, to wait for the install,
+                    # and nobody has switched it on since: our own hold.
+                    held_for_install = True
+                    continue
                 logger.info(
                     "Millennium: card %s/%s is inactive on cardholder %s — "
                     "suspending the pass",
@@ -838,6 +877,12 @@ class MillenniumUltraAdapter:
                 )
                 status = CredentialStatus.SUSPENDED
                 break
+        if status is CredentialStatus.ACTIVE and held_for_install:
+            logger.info(
+                "Millennium: cardholder %s %s is off until the pass is installed",
+                pid, credential_id,
+            )
+            status = CredentialStatus.AWAITING_INSTALL
         now = datetime.now(UTC)
         if status is CredentialStatus.ACTIVE and activate_date and activate_date > now:
             # Dated to start later. The card should not open a door before
@@ -888,14 +933,16 @@ def _card_problem(pid: str, card: tuple[str, str], problem: str) -> None:
     notifications.notify_card_problem(f"{pid}:{card[0]}/{card[1]}", problem)
 
 
-def _tracked_pass(pid: str) -> bool:
-    """Whether we track a live AccessGrid pass for this cardholder."""
+def _tracked_pass(pid: str, credential_id: str | None = None) -> bool:
+    """Whether we track a live AccessGrid pass for this cardholder (or one pass)."""
     from ....db.connection import execute_one
 
-    return execute_one(
-        "SELECT 1 FROM ag_credentials WHERE pacs_person_id = ? AND status != 'deleted'",
-        (pid,),
-    ) is not None
+    sql = "SELECT 1 FROM ag_credentials WHERE pacs_person_id = ? AND status != 'deleted'"
+    params: tuple = (pid,)
+    if credential_id is not None:
+        sql += " AND pacs_credential_id = ?"
+        params += (credential_id,)
+    return execute_one(sql, params) is not None
 
 
 def _describe(slots: list[Slot]) -> str:

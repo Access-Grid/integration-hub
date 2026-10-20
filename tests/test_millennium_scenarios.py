@@ -310,6 +310,32 @@ def test_s12_phase_3_deletes_a_pass_whose_card_expired(monkeypatch):
     assert deleted == ["pass-1"]
 
 
+def test_s12_an_expired_pass_takes_its_cards_out_of_millennium(
+    monkeypatch, make_millennium_adapter
+):
+    """Re-issuing is then adding a trigger card, as the first time."""
+    _ledger_for_slot2()
+    row = _enrolled(written={2: "5001"}, dates={"expiration": "1/2/2020 12:00:00 AM"})
+    adapter, _ = _adapter(make_millennium_adapter, row)
+    tracked = SimpleNamespace(
+        pacs_person_id="11587", pacs_credential_id="seos", ag_card_id="pass-1",
+        status="active", sync_ref="ref-1",
+    )
+    monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [tracked])
+    monkeypatch.setattr(phase3_deletions.tracking, "mark_deleted", lambda *a, **k: None)
+    snap = Snapshot()
+    snap.people = {p.id: p for p in adapter.list_people()}
+    snap.credentials_by_person["11587"] = list(adapter.list_credentials("11587"))
+    card = SimpleNamespace(id="pass-1", site_code="66", card_number="5001", state="active")
+    snap.ag_cards_by_sync_ref["ref-1"] = [card]
+    ag = SimpleNamespace(access_cards=SimpleNamespace(
+        delete=lambda card_id: None, get=lambda card_id: card,
+    ))
+
+    assert phase3_deletions.run(snap, ag, adapter) == 1
+    assert [e.get("pending") for e in PacsCards.get("11587", "seos")] == ["delete"]
+
+
 def test_s12_a_card_still_in_date_is_left_alone(monkeypatch):
     tracked = SimpleNamespace(
         pacs_person_id="11587", pacs_credential_id="seos", ag_card_id="pass-1",

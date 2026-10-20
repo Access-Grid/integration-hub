@@ -1,6 +1,56 @@
-"""Which Millennium cards each pass rests on, kept in the `pacs_cards` table."""
+"""Which Millennium cards each pass rests on, kept in the `pacs_cards` table.
+
+Every change to it is logged, so the Logs tab shows what the sync is
+tracking, card by card, as it happens.
+"""
 
 from __future__ import annotations
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+# What a pending change means, in the words the log uses.
+_WAITING = {
+    "write": "waiting for AccessGrid's card to replace it",
+    "insert": "waiting to be written into Millennium",
+    "activate": "waiting to be switched on",
+    "deactivate": "waiting to be switched off",
+    "delete": "waiting to be deleted",
+}
+
+
+def _log_changes(person_id: str, credential_id: str, before: list[dict], after: list[dict]) -> None:
+    """One log line per card that was added, changed or dropped."""
+    def card(e: dict) -> tuple[str, str]:
+        return (str(e.get("facility_code")), str(e.get("card_number")))
+
+    old = {card(e): e for e in before}
+    new = {card(e): e for e in after}
+    where = f"Millennium cards: {person_id} {credential_id} —"
+    for key, e in new.items():
+        was = old.get(key)
+        if was is None:
+            notes = [f"slot {e.get('slot')}"]
+            if e.get("pending"):
+                notes.append(_WAITING.get(e["pending"], e["pending"]))
+            if e.get("status") == "dormant":
+                notes.append("dormant")
+            logger.info("%s now tracking card %s/%s (%s)", where, *key, ", ".join(notes))
+            continue
+        changes = []
+        if e.get("slot") != was.get("slot"):
+            changes.append(f"moved to slot {e.get('slot')}")
+        if e.get("pending") != was.get("pending"):
+            changes.append(_WAITING.get(e.get("pending"), e.get("pending")) if e.get("pending") else "done")
+        if (e.get("status") == "dormant") != (was.get("status") == "dormant"):
+            changes.append("dormant" if e.get("status") == "dormant" else "back in the trigger format")
+        if "active" in e and e.get("active") != was.get("active"):
+            changes.append(f"Active recorded {'on' if e['active'] else 'off'}")
+        if changes:
+            logger.info("%s card %s/%s: %s", where, *key, "; ".join(changes))
+    for key in old.keys() - new.keys():
+        logger.info("%s no longer tracking card %s/%s", where, *key)
 
 
 class PacsCards:
@@ -66,9 +116,10 @@ class PacsCards:
         from ....crypto import encrypt
         from ....db.connection import get_db
 
+        before = PacsCards.get(person_id, credential_id)
         known = {
             (str(e["facility_code"]), str(e["card_number"])): e["active"]
-            for e in PacsCards.get(person_id, credential_id)
+            for e in before
             if "active" in e
         }
         deduped: dict[tuple[str, str], dict] = {}
@@ -80,6 +131,7 @@ class PacsCards:
             "DELETE FROM pacs_cards WHERE pacs_person_id = ? AND pacs_credential_id = ?",
             (person_id, credential_id),
         )
+        _log_changes(person_id, credential_id, before, list(deduped.values()))
         for (facility_code, card_number), entry in deduped.items():
             active = entry["active"] if "active" in entry else known.get((facility_code, card_number))
             db.execute(
@@ -118,6 +170,7 @@ class PacsCards:
     def forget(person_id: str, credential_id: str) -> None:
         from ....db.connection import get_db
 
+        _log_changes(person_id, credential_id, PacsCards.get(person_id, credential_id), [])
         get_db().execute(
             "DELETE FROM pacs_cards WHERE pacs_person_id = ? AND pacs_credential_id = ?",
             (person_id, credential_id),

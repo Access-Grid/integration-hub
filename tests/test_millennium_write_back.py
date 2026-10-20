@@ -106,3 +106,40 @@ def test_a_card_waiting_to_be_switched_still_counts_towards_the_pass(make_millen
                                                      "facility_code": "66", "active": False})
     [cred] = adapter.list_credentials(PID)
     assert cred.status is CredentialStatus.SUSPENDED
+
+
+def test_a_card_millennium_skipped_stays_pending_and_is_an_error(make_millennium_adapter, caplog):
+    """Seen live: the import skipped the pair's second card, and it was
+    marked done anyway."""
+    import logging
+
+    adapter, client = _adapter(make_millennium_adapter, MARKER, pair=True)
+    client.import_cardholders = lambda imported: ImportLog(
+        {}, [], [], skips=["Card '5002, 66' has been skipped (Import rule is Only Update)"],
+    )
+    cid = _issued(adapter)
+    adapter.write_back_credentials(
+        PID, cid, [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
+    )
+    with caplog.at_level(logging.ERROR):
+        adapter.finish_cycle()
+    assert "Millennium did not take card 66/5002 for 33137" in caplog.text
+    by_card = {e["card_number"]: e for e in PacsCards.get(PID, cid)}
+    assert by_card["5002"]["pending"] == "insert", "tried again next cycle"
+    assert "pending" not in by_card["5001"]
+
+
+def test_a_retried_second_card_copies_the_levels_from_the_first(make_millennium_adapter):
+    """Seen live: the second card was skipped once, and on the retry the
+    trigger card was gone, so it went in with no access levels."""
+    first = {"card_number": "5001", "facility_code": "66", "card_format": "HID 37",
+             "active": False, "access_levels": ["MASTER 1"]}
+    adapter, client = _adapter(make_millennium_adapter, first, pair=True)
+    PacsCards.record(PID, "card", [
+        {"slot": 1, "card_number": "5001", "facility_code": "66", "active": False},
+        {"slot": 2, "card_number": "5002", "facility_code": "66", "pending": "insert"},
+    ])
+    adapter.finish_cycle()
+    row = _row(client.imports[0])
+    assert row["Card2EncodedCardNo."] == "5002"
+    assert row["Card2AccessLevel1"] == "MASTER 1"

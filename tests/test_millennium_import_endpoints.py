@@ -127,3 +127,33 @@ def test_a_refused_start_raises(importer):
     client, _ = importer(started=False)
     with pytest.raises(MillenniumError, match="refused to start the import"):
         client.import_cardholders(_file())
+
+
+def test_what_was_sent_and_millenniums_log_are_logged(importer, caplog):
+    import logging
+
+    client, _ = importer()
+    with caplog.at_level(logging.INFO):
+        client.import_cardholders(_file())
+    assert "Millennium import: sending 1 cardholder(s) (22344), rule 2, with columns EmployeeID," in caplog.text
+    assert "Millennium import log: 0 cardholders added" in caplog.text
+    assert "Millennium import log: " in caplog.text and "Summary:" in caplog.text
+
+
+def test_an_import_that_adds_a_card_may_add(importer):
+    """Rule 2 refuses a card in an empty slot, so a new card needs rule 3."""
+    client, seen = importer()
+    cells = {(2, "Card Format"): "HID 37", (2, "Encoded Card No."): "5001", (2, "Facility Code"): "66"}
+    [imported] = build([Row("22344", "King", "Bunsen", cells)])
+    client.import_cardholders(imported)
+    assert json.loads(seen[2].content)["rule"] == 3
+
+
+def test_an_added_cardholder_is_an_error(importer, caplog):
+    import logging
+
+    added = SUCCESS_LOG.replace("0 cardholders added", "1 cardholders added")
+    client, _ = importer(log=added)
+    with caplog.at_level(logging.ERROR):
+        client.import_cardholders(_file())
+    assert "Millennium import added 1 cardholder(s)" in caplog.text

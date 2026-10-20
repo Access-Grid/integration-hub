@@ -52,7 +52,17 @@ def template_shape(client: AccessGrid, template_id: str) -> tuple[str, bool]:
         (p for t in templates if (p := (getattr(t, "protocol", "") or "").strip().lower())),
         "",
     )
-    return protocol, len(templates) > 1
+    pair = len(templates) > 1
+    logger.info(
+        "AccessGrid template %s: %s, %s (%s)",
+        template_id, protocol or "protocol unknown",
+        "a pair" if pair else "not a pair",
+        ", ".join(
+            f"{getattr(t, 'id', '')} {getattr(t, 'platform', '') or 'no platform'}"
+            for t in templates
+        ),
+    )
+    return protocol, pair
 
 
 def template_protocol(client: AccessGrid, template_id: str) -> str:

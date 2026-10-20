@@ -150,6 +150,13 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             )
             continue
 
+        # A card the PACS holds off only until the pass is installed is the
+        # sync's own hold, not anyone revoking it: nothing to push. Seen live
+        # when it was pushed: the holder installed the pass, and this phase
+        # suspended it before phase 4 could switch the card on.
+        if cred.status == CredentialStatus.AWAITING_INSTALL:
+            continue
+
         desired = "active" if cred.status == CredentialStatus.ACTIVE else "suspended"
         if ag_state == desired:
             continue

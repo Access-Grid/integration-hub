@@ -86,8 +86,14 @@ EXPORT_POLL_INTERVAL_S = 1.0
 IMPORT_OPERATION = "CardholdersImport"
 IMPORT_FILENAME = "agsync-import.csv"
 # "Only update matched records - do not add new": a wrong Employee ID can
-# never create a cardholder.
+# never create a cardholder. Millennium applies it to cards too, so it also
+# refuses a card in an empty slot.
 IMPORT_RULE_UPDATE_ONLY = 2
+# "Update existing records when matched - plus add new": used only for an
+# import that adds a card, which is the only kind that carries a Card Format
+# column. Every row names a cardholder this sync's export just listed, so no
+# cardholder should ever be added; the log is checked for it.
+IMPORT_RULE_UPDATE_AND_ADD = 3
 
 # The cardholder search screen's form, as it posts a search by Employee ID:
 # every field it sends, with the values it sends for "no criterion".
@@ -505,6 +511,16 @@ class MillenniumUltraClient:
         job, then read its log. A skipped row is a warning in the log, not a
         failure here; an error in the log is.
         """
+        adds_cards = any(f["ID"] == import_file.FIELD_IDS["Card Format"] for f in imported.fields)
+        rule = IMPORT_RULE_UPDATE_AND_ADD if adds_cards else IMPORT_RULE_UPDATE_ONLY
+        lines = imported.csv.splitlines()
+        logger.info(
+            "Millennium import: sending %d cardholder(s) (%s), rule %d, with columns %s",
+            len(lines) - 1,
+            ", ".join(line.split(",", 1)[0] for line in lines[1:]),
+            rule,
+            lines[0] if lines else "",
+        )
         token = self._page_token("/DatabaseFunctions/ImportCardholders")
         self._pace()
         response = self._http.post(
@@ -530,7 +546,7 @@ class MillenniumUltraClient:
             "/DatabaseFunctions/ImportCardholders/ImportCardholdersNow",
             {
                 "format": 1,
-                "rule": IMPORT_RULE_UPDATE_ONLY,
+                "rule": rule,
                 "HeaderIncluded": True,
                 "ImportNewDropDownEntries": False,
                 "Filename": IMPORT_FILENAME,
@@ -545,9 +561,19 @@ class MillenniumUltraClient:
         if not context:
             raise MillenniumError("Import finished without naming its log")
 
-        log = import_file.parse_log(
-            self._get(f"/DatabaseFunctions/ImportCardholders/GetImportLogFile/{context}").text
-        )
+        text = self._get(f"/DatabaseFunctions/ImportCardholders/GetImportLogFile/{context}").text
+        # Millennium's own account of the import, word for word: it is the
+        # only record of what it did with each row.
+        for line in text.splitlines():
+            if line.strip():
+                logger.info("Millennium import log: %s", line.strip())
+        log = import_file.parse_log(text)
+        if log.counts.get("cardholders added", 0):
+            logger.error(
+                "Millennium import added %d cardholder(s). It should only ever update "
+                "existing ones — check the import log above and the cardholders it names",
+                log.counts["cardholders added"],
+            )
         if log.errors:
             raise MillenniumError(f"Millennium's import failed: {'; '.join(log.errors)}")
         return log

@@ -156,3 +156,16 @@ def test_a_template_read_back_as_a_list_is_a_pair():
     seos = SimpleNamespace(protocol="Seos")
     assert template_shape(client([seos, seos]), "tpl") == ("seos", True)
     assert template_shape(client(seos), "tpl") == ("seos", False)
+
+
+def test_the_template_and_whether_it_is_a_pair_are_logged(caplog):
+    import logging
+
+    from agsync.ag import template_shape
+
+    apple = SimpleNamespace(id="t-ios", platform="apple", protocol="seos")
+    google = SimpleNamespace(id="t-android", platform="google", protocol="seos")
+    client = SimpleNamespace(console=SimpleNamespace(read_template=lambda tid: [apple, google]))
+    with caplog.at_level(logging.INFO):
+        template_shape(client, "tpl-1")
+    assert "AccessGrid template tpl-1: seos, a pair (t-ios apple, t-android google)" in caplog.text

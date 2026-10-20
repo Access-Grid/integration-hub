@@ -130,3 +130,16 @@ def test_access_levels_map_to_millenniums_field_ids():
     ids = {f["UserColumnName"]: f["ID"] for f in imported.fields}
     assert ids["Card3AccessLevel1"] == 200
     assert ids["Card3AccessLevel10ExpirationDate"] == 721
+
+
+def test_a_skipped_card_is_read_whatever_the_level():
+    """Live: an Information line, naming the card rather than the person."""
+    log = parse_log(
+        "10/20/2026 5:11:37 PM | Information | Card '1328, 2' has been skipped "
+        "(Import rule is Only Update)\n"
+        "10/20/2026 5:11:37 PM | Information | Summary:\n"
+        "  0 cards added\n"
+        "  1 cards skipped (see reasons above)\n"
+    )
+    assert list(log.skipped_cards()) == [("2", "1328")]
+    assert log.counts["cards skipped"] == 1
