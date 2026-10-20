@@ -57,6 +57,58 @@ def _seos_credential_id_drops_the_slot(conn: sqlite3.Connection) -> None:
     )
 
 
+def _seos_ledger_becomes_pacs_cards(conn: sqlite3.Connection) -> None:
+    """Move the Seos ledger out of its settings blob into `pacs_cards`.
+
+    One row per card we wrote into the PACS, so each card can carry its own
+    state: whether it is still tracked, the Active box we last knew, and a
+    change waiting for the next import. The card's identity is encrypted, as
+    it was in the blob, so rows are matched in Python rather than by SQL.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS pacs_cards (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            pacs_person_id     TEXT NOT NULL,
+            pacs_credential_id TEXT NOT NULL,
+            slot               INTEGER,
+            facility_code      TEXT NOT NULL,  -- encrypted
+            card_number        TEXT NOT NULL,  -- encrypted
+            -- 'live', or 'dormant' while the card is out of the trigger format
+            status             TEXT NOT NULL DEFAULT 'live',
+            -- the Active box as we last wrote or saw it; NULL when unknown
+            active             INTEGER,
+            -- a change waiting for the next import
+            pending            TEXT,
+            updated_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_pacs_cards_person ON pacs_cards(pacs_person_id);
+        """
+    )
+    from ..crypto import decrypt, encrypt
+
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = 'millennium_seos_slots'"
+    ).fetchone()
+    if row is None:
+        return
+    for key, entries in json.loads(decrypt(row[0])).items():
+        person, _, credential = key.partition(":")
+        for entry in entries:
+            active = entry.get("active")
+            conn.execute(
+                "INSERT INTO pacs_cards (pacs_person_id, pacs_credential_id, "
+                "slot, facility_code, card_number, active) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    person, credential, entry.get("slot"),
+                    encrypt(str(entry.get("facility_code"))),
+                    encrypt(str(entry.get("card_number"))),
+                    int(active) if isinstance(active, bool) else None,
+                ),
+            )
+    conn.execute("DELETE FROM settings WHERE key = 'millennium_seos_slots'")
+
+
 def _pacs_session_is_keyed_by_vendor(conn: sqlite3.Connection) -> None:
     """Move the captured browser session under a vendor-keyed name.
 
@@ -237,6 +289,7 @@ MIGRATIONS: list[tuple[str, Step]] = [
     ),
     # Nothing writes to it any more: saves are giving way to Millennium's import.
     ("010_drop_failed_saves", "DROP TABLE IF EXISTS failed_saves;"),
+    ("011_seos_ledger_becomes_pacs_cards", _seos_ledger_becomes_pacs_cards),
 ]
 
 

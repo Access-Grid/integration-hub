@@ -28,7 +28,6 @@ DONE_KEY = "millennium_keyed_by_employee_id"
 def ensure(adapter) -> None:
     """Run the migration unless it already has; raise until it succeeds."""
     from ....settings_store import PacsConfig, get_json, set_json
-    from .adapter import SeosLedger
 
     if get_json(DONE_KEY):
         return
@@ -42,8 +41,9 @@ def ensure(adapter) -> None:
     db = get_db()
     record_ids = {
         row["pacs_person_id"]
-        for row in db.execute("SELECT DISTINCT pacs_person_id FROM ag_credentials")
-    } | {key.partition(":")[0] for key in SeosLedger.all()}
+        for table in ("ag_credentials", "pacs_cards")
+        for row in db.execute(f"SELECT DISTINCT pacs_person_id FROM {table}")
+    }
 
     employee_ids: dict[str, str] = {}
     problems = 0
@@ -79,24 +79,22 @@ def ensure(adapter) -> None:
             "Millennium; nothing syncs until they are"
         )
 
-    ledger = SeosLedger.all()
-    moved_ledger: dict[str, list] = {}
-    for key, entries in ledger.items():
-        record_id, _, credential_id = key.partition(":")
-        moved_ledger[f"{employee_ids[record_id]}:{credential_id}"] = entries
-
     db.execute("BEGIN")
     try:
         # Through a prefix, so a record id that equals somebody's Employee ID
         # is never overwritten mid-move.
-        db.execute("UPDATE ag_credentials SET pacs_person_id = 'migrating:' || pacs_person_id")
+        for table in ("ag_credentials", "pacs_cards"):
+            db.execute(f"UPDATE {table} SET pacs_person_id = 'migrating:' || pacs_person_id")
         for record_id, employee_id in employee_ids.items():
             db.execute(
                 "UPDATE ag_credentials SET pacs_person_id = ?, employee_id = ? "
                 "WHERE pacs_person_id = ?",
                 (employee_id, employee_id, f"migrating:{record_id}"),
             )
-        set_json(SeosLedger.KEY, moved_ledger)
+            db.execute(
+                "UPDATE pacs_cards SET pacs_person_id = ? WHERE pacs_person_id = ?",
+                (employee_id, f"migrating:{record_id}"),
+            )
         set_json(DONE_KEY, True)
         db.execute("COMMIT")
     except BaseException:

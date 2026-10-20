@@ -118,6 +118,24 @@ def _tracking(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def _ledger(conn: sqlite3.Connection, key: str | None) -> tuple[dict[str, Any], str]:
+    """The cards we wrote, keyed "person:credential". From `pacs_cards` once
+    migration 011 has moved them there, else from the older settings blob."""
+    if _rows(conn, "SELECT name FROM sqlite_master WHERE name = 'pacs_cards'"):
+        rows = _rows(conn, "SELECT * FROM pacs_cards ORDER BY pacs_person_id, slot")
+        if rows and key is None:
+            return {}, "cards are stored, but no encryption key was found to read them"
+        ledger: dict[str, Any] = {}
+        try:
+            for r in rows:
+                ledger.setdefault(f"{r['pacs_person_id']}:{r['pacs_credential_id']}", []).append({
+                    "slot": r["slot"],
+                    "card_number": _decrypt(r["card_number"], key),
+                    "facility_code": _decrypt(r["facility_code"], key),
+                    "status": r["status"],
+                })
+        except Exception as e:  # noqa: BLE001 — reported, never raised
+            return {}, f"could not decrypt the cards: {type(e).__name__}: {e}"
+        return ledger, ""
     row = next(
         iter(_rows(conn, f"SELECT value FROM settings WHERE key = '{_SEOS_LEDGER_KEY}'")),
         None,

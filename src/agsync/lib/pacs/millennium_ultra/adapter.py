@@ -110,108 +110,117 @@ def synthesize_email(first: str, last: str, employee_id: str, domain: str) -> st
 
 
 class SeosLedger:
-    """Which Millennium slots hold the AccessGrid-allocated cards.
+    """Which Millennium slots hold the AccessGrid-allocated cards: the
+    `pacs_cards` table, one row per card.
 
     In Seos mode the card does not exist in Millennium until we write it, so
     there is nothing on the cardholder that says "this slot belongs to
     AccessGrid". Stamping a marker into a customer-visible field would be a
     side effect on their data, so we keep the mapping on our side instead.
+
+    Entries are read back as {"slot", "card_number", "facility_code"}, plus
+    "active" when the Active box we last knew is recorded. The card number
+    and facility code are stored encrypted.
     """
 
-    KEY = "millennium_seos_slots"
-
     @staticmethod
-    def _load_all() -> dict[str, list[dict]]:
-        from ....settings_store import get_json
+    def _entries(where: str = "", params: tuple = ()) -> dict[str, list[dict]]:
+        from ....crypto import decrypt
+        from ....db.connection import execute
 
-        return get_json(SeosLedger.KEY) or {}
-
-    @staticmethod
-    def _save_all(data: dict[str, list[dict]]) -> None:
-        from ....settings_store import set_json
-
-        set_json(SeosLedger.KEY, data)
-
-    @staticmethod
-    def _key(person_id: str, credential_id: str) -> str:
-        return f"{person_id}:{credential_id}"
+        out: dict[str, list[dict]] = {}
+        for r in execute(
+            f"SELECT * FROM pacs_cards {where} "
+            "ORDER BY pacs_person_id, pacs_credential_id, slot",
+            params,
+        ):
+            entry = {
+                "slot": r["slot"],
+                "card_number": decrypt(r["card_number"]),
+                "facility_code": decrypt(r["facility_code"]),
+            }
+            if r["active"] is not None:
+                entry["active"] = bool(r["active"])
+            out.setdefault(f"{r['pacs_person_id']}:{r['pacs_credential_id']}", []).append(entry)
+        return out
 
     @staticmethod
     def all() -> dict[str, list[dict]]:
-        """The whole ledger, keyed "person_id:credential_id"."""
-        return SeosLedger._load_all()
+        """Every recorded card, keyed "person_id:credential_id"."""
+        return SeosLedger._entries()
 
     @staticmethod
     def get(person_id: str, credential_id: str) -> list[dict]:
-        return SeosLedger._load_all().get(SeosLedger._key(person_id, credential_id), [])
+        return SeosLedger._entries(
+            "WHERE pacs_person_id = ? AND pacs_credential_id = ?",
+            (person_id, credential_id),
+        ).get(f"{person_id}:{credential_id}", [])
 
     @staticmethod
     def record(person_id: str, credential_id: str, entries: list[dict]) -> None:
-        """Replace the recorded slots, keeping one entry per physical card.
+        """Replace a credential's recorded cards, one row per physical card.
 
         A card that was deleted in Millennium gets rewritten into a fresh
-        slot, so the same facility code + card number can be recorded twice
-        over a credential's life; the later slot is the live one.
+        slot, so the same facility code + card number can be offered twice
+        over a credential's life; the later slot is the live one. The Active
+        box we last knew survives a re-record of the same card.
         """
+        from ....crypto import encrypt
+        from ....db.connection import get_db
+
+        known = {
+            (str(e["facility_code"]), str(e["card_number"])): e["active"]
+            for e in SeosLedger.get(person_id, credential_id)
+            if "active" in e
+        }
         deduped: dict[tuple[str, str], dict] = {}
         for entry in entries:
             deduped[(str(entry.get("facility_code")), str(entry.get("card_number")))] = entry
 
-        data = SeosLedger._load_all()
-        key = SeosLedger._key(person_id, credential_id)
-        # What we last wrote to a card's Active box survives a re-record of
-        # the same card. Recording happens whenever the slots are rewritten,
-        # and dropping the flag there would quietly return the install gate
-        # to overruling whoever unticked it.
-        known = {
-            (str(e.get("facility_code")), str(e.get("card_number"))): e["active"]
-            for e in data.get(key, [])
-            if "active" in e
-        }
-        for card, entry in deduped.items():
-            if "active" not in entry and card in known:
-                entry["active"] = known[card]
-        data[key] = list(deduped.values())
-        SeosLedger._save_all(data)
+        db = get_db()
+        db.execute(
+            "DELETE FROM pacs_cards WHERE pacs_person_id = ? AND pacs_credential_id = ?",
+            (person_id, credential_id),
+        )
+        for (facility_code, card_number), entry in deduped.items():
+            active = entry["active"] if "active" in entry else known.get((facility_code, card_number))
+            db.execute(
+                "INSERT INTO pacs_cards (pacs_person_id, pacs_credential_id, "
+                "slot, facility_code, card_number, active) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    person_id, credential_id, entry.get("slot"),
+                    encrypt(facility_code), encrypt(card_number),
+                    int(active) if isinstance(active, bool) else None,
+                ),
+            )
 
     @staticmethod
     def entries_for_person(person_id: str) -> dict[str, list[dict]]:
-        """Every credential recorded for a cardholder, keyed by credential id.
-
-        A cardholder can hold more than one Seos pass, and each has its own
-        entry. Returned together because deciding what a cardholder has, and
-        what is being asked for, needs all of them at once.
-        """
-        prefix = f"{person_id}:"
+        """Every credential recorded for a cardholder, keyed by credential id."""
         return {
-            key[len(prefix):]: entries
-            for key, entries in SeosLedger._load_all().items()
-            if key.startswith(prefix)
+            key.partition(":")[2]: entries
+            for key, entries in SeosLedger._entries(
+                "WHERE pacs_person_id = ?", (person_id,)
+            ).items()
         }
 
     @staticmethod
     def cards_for_person(person_id: str) -> set[tuple[str, str]]:
-        """Every card recorded for a cardholder, across all their credentials.
-
-        One cardholder can hold more than one Seos credential, and a card
-        belonging to any of them is still ours. Asked per credential — which
-        is right for "has this one been revoked" — it is wrong for "is this
-        card somebody's marker", because another credential's card answers no.
-        """
-        prefix = f"{person_id}:"
+        """Every card recorded for a cardholder, across all their credentials."""
         return {
-            (str(e.get("facility_code")), str(e.get("card_number")))
-            for key, entries in SeosLedger._load_all().items()
-            if key.startswith(prefix)
+            (str(e["facility_code"]), str(e["card_number"]))
+            for entries in SeosLedger.entries_for_person(person_id).values()
             for e in entries
         }
 
     @staticmethod
     def forget(person_id: str, credential_id: str) -> None:
-        data = SeosLedger._load_all()
-        if data.pop(SeosLedger._key(person_id, credential_id), None) is not None:
-            SeosLedger._save_all(data)
+        from ....db.connection import get_db
 
+        get_db().execute(
+            "DELETE FROM pacs_cards WHERE pacs_person_id = ? AND pacs_credential_id = ?",
+            (person_id, credential_id),
+        )
 
 
 class MillenniumUltraAdapter:

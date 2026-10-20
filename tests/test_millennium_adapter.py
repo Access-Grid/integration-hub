@@ -223,3 +223,12 @@ def test_ledger_keeps_one_entry_per_physical_card(seos_ledger):
     assert SeosLedger.get("33137", "seos") == [
         {"slot": 3, "card_number": "5001", "facility_code": "66"},
     ]
+
+
+def test_the_ledger_stores_card_identity_encrypted():
+    from agsync.db.connection import execute
+
+    SeosLedger.record("33137", "seos", [{"slot": 2, "card_number": "5001", "facility_code": "66"}])
+    [row] = execute("SELECT card_number, facility_code FROM pacs_cards")
+    assert "5001" not in row["card_number"] and "66" != row["facility_code"]
+    assert SeosLedger.get("33137", "seos")[0]["card_number"] == "5001"
