@@ -290,6 +290,10 @@ MIGRATIONS: list[tuple[str, Step]] = [
     # Nothing writes to it any more: saves are giving way to Millennium's import.
     ("010_drop_failed_saves", "DROP TABLE IF EXISTS failed_saves;"),
     ("011_seos_ledger_becomes_pacs_cards", _seos_ledger_becomes_pacs_cards),
+    (
+        "012_last_synced_expiration",
+        "ALTER TABLE ag_credentials ADD COLUMN last_synced_expiration TEXT;",
+    ),
 ]
 
 

@@ -168,6 +168,7 @@ def test_s9_a_renamed_cardholder_is_pushed_to_accessgrid(monkeypatch):
         pacs_person_id="11587", pacs_credential_id="seos", ag_card_id="pass-1",
         status="active", last_synced_full_name="Accessg Grid",
         last_synced_email="a@b.test", last_synced_phone="", last_synced_title="",
+        last_synced_expiration=None,
     )
     monkeypatch.setattr(phase6_field_changes.tracking, "all_tracked", lambda: [tracked])
     monkeypatch.setattr(

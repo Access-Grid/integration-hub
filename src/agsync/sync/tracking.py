@@ -52,6 +52,8 @@ class TrackedCredential:
     retry_count: int
     # Our own reference for this issue, echoed in the card's metadata.
     sync_ref: str = ""
+    # The expiry last pushed to (or found on) the pass; None until recorded.
+    last_synced_expiration: str | None = None
 
 
 def _row_to_tracked(row: Any) -> TrackedCredential:
@@ -70,6 +72,9 @@ def _row_to_tracked(row: Any) -> TrackedCredential:
         sync_error=row["sync_error"],
         retry_count=row["retry_count"] or 0,
         sync_ref=(row["sync_ref"] if "sync_ref" in row.keys() else "") or "",
+        last_synced_expiration=(
+            row["last_synced_expiration"] if "last_synced_expiration" in row.keys() else None
+        ),
     )
 
 
@@ -229,19 +234,21 @@ def update_field_tracking(
     email: str,
     phone: str,
     title: str,
+    expiration: str = "",
 ) -> None:
     now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
         """
         UPDATE ag_credentials
-           SET last_synced_full_name = ?,
-               last_synced_email     = ?,
-               last_synced_phone     = ?,
-               last_synced_title     = ?,
-               updated_at            = ?
+           SET last_synced_full_name  = ?,
+               last_synced_email      = ?,
+               last_synced_phone      = ?,
+               last_synced_title      = ?,
+               last_synced_expiration = ?,
+               updated_at             = ?
          WHERE pacs_person_id = ? AND pacs_credential_id = ?
         """,
-        (full_name, email, phone, title, now, pacs_person_id, pacs_credential_id),
+        (full_name, email, phone, title, expiration, now, pacs_person_id, pacs_credential_id),
     )
 
 

@@ -9,7 +9,10 @@ guarantee). A row should be deleted if any of these are true:
     phase 2 — we leave that path here as a no-op)
 
 Safety: if the snapshot has zero people, abort the phase. That's almost
-certainly a transient PACS error and we don't want to nuke every card.
+certainly a transient PACS error and we don't want to nuke every card. And
+if it has under MIN_COMPLETE_FRACTION of the people the last complete read
+had, nobody is revoked for being missing this cycle: a read that short is
+far likelier to be partial than a real mass departure.
 
 The phase then runs a second pass in the opposite direction. Where the
 first treats the PACS as the truth and removes what it no longer holds,
@@ -56,6 +59,11 @@ MAX_RETIREMENTS_PER_CYCLE = 25
 # a whole population at once. Rationed for the same reason provisioning is.
 MAX_EXPIRIES_PER_CYCLE = 25
 
+# A read with fewer people than this share of the last complete one revokes
+# nobody for being missing. The last complete read's size is kept here.
+MIN_COMPLETE_FRACTION = 0.3
+_LAST_COMPLETE_KEY = "last_complete_people_count"
+
 
 def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> int:
     logger.info("Phase 3: Checking for deletions")
@@ -63,6 +71,19 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
     if not snapshot.people:
         logger.warning("Phase 3: PACS returned 0 people — skipping deletions for safety")
         return 0
+
+    from ...settings_store import get_json, set_json
+
+    previous = get_json(_LAST_COMPLETE_KEY) or 0
+    complete = len(snapshot.people) >= previous * MIN_COMPLETE_FRACTION
+    if complete:
+        set_json(_LAST_COMPLETE_KEY, len(snapshot.people))
+    else:
+        logger.error(
+            "Phase 3: the PACS returned %d people against %d in the last complete "
+            "read — under %d%%, so nobody is revoked for being missing this cycle",
+            len(snapshot.people), previous, int(MIN_COMPLETE_FRACTION * 100),
+        )
 
     deleted = 0
     expired_this_cycle = 0
@@ -89,6 +110,8 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
             continue
 
         reason: str | None = None
+        if not complete and (person is None or cred is None):
+            continue
         if person is None:
             reason = f"person {tracked.pacs_person_id} no longer in PACS"
         elif cred is None:
