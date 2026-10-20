@@ -323,6 +323,9 @@ class MillenniumUltraAdapter:
         A cardholder the import log skips keeps its changes pending, and is
         tried again next cycle.
         """
+        # Deletes first: the import below records its cards from the ledger
+        # as read here, and read before a delete it put the deleted card back.
+        self._delete_cards()
         rows: dict[str, import_file.Row] = {}
         pending: list[tuple[str, str, list[dict]]] = []
         for key, entries in PacsCards.all().items():
@@ -344,7 +347,6 @@ class MillenniumUltraAdapter:
                 else:
                     row.cells[(e["slot"], "Active")] = str(e["pending"] == "activate")
             pending.append((pid, credential_id, entries))
-        self._delete_cards()
         if not rows:
             return
         if dryrun.active():

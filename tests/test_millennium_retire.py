@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from agsync.lib.pacs.base import CredentialIdentity
 from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, PacsCards
+from agsync.lib.pacs.millennium_ultra.import_file import ImportLog
 from agsync.sync.phases.writeback import deleted_identities_from_cards
 from tests._fakes import FakeMillenniumClient, export_row
 
@@ -40,6 +41,24 @@ def test_a_retired_card_is_deleted_at_the_end_of_the_cycle(make_millennium_adapt
     adapter.finish_cycle()
     assert client.deleted == [(PID, "66", "5001")]
     assert PacsCards.get(PID, "card") == []
+
+
+def test_a_deleted_card_stays_forgotten_when_its_pass_is_also_imported(
+    make_millennium_adapter,
+):
+    """Seen live: one half of a pair deleted, the other switched on in the
+    same cycle. The import wrote the deleted card back into the ledger, and
+    the next sync reported it gone and the slot as holding the wrong card."""
+    other = {"card_number": "5002", "facility_code": "66", "card_format": "HID 37"}
+    adapter, client = _adapter(make_millennium_adapter, CARD, other)
+    PacsCards.record(PID, "card", [
+        {"slot": 1, "card_number": "5001", "facility_code": "66", "pending": "delete"},
+        {"slot": 2, "card_number": "5002", "facility_code": "66", "pending": "activate"},
+    ])
+    client.import_cardholders = lambda f: ImportLog({}, [], [])
+    adapter.finish_cycle()
+    assert client.deleted == [(PID, "66", "5001")]
+    assert [e["card_number"] for e in PacsCards.get(PID, "card")] == ["5002"]
 
 
 def test_a_card_already_gone_is_forgotten_without_a_request(make_millennium_adapter):
