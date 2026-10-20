@@ -9,6 +9,10 @@ Each tracked record's page is read once for its Employee ID, then every key
 moves in one transaction. Until that has fully succeeded the cycle fails, so
 nothing runs against half-moved keys. After it, no page is read again.
 
+A record that no longer exists in Millennium cannot move. Its rows are
+keyed `gone:<record id>`, which no export row matches, so phase 3 revokes its
+pass as it would for any deleted cardholder.
+
 It also fills in the trigger format's display name, which older installs
 never stored.
 """
@@ -46,16 +50,29 @@ def ensure(adapter) -> None:
     }
 
     employee_ids: dict[str, str] = {}
+    gone: list[str] = []
     problems = 0
     for record_id in sorted(record_ids):
         try:
-            employee_id = adapter._client.get_cardholder_form(record_id).value("EmployeeID").strip()
+            form = adapter._client.get_cardholder_form(record_id)
         except MillenniumAuthError:
             raise
         except Exception as e:  # noqa: BLE001 — reported, and the migration waits
             logger.error("Millennium: cannot read cardholder %s to migrate it: %s", record_id, e)
             problems += 1
             continue
+        page_id = form.value("ID").strip()
+        if page_id != record_id:
+            # Millennium answers a deleted record with an empty cardholder
+            # form rather than an error; a real one carries its own id.
+            logger.warning(
+                "Millennium: cardholder record %s no longer exists (its page has ID %r) — "
+                "its pass will be revoked like any deleted cardholder's",
+                record_id, page_id,
+            )
+            gone.append(record_id)
+            continue
+        employee_id = form.value("EmployeeID").strip()
         if not employee_id:
             logger.error("Millennium: cardholder %s has no Employee ID to migrate to", record_id)
             problems += 1
@@ -95,6 +112,12 @@ def ensure(adapter) -> None:
                 "UPDATE pacs_cards SET pacs_person_id = ? WHERE pacs_person_id = ?",
                 (employee_id, f"migrating:{record_id}"),
             )
+        for record_id in gone:
+            for table in ("ag_credentials", "pacs_cards"):
+                db.execute(
+                    f"UPDATE {table} SET pacs_person_id = ? WHERE pacs_person_id = ?",
+                    (f"gone:{record_id}", f"migrating:{record_id}"),
+                )
         set_json(DONE_KEY, True)
         db.execute("COMMIT")
     except BaseException:
