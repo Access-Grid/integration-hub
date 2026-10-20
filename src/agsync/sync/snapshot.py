@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..ag import AccessGrid
+from ..ag import AccessGrid, list_cards
 from ..lib.pacs import Credential, PacsAdapter, PacsRecordUnavailable, Person
 
 logger = logging.getLogger(__name__)
@@ -207,7 +207,7 @@ def build_snapshot(
 
     logger.info("Fetching AG cards for template %s", template_id)
     try:
-        cards = ag.access_cards.list(template_id=template_id)
+        cards = list_cards(ag, template_id)
     except Exception as e:  # noqa: BLE001
         logger.error("Failed to list AG cards: %s", e)
         cards = []
