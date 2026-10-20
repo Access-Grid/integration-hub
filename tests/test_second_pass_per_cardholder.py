@@ -13,7 +13,7 @@ on the card's CardID, which the export does not carry.
 from __future__ import annotations
 
 from agsync.lib.pacs.base import CredentialStatus
-from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, SeosLedger
+from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, PacsCards
 from tests._fakes import FakeMillenniumClient, export_row
 
 TRIGGER = "HID 37"
@@ -35,21 +35,21 @@ def _creds(make_millennium_adapter, *slots) -> dict:
 
 
 def _record(credential_id, slot, number):
-    SeosLedger.record(PID, credential_id, [
+    PacsCards.record(PID, credential_id, [
         {"slot": slot, "card_number": number, "facility_code": "99"},
     ])
 
 
-def test_a_cardholder_with_one_pass_has_one_credential(make_millennium_adapter, seos_ledger):
+def test_a_cardholder_with_one_pass_has_one_credential(make_millennium_adapter):
     _record("seos", 2, "74")
     assert set(_creds(make_millennium_adapter, None, _card("74"))) == {"seos"}
 
 
-def test_a_cardholders_first_pass_is_called_card(make_millennium_adapter, seos_ledger):
+def test_a_cardholders_first_pass_is_called_card(make_millennium_adapter):
     assert set(_creds(make_millennium_adapter, _card("1"))) == {"card"}
 
 
-def test_a_card_of_ours_is_never_read_as_a_request(make_millennium_adapter, seos_ledger):
+def test_a_card_of_ours_is_never_read_as_a_request(make_millennium_adapter):
     """Our cards carry the trigger format, so only the ledger can tell."""
     _record("seos", 2, "74")
     _record("seos-card8200", 3, "90")
@@ -58,7 +58,7 @@ def test_a_card_of_ours_is_never_read_as_a_request(make_millennium_adapter, seos
 
 
 def test_a_second_pass_is_suspended_on_its_own_cards_only(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     """One pass going bad must not take the other with it."""
     _record("seos", 2, "74")
@@ -68,15 +68,15 @@ def test_a_second_pass_is_suspended_on_its_own_cards_only(
     assert creds["seos-card8200"].status is CredentialStatus.SUSPENDED
 
 
-def test_another_trigger_card_asks_for_a_second_pass(make_millennium_adapter, seos_ledger):
+def test_another_trigger_card_asks_for_a_second_pass(make_millennium_adapter):
     """A new device gets a new pass, under the next id the ledger hands out."""
     _record("seos", 2, "74")
     creds = _creds(make_millennium_adapter, _card("1"), _card("74"))
     assert set(creds) == {"seos", "card"}
-    assert SeosLedger.get(PID, "card")[0]["pending"] == "write"
+    assert PacsCards.get(PID, "card")[0]["pending"] == "write"
 
 
-def test_clearing_the_cards_forgets_every_credential(make_millennium_adapter, seos_ledger):
+def test_clearing_the_cards_forgets_every_credential(make_millennium_adapter):
     """Not just the first.
 
     An entry left behind outlives the pass it described, and would suspend
@@ -87,5 +87,5 @@ def test_clearing_the_cards_forgets_every_credential(make_millennium_adapter, se
     # The operator deletes every trigger card; an unrelated badge remains.
     badge = _card("5", facility="45", card_format="Wiegand Card")
     assert _creds(make_millennium_adapter, badge) == {}
-    assert SeosLedger.get(PID, "seos") == []
-    assert SeosLedger.get(PID, "seos-card8200") == []
+    assert PacsCards.get(PID, "seos") == []
+    assert PacsCards.get(PID, "seos-card8200") == []

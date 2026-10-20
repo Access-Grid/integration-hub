@@ -58,6 +58,7 @@ from .client import (
     MillenniumUltraClient,
 )
 from .export import Slot
+from .pacs_cards import PacsCards
 
 logger = logging.getLogger(__name__)
 
@@ -109,128 +110,6 @@ def synthesize_email(first: str, last: str, employee_id: str, domain: str) -> st
     parts = [re.sub(r"[^a-z0-9]", "", (p or "").lower()) for p in (first, last)]
     local = ".".join([p for p in parts if p] + [str(employee_id)])
     return f"{local}@{domain}"
-
-
-class SeosLedger:
-    """Which Millennium slots hold the AccessGrid-allocated cards: the
-    `pacs_cards` table, one row per card.
-
-    In Seos mode the card does not exist in Millennium until we write it, so
-    there is nothing on the cardholder that says "this slot belongs to
-    AccessGrid". Stamping a marker into a customer-visible field would be a
-    side effect on their data, so we keep the mapping on our side instead.
-
-    Entries are read back as {"slot", "card_number", "facility_code"}, plus
-    "active" when the Active box we last knew is recorded and "pending" when
-    a change awaits the next import. The card number and facility code are
-    stored encrypted.
-    """
-
-    @staticmethod
-    def _entries(where: str = "", params: tuple = ()) -> dict[str, list[dict]]:
-        from ....crypto import decrypt
-        from ....db.connection import execute
-
-        out: dict[str, list[dict]] = {}
-        for r in execute(
-            f"SELECT * FROM pacs_cards {where} "
-            "ORDER BY pacs_person_id, pacs_credential_id, slot",
-            params,
-        ):
-            entry = {
-                "slot": r["slot"],
-                "card_number": decrypt(r["card_number"]),
-                "facility_code": decrypt(r["facility_code"]),
-            }
-            if r["active"] is not None:
-                entry["active"] = bool(r["active"])
-            if r["pending"]:
-                entry["pending"] = r["pending"]
-            if r["status"] == "dormant":
-                entry["status"] = "dormant"
-            out.setdefault(f"{r['pacs_person_id']}:{r['pacs_credential_id']}", []).append(entry)
-        return out
-
-    @staticmethod
-    def all() -> dict[str, list[dict]]:
-        """Every recorded card, keyed "person_id:credential_id"."""
-        return SeosLedger._entries()
-
-    @staticmethod
-    def get(person_id: str, credential_id: str) -> list[dict]:
-        return SeosLedger._entries(
-            "WHERE pacs_person_id = ? AND pacs_credential_id = ?",
-            (person_id, credential_id),
-        ).get(f"{person_id}:{credential_id}", [])
-
-    @staticmethod
-    def record(person_id: str, credential_id: str, entries: list[dict]) -> None:
-        """Replace a credential's recorded cards, one row per physical card.
-
-        A card that was deleted in Millennium gets rewritten into a fresh
-        slot, so the same facility code + card number can be offered twice
-        over a credential's life; the later slot is the live one. The Active
-        box we last knew survives a re-record of the same card.
-        """
-        from ....crypto import encrypt
-        from ....db.connection import get_db
-
-        known = {
-            (str(e["facility_code"]), str(e["card_number"])): e["active"]
-            for e in SeosLedger.get(person_id, credential_id)
-            if "active" in e
-        }
-        deduped: dict[tuple[str, str], dict] = {}
-        for entry in entries:
-            deduped[(str(entry.get("facility_code")), str(entry.get("card_number")))] = entry
-
-        db = get_db()
-        db.execute(
-            "DELETE FROM pacs_cards WHERE pacs_person_id = ? AND pacs_credential_id = ?",
-            (person_id, credential_id),
-        )
-        for (facility_code, card_number), entry in deduped.items():
-            active = entry["active"] if "active" in entry else known.get((facility_code, card_number))
-            db.execute(
-                "INSERT INTO pacs_cards (pacs_person_id, pacs_credential_id, "
-                "slot, facility_code, card_number, active, pending, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    person_id, credential_id, entry.get("slot"),
-                    encrypt(facility_code), encrypt(card_number),
-                    int(active) if isinstance(active, bool) else None,
-                    entry.get("pending"),
-                    entry.get("status") or "live",
-                ),
-            )
-
-    @staticmethod
-    def entries_for_person(person_id: str) -> dict[str, list[dict]]:
-        """Every credential recorded for a cardholder, keyed by credential id."""
-        return {
-            key.partition(":")[2]: entries
-            for key, entries in SeosLedger._entries(
-                "WHERE pacs_person_id = ?", (person_id,)
-            ).items()
-        }
-
-    @staticmethod
-    def cards_for_person(person_id: str) -> set[tuple[str, str]]:
-        """Every card recorded for a cardholder, across all their credentials."""
-        return {
-            (str(e["facility_code"]), str(e["card_number"]))
-            for entries in SeosLedger.entries_for_person(person_id).values()
-            for e in entries
-        }
-
-    @staticmethod
-    def forget(person_id: str, credential_id: str) -> None:
-        from ....db.connection import get_db
-
-        get_db().execute(
-            "DELETE FROM pacs_cards WHERE pacs_person_id = ? AND pacs_credential_id = ?",
-            (person_id, credential_id),
-        )
 
 
 class MillenniumUltraAdapter:
@@ -329,7 +208,7 @@ class MillenniumUltraAdapter:
             by_id.setdefault(row.employee_id, []).append((row, email))
 
         self._cardholders = {}
-        self._ours = {key.partition(":")[0] for key in SeosLedger.all()}
+        self._ours = {key.partition(":")[0] for key in PacsCards.all()}
         for employee_id, matches in by_id.items():
             if len(matches) > 1:
                 logger.error(
@@ -412,7 +291,7 @@ class MillenniumUltraAdapter:
         to render a one-line summary would be absurd.
         """
         out: dict[tuple[str, str], list[str]] = {}
-        for key, entries in SeosLedger.all().items():
+        for key, entries in PacsCards.all().items():
             person_id, _, credential_id = key.partition(":")
             numbers = [str(e.get("card_number")) for e in entries if e.get("card_number")]
             if numbers:
@@ -477,7 +356,7 @@ class MillenniumUltraAdapter:
         next trigger card earns.
         """
         live = {(s.facility_code, s.card_number) for s in slots if not s.empty}
-        for credential_id, entries in SeosLedger.entries_for_person(pid).items():
+        for credential_id, entries in PacsCards.entries_for_person(pid).items():
             if any(
                 (str(e.get("facility_code")), str(e.get("card_number"))) in live
                 for e in entries
@@ -492,7 +371,7 @@ class MillenniumUltraAdapter:
                     for e in entries
                 ) or "nothing",
             )
-            SeosLedger.forget(pid, credential_id)
+            PacsCards.forget(pid, credential_id)
 
 
     def _is_trigger(self, slot: Slot) -> bool:
@@ -513,7 +392,7 @@ class MillenniumUltraAdapter:
         """
         from ....db.connection import execute
 
-        if SeosLedger.entries_for_person(pid):
+        if PacsCards.entries_for_person(pid):
             return
         for row in execute(
             "SELECT pacs_credential_id FROM ag_credentials WHERE pacs_person_id = ? "
@@ -526,7 +405,7 @@ class MillenniumUltraAdapter:
                 None,
             )
             if slot is not None:
-                SeosLedger.record(pid, row["pacs_credential_id"], [{
+                PacsCards.record(pid, row["pacs_credential_id"], [{
                     "slot": slot.index,
                     "facility_code": slot.facility_code,
                     "card_number": slot.card_number,
@@ -576,7 +455,7 @@ class MillenniumUltraAdapter:
         of its cards sits on the cardholder in another format (dormant), or
         while its slot holds a card we did not record.
         """
-        mine = SeosLedger.entries_for_person(pid)
+        mine = PacsCards.entries_for_person(pid)
         held: set[str] = set()
         present = {(s.facility_code, s.card_number): s for s in slots if not s.empty}
         for credential_id, entries in mine.items():
@@ -596,7 +475,7 @@ class MillenniumUltraAdapter:
                 if dormant:
                     held.add(credential_id)
             if changed:
-                SeosLedger.record(pid, credential_id, entries)
+                PacsCards.record(pid, credential_id, entries)
         for slot in slots:
             if not self._is_trigger(slot):
                 continue
@@ -613,7 +492,7 @@ class MillenniumUltraAdapter:
                     for e in entries:
                         if (e["facility_code"], e["card_number"]) == card:
                             e["slot"] = slot.index
-                    SeosLedger.record(pid, owner, entries)
+                    PacsCards.record(pid, owner, entries)
                 continue
             recorded = next(
                 (e for entries in mine.values() for e in entries if e["slot"] == slot.index),
@@ -652,7 +531,7 @@ class MillenniumUltraAdapter:
                 "slot": slot.index, "facility_code": card[0], "card_number": card[1],
                 **({"pending": "write"} if seos else {}),
             }]
-            SeosLedger.record(pid, credential_id, mine[credential_id])
+            PacsCards.record(pid, credential_id, mine[credential_id])
 
         build = self._seos_credential if self.mode == MODE_SEOS else self._desfire_credential
         out: list[Credential] = []
@@ -668,7 +547,7 @@ class MillenniumUltraAdapter:
                 )
             elif credential is None:
                 # A DESFire card that is gone: phase 3 revokes its pass.
-                SeosLedger.forget(pid, credential_id)
+                PacsCards.forget(pid, credential_id)
             if credential is not None:
                 out.append(replace(credential, hold=credential_id in held))
         return out
@@ -677,7 +556,7 @@ class MillenniumUltraAdapter:
     def _card_recorded_elsewhere(pid: str, card: tuple[str, str]) -> bool:
         return any(
             (e["facility_code"], e["card_number"]) == card
-            for key, entries in SeosLedger.all().items()
+            for key, entries in PacsCards.all().items()
             if key.partition(":")[0] != pid
             for e in entries
         )

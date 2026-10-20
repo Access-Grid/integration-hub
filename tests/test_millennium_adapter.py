@@ -14,7 +14,7 @@ import pytest
 from agsync.lib.pacs.base import CredentialStatus
 from agsync.lib.pacs.millennium_ultra.adapter import (
     MODE_SEOS,
-    SeosLedger,
+    PacsCards,
     synthesize_email,
 )
 from agsync.lib.pacs.millennium_ultra.client import MillenniumError
@@ -167,7 +167,7 @@ def test_card_dates_come_from_the_export(make_millennium_adapter):
 # --- Seos: AccessGrid mints ----------------------------------------------
 
 
-def test_seos_credential_asks_accessgrid_to_allocate(make_millennium_adapter, seos_ledger):
+def test_seos_credential_asks_accessgrid_to_allocate(make_millennium_adapter):
     adapter = _adapter(
         make_millennium_adapter, export_row("33137", slots=[_card()]), mode=MODE_SEOS,
     )
@@ -179,7 +179,7 @@ def test_seos_credential_asks_accessgrid_to_allocate(make_millennium_adapter, se
     assert cred.site_code == ""
 
 
-def test_a_pair_needs_a_slot_besides_the_marker(make_millennium_adapter, seos_ledger):
+def test_a_pair_needs_a_slot_besides_the_marker(make_millennium_adapter):
     """Apple's card overwrites the marker; Google's needs an empty slot."""
     full = [_card(), _card("902", OTHER), _card("903", OTHER)]
     row = export_row("33137", slots=full)
@@ -187,7 +187,7 @@ def test_a_pair_needs_a_slot_besides_the_marker(make_millennium_adapter, seos_le
     assert len(_creds(_adapter(make_millennium_adapter, row, mode=MODE_SEOS))) == 1
 
 
-def test_one_free_slot_beside_the_marker_is_enough(make_millennium_adapter, seos_ledger):
+def test_one_free_slot_beside_the_marker_is_enough(make_millennium_adapter):
     adapter = _adapter(
         make_millennium_adapter,
         export_row("33137", slots=[_card(), _card("902", OTHER)]), mode=MODE_SEOS,
@@ -213,16 +213,16 @@ def test_no_cardholders_means_no_formats(make_millennium_adapter):
 # --- the ledger ----------------------------------------------------------
 
 
-def test_ledger_keeps_one_entry_per_physical_card(seos_ledger):
+def test_ledger_keeps_one_entry_per_physical_card():
     # A rewritten card must not accumulate a second ledger row.
-    SeosLedger.record(
+    PacsCards.record(
         "33137", "seos",
         [
             {"slot": 2, "card_number": "5001", "facility_code": "66"},
             {"slot": 3, "card_number": "5001", "facility_code": "66"},
         ],
     )
-    assert SeosLedger.get("33137", "seos") == [
+    assert PacsCards.get("33137", "seos") == [
         {"slot": 3, "card_number": "5001", "facility_code": "66"},
     ]
 
@@ -230,7 +230,7 @@ def test_ledger_keeps_one_entry_per_physical_card(seos_ledger):
 def test_the_ledger_stores_card_identity_encrypted():
     from agsync.db.connection import execute
 
-    SeosLedger.record("33137", "seos", [{"slot": 2, "card_number": "5001", "facility_code": "66"}])
+    PacsCards.record("33137", "seos", [{"slot": 2, "card_number": "5001", "facility_code": "66"}])
     [row] = execute("SELECT card_number, facility_code FROM pacs_cards")
     assert "5001" not in row["card_number"] and "66" != row["facility_code"]
-    assert SeosLedger.get("33137", "seos")[0]["card_number"] == "5001"
+    assert PacsCards.get("33137", "seos")[0]["card_number"] == "5001"

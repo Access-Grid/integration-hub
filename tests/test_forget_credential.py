@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, SeosLedger
+from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, PacsCards
 from tests._fakes import FakeMillenniumClient, export_row
 
 TRIGGER = "HID 37"
@@ -38,24 +38,24 @@ def _read(make_millennium_adapter, *slots):
 
 
 def _record(pid=PID, number="1238"):
-    SeosLedger.record(pid, "seos", [
+    PacsCards.record(pid, "seos", [
         {"slot": 1, "card_number": number, "facility_code": "66"},
     ])
 
 
 def test_the_entry_goes_when_every_trigger_card_is_deleted(
-    make_millennium_adapter, seos_ledger, caplog
+    make_millennium_adapter, caplog
 ):
     _record()
     # The operator deletes the lot, leaving an unrelated card behind.
     with caplog.at_level(logging.INFO):
         assert _read(make_millennium_adapter, _card("900", "50", OTHER)) == []
-    assert SeosLedger.get(PID, "seos") == []
+    assert PacsCards.get(PID, "seos") == []
     assert f"forgetting the cards recorded for cardholder {PID}" in caplog.text
 
 
 def test_a_new_pass_is_not_suspended_by_the_one_before_it(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     """The regression."""
     _record()
@@ -67,7 +67,7 @@ def test_a_new_pass_is_not_suspended_by_the_one_before_it(
 
 
 def test_a_recorded_card_still_in_a_slot_is_not_forgotten(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     """An operator changed our card's format: the card is dormant, not gone.
 
@@ -77,12 +77,12 @@ def test_a_recorded_card_still_in_a_slot_is_not_forgotten(
     _record()
     [cred] = _read(make_millennium_adapter, _card("1238", card_format=OTHER))
     assert cred.hold is True
-    assert SeosLedger.get(PID, "seos")[0]["status"] == "dormant"
+    assert PacsCards.get(PID, "seos")[0]["status"] == "dormant"
 
 
 def test_a_cardholder_we_hold_nothing_on_is_left_alone(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     _record(pid="9999", number="4242")
     assert _read(make_millennium_adapter, _card("900", "50", OTHER)) == []
-    assert SeosLedger.get("9999", "seos"), "somebody else's entry must survive"
+    assert PacsCards.get("9999", "seos"), "somebody else's entry must survive"

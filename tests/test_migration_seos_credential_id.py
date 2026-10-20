@@ -97,7 +97,7 @@ def test_the_migration_runs_once():
 
 
 def test_the_id_no_longer_depends_on_the_slot(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     """The bug itself: the marker in slot 2 used to yield a different id.
 

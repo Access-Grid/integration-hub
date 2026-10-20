@@ -17,7 +17,7 @@ def _never_the_real_database(tmp_path, monkeypatch):
     """Point every test at a database of its own.
 
     Without this a test that reaches storage reads the operator's live
-    install: `get_settings()` defaults db_path to it, so `SeosLedger.all()`
+    install: `get_settings()` defaults db_path to it, so `PacsCards.all()`
     answers with real cardholders and `AccessGridConfig.load()` with a real
     API key. That is how test_only_the_cardholders_carrying_a_trigger_card
     came to depend on run order — it passed only when some earlier test had
@@ -230,23 +230,3 @@ def make_millennium_adapter():
         return adapter
 
     return _build
-
-
-@pytest.fixture
-def seos_ledger(monkeypatch):
-    """In-memory stand-in for the encrypted settings blob the ledger uses.
-
-    The ledger records which Millennium slots hold AccessGrid-allocated
-    cards; the tests need its behaviour, not SQLite.
-    """
-    store: dict = {}
-
-    def fake_get(key):
-        return store.get(key)
-
-    def fake_set(key, value):
-        store[key] = value
-
-    monkeypatch.setattr("agsync.settings_store.get_json", fake_get, raising=False)
-    monkeypatch.setattr("agsync.settings_store.set_json", fake_set, raising=False)
-    return store

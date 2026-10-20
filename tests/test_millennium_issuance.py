@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from agsync.lib.pacs.base import CredentialStatus
-from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, SeosLedger
+from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, PacsCards
 from agsync.sync import tracking
 from tests._fakes import FakeMillenniumClient, export_row
 
@@ -32,7 +32,7 @@ def _creds(make_millennium_adapter, *slots, pid=PID) -> dict:
 
 
 def _record(slot, number, pid=PID, credential_id="seos"):
-    SeosLedger.record(pid, credential_id, [
+    PacsCards.record(pid, credential_id, [
         {"slot": slot, "card_number": number, "facility_code": "66"},
     ])
 
@@ -40,7 +40,7 @@ def _record(slot, number, pid=PID, credential_id="seos"):
 def test_rows_1_2_a_recorded_card_in_its_slot_is_the_pass_it_was(make_millennium_adapter):
     _record(1, "5001")
     assert set(_creds(make_millennium_adapter, _card("5001"))) == {"seos"}
-    assert len(SeosLedger.get(PID, "seos")) == 1
+    assert len(PacsCards.get(PID, "seos")) == 1
 
 
 def test_rows_3_4_a_different_card_in_a_recorded_slot_is_an_error(
@@ -58,7 +58,7 @@ def test_rows_3_4_a_different_card_in_a_recorded_slot_is_an_error(
 def test_rows_5_6_a_recorded_card_that_moved_slot_is_followed(make_millennium_adapter):
     _record(1, "5001")
     assert set(_creds(make_millennium_adapter, None, _card("5001"))) == {"seos"}
-    assert SeosLedger.get(PID, "seos")[0]["slot"] == 2
+    assert PacsCards.get(PID, "seos")[0]["slot"] == 2
 
 
 def test_rows_7_8_a_new_trigger_card_beside_a_recorded_one_is_a_new_pass(
@@ -97,7 +97,7 @@ def test_row_12_a_new_cardholder_with_a_new_trigger_card_gets_a_pass(make_millen
     assert cred.id == "card"
     # The marker's own unticked box is a placeholder, not the pass's state.
     assert cred.status is CredentialStatus.ACTIVE
-    assert SeosLedger.get(PID, "card") == [
+    assert PacsCards.get(PID, "card") == [
         {"slot": 1, "card_number": "1", "facility_code": "66", "pending": "write"},
     ]
     assert set(_creds(make_millennium_adapter, _card("1", active=False))) == {"card"}
@@ -107,7 +107,7 @@ def test_a_card_moved_out_of_the_trigger_format_is_dormant_and_held(make_millenn
     _record(1, "5001")
     [cred] = _creds(make_millennium_adapter, _card("5001", card_format="Wiegand Card")).values()
     assert cred.hold is True
-    assert SeosLedger.get(PID, "seos")[0]["status"] == "dormant"
+    assert PacsCards.get(PID, "seos")[0]["status"] == "dormant"
 
 
 def test_a_dormant_card_moved_back_is_tracked_again(make_millennium_adapter):
@@ -115,8 +115,8 @@ def test_a_dormant_card_moved_back_is_tracked_again(make_millennium_adapter):
     _creds(make_millennium_adapter, _card("5001", card_format="Wiegand Card"))
     [cred] = _creds(make_millennium_adapter, _card("5001")).values()
     assert cred.hold is False
-    assert "status" not in SeosLedger.get(PID, "seos")[0]
-    assert len(SeosLedger.all()) == 1, "and no second pass was issued for it"
+    assert "status" not in PacsCards.get(PID, "seos")[0]
+    assert len(PacsCards.all()) == 1, "and no second pass was issued for it"
 
 
 # --- telling somebody ----------------------------------------------------

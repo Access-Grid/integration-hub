@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from agsync.lib.pacs.millennium_ultra import migrate
-from agsync.lib.pacs.millennium_ultra.adapter import SeosLedger
+from agsync.lib.pacs.millennium_ultra.adapter import PacsCards
 from agsync.lib.pacs.millennium_ultra.client import MillenniumAuthError, MillenniumError
 from agsync.settings_store import get_json
 from agsync.sync import tracking
@@ -46,14 +46,14 @@ def _track(record_id, credential_id="seos"):
 
 def test_tracking_and_ledger_move_to_employee_ids(make_millennium_adapter):
     _track("11591")
-    SeosLedger.record("11591", "seos", [{"slot": 2, "card_number": "5001", "facility_code": "66"}])
+    PacsCards.record("11591", "seos", [{"slot": 2, "card_number": "5001", "facility_code": "66"}])
     adapter, _ = _adapter(make_millennium_adapter, {"11591": "33137"})
 
     list(adapter.list_people())
 
     assert tracking.get("11591", "seos") is None
     assert tracking.get("33137", "seos").employee_id == "33137"
-    assert set(SeosLedger.all()) == {"33137:seos"}
+    assert set(PacsCards.all()) == {"33137:seos"}
     assert get_json(migrate.DONE_KEY) is True
 
 

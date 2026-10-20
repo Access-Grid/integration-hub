@@ -9,7 +9,7 @@ These tests pin the decision, including the case AccessGrid cannot express.
 from __future__ import annotations
 
 from agsync.lib.pacs.base import CredentialStatus
-from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, SeosLedger
+from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, PacsCards
 from tests._fakes import FakeMillenniumClient, export_row
 
 TRIGGER = "HID 37"
@@ -40,7 +40,7 @@ def _status(make_millennium_adapter, *, slot2=None, slot3=None, marker=False, ci
 
 
 def _ledger(*numbers, slots=(2, 3)):
-    SeosLedger.record(PID, "seos", [
+    PacsCards.record(PID, "seos", [
         {"slot": slot, "card_number": n, "facility_code": "66"}
         for slot, n in zip(slots, numbers, strict=False)
     ])
@@ -49,12 +49,12 @@ def _ledger(*numbers, slots=(2, 3)):
 # --- one device ----------------------------------------------------------
 
 
-def test_present_and_active_means_active(make_millennium_adapter, seos_ledger):
+def test_present_and_active_means_active(make_millennium_adapter):
     _ledger("5001")
     assert _status(make_millennium_adapter, slot2=_card("5001")) is CredentialStatus.ACTIVE
 
 
-def test_deleting_the_card_suspends_the_pass(make_millennium_adapter, seos_ledger):
+def test_deleting_the_card_suspends_the_pass(make_millennium_adapter):
     # The revocation that has to reach AccessGrid. Two cards were written,
     # so one being deleted leaves the credential present but broken — with
     # none of them left there is no trigger card at all, which phase 3 reads
@@ -64,14 +64,14 @@ def test_deleting_the_card_suspends_the_pass(make_millennium_adapter, seos_ledge
     assert status is CredentialStatus.SUSPENDED
 
 
-def test_deactivating_the_card_suspends_the_pass(make_millennium_adapter, seos_ledger):
+def test_deactivating_the_card_suspends_the_pass(make_millennium_adapter):
     _ledger("5001")
     status = _status(make_millennium_adapter, slot2=_card("5001", active=False))
     assert status is CredentialStatus.SUSPENDED
 
 
 def test_a_different_card_in_the_same_slot_does_not_count(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     """Slot 2 is occupied and active — but by somebody else's card.
 
@@ -85,13 +85,13 @@ def test_a_different_card_in_the_same_slot_does_not_count(
 # --- two devices, which AccessGrid cannot revoke separately -------------
 
 
-def test_both_present_means_active(make_millennium_adapter, seos_ledger):
+def test_both_present_means_active(make_millennium_adapter):
     _ledger("5001", "5002")
     status = _status(make_millennium_adapter, slot2=_card("5001"), slot3=_card("5002"))
     assert status is CredentialStatus.ACTIVE
 
 
-def test_deleting_one_of_two_suspends_the_whole_pass(make_millennium_adapter, seos_ledger):
+def test_deleting_one_of_two_suspends_the_whole_pass(make_millennium_adapter):
     """AccessGrid suspends a pass, not one device on it.
 
     So a holder whose watch credential was deleted cannot be half-revoked.
@@ -104,14 +104,14 @@ def test_deleting_one_of_two_suspends_the_whole_pass(make_millennium_adapter, se
 
 
 def test_a_card_moved_to_another_slot_is_still_recognised(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     # Operators move cards between slots; that is not a revocation.
     _ledger("5001", slots=(2,))
     assert _status(make_millennium_adapter, slot3=_card("5001")) is CredentialStatus.ACTIVE
 
 
-def test_before_anything_is_written_the_pass_is_active(make_millennium_adapter, seos_ledger):
+def test_before_anything_is_written_the_pass_is_active(make_millennium_adapter):
     # Nothing in the ledger yet: the pass has just been issued and its cards
     # are about to be written in. It must not read as revoked.
     assert _status(make_millennium_adapter, marker=True, cid="card") is CredentialStatus.ACTIVE

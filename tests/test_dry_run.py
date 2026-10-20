@@ -193,7 +193,7 @@ def test_every_mutation_is_gated():
 # =====================================================================
 
 
-def test_reading_still_happens(dry, make_millennium_adapter, seos_ledger):
+def test_reading_still_happens(dry, make_millennium_adapter):
     """Dry run stops writes, not sight. A cycle that cannot read tells us
     nothing about what it would have done."""
     marker = {"card_number": "1", "facility_code": "99", "card_format": "HID 37"}

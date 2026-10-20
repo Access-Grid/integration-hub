@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from agsync.lib.pacs.base import CredentialStatus
-from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, SeosLedger
+from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, PacsCards
 from agsync.sync.phases import phase3_deletions
 from agsync.sync.snapshot import Snapshot
 from tests._fakes import FakeMillenniumClient, export_row
@@ -70,7 +70,7 @@ def _credential(adapter, credential_id="seos"):
 
 
 def test_s1_an_enrolled_cardholder_is_provisioned_with_no_identity_of_ours(
-    make_millennium_adapter, seos_ledger, monkeypatch
+    make_millennium_adapter, monkeypatch
 ):
     """Phase 1 against the real adapter, not a hand-built credential.
 
@@ -106,7 +106,7 @@ def test_s1_an_enrolled_cardholder_is_provisioned_with_no_identity_of_ours(
 
 
 def test_s1_a_cardholder_without_room_is_not_provisioned(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     """A pair needs a slot for each card; the marker's is one of them."""
     adapter, _ = _adapter(
@@ -122,12 +122,12 @@ def test_s1_a_cardholder_without_room_is_not_provisioned(
 
 
 def test_s8_an_inactive_card_suspends_the_pass_through_phase_2(
-    make_millennium_adapter, seos_ledger, monkeypatch
+    make_millennium_adapter, monkeypatch
 ):
     """The adapter reports it and phase 2 acts on it — joined up."""
     from agsync.sync.phases import phase2_local_to_ag
 
-    SeosLedger.record("11587", "seos", [
+    PacsCards.record("11587", "seos", [
         {"slot": 2, "card_number": "5001", "facility_code": "66"},
     ])
     adapter, _ = _adapter(make_millennium_adapter, _enrolled(written={2: "5001"}, active=False))
@@ -267,13 +267,13 @@ def test_s11_an_empty_roster_revokes_nobody(monkeypatch):
 
 
 def _ledger_for_slot2():
-    SeosLedger.record("11587", "seos", [
+    PacsCards.record("11587", "seos", [
         {"slot": 2, "card_number": "5001", "facility_code": "66"},
     ])
 
 
 def test_s12_an_expired_card_reports_its_end_date(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     """Read off the card we wrote, so an operator editing it is what counts."""
     _ledger_for_slot2()
@@ -383,7 +383,7 @@ def test_s12_expiries_are_rationed_per_cycle(monkeypatch):
 
 
 def test_s12_a_card_not_yet_valid_holds_the_pass(
-    make_millennium_adapter, seos_ledger
+    make_millennium_adapter
 ):
     """Dated to start next week: it should not open a door today."""
     _ledger_for_slot2()
