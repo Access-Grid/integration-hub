@@ -179,10 +179,12 @@ def test_seos_credential_asks_accessgrid_to_allocate(make_millennium_adapter, se
     assert cred.site_code == ""
 
 
-def test_seos_needs_a_slot_besides_the_marker(make_millennium_adapter, seos_ledger):
+def test_a_pair_needs_a_slot_besides_the_marker(make_millennium_adapter, seos_ledger):
+    """Apple's card overwrites the marker; Google's needs an empty slot."""
     full = [_card(), _card("902", OTHER), _card("903", OTHER)]
-    adapter = _adapter(make_millennium_adapter, export_row("33137", slots=full), mode=MODE_SEOS)
-    assert _creds(adapter) == []
+    row = export_row("33137", slots=full)
+    assert _creds(_adapter(make_millennium_adapter, row, mode=MODE_SEOS, pair=True)) == []
+    assert len(_creds(_adapter(make_millennium_adapter, row, mode=MODE_SEOS))) == 1
 
 
 def test_one_free_slot_beside_the_marker_is_enough(make_millennium_adapter, seos_ledger):

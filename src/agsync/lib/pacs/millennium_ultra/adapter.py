@@ -66,9 +66,9 @@ MODE_SEOS = "seos"
 # The credential id for a cardholder's Seos pass.
 SEOS_CREDENTIAL_ID = "seos"
 
-# Seos needs this many *empty* slots before we will provision. A phone and a
-# watch consume one each, and the marker's own slot is the other.
-REQUIRED_EMPTY_SLOTS = 1
+# The trigger card's slot takes AccessGrid's first card. A Seos pair has a
+# second (Apple and Google each get one), which needs an empty slot.
+PAIR_EMPTY_SLOTS = 1
 
 
 def _first_valid_email(*candidates: str) -> str:
@@ -119,8 +119,9 @@ class SeosLedger:
     side effect on their data, so we keep the mapping on our side instead.
 
     Entries are read back as {"slot", "card_number", "facility_code"}, plus
-    "active" when the Active box we last knew is recorded. The card number
-    and facility code are stored encrypted.
+    "active" when the Active box we last knew is recorded and "pending" when
+    a change awaits the next import. The card number and facility code are
+    stored encrypted.
     """
 
     @staticmethod
@@ -141,6 +142,8 @@ class SeosLedger:
             }
             if r["active"] is not None:
                 entry["active"] = bool(r["active"])
+            if r["pending"]:
+                entry["pending"] = r["pending"]
             out.setdefault(f"{r['pacs_person_id']}:{r['pacs_credential_id']}", []).append(entry)
         return out
 
@@ -186,11 +189,13 @@ class SeosLedger:
             active = entry["active"] if "active" in entry else known.get((facility_code, card_number))
             db.execute(
                 "INSERT INTO pacs_cards (pacs_person_id, pacs_credential_id, "
-                "slot, facility_code, card_number, active) VALUES (?, ?, ?, ?, ?, ?)",
+                "slot, facility_code, card_number, active, pending) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     person_id, credential_id, entry.get("slot"),
                     encrypt(facility_code), encrypt(card_number),
                     int(active) if isinstance(active, bool) else None,
+                    entry.get("pending"),
                 ),
             )
 
@@ -361,7 +366,7 @@ class MillenniumUltraAdapter:
 
         if self.mode == MODE_DESFIRE:
             return [self._desfire_credential(pid, s) for s in triggers]
-        return self._seos_credentials(pid, slots, triggers[0])
+        return self._seos_credentials(pid, slots)
 
     # -- writes: none until Millennium's import is wired in ----------------
 
@@ -509,87 +514,102 @@ class MillenniumUltraAdapter:
             raw={"slot": slot.index},
         )
 
-    def _seos_credentials(
-        self, pid: str, slots: list[Slot], trigger: Slot
-    ) -> list[Credential]:
-        """One credential per pass this cardholder holds or has asked for.
+    def _seos_credentials(self, pid: str, slots: list[Slot]) -> list[Credential]:
+        """One credential per pass this cardholder holds or has just asked for.
 
-        A cardholder used to have exactly one. They need two for the case a
-        watch creates: Wallet will not add a credential to a watch after the
-        pass is installed, and the original link cannot be replayed, so the
-        only way to reach the watch is a second pass that the holder installs
-        on it alone — while the phone's keeps working untouched.
+        Each trigger-format slot is checked against `pacs_cards`:
 
-        Two kinds of group, and the ledger separates them. Every entry it
-        holds for this cardholder is a pass we have already issued, keyed by
-        whatever id it was issued under. A trigger-format card the ledger
-        does *not* know about is an operator asking for one.
+          * a card of theirs we recorded → that pass; if it moved slot, the
+            record follows it
+          * the slot is recorded with a different card → error, no pass
+          * the card is recorded on somebody else, or we track a pass for a
+            cardholder we hold no card of → error, no pass
+          * otherwise a new pass. Its trigger card is recorded now, awaiting
+            the write of AccessGrid's card; phase 1 issues it, and keeps
+            trying until it has.
         """
-        # Entries with nothing in them are not passes. `retire_credentials`
-        # re-records the list after removing a card, so a credential whose
-        # last card AccessGrid deleted leaves an empty entry behind. Counted
-        # as a credential it would hold its id while contributing nothing,
-        # and the cardholder's trigger card would then be read as asking for
-        # a *second* pass — one card, two passes.
-        existing = {
-            credential_id: entries
-            for credential_id, entries in SeosLedger.entries_for_person(pid).items()
-            if entries
-        }
-        ours = {
-            (str(e.get("facility_code")), str(e.get("card_number")))
-            for entries in existing.values()
-            for e in entries
-        }
-
-        out: list[Credential] = []
-        for credential_id, ledger in sorted(existing.items()):
-            credential = self._seos_credential(
-                pid, credential_id, ledger, slots, trigger
-            )
-            if credential is not None:
-                out.append(credential)
-
-        # Then anything being asked for: a trigger card we never wrote. Only
-        # the first gets an id. Further passes were keyed on the card's
-        # CardID, which the export does not carry.
+        mine = SeosLedger.entries_for_person(pid)
         for slot in slots:
             if not self._is_trigger(slot):
                 continue
-            if (slot.facility_code, slot.card_number) in ours:
+            card = (slot.facility_code, slot.card_number)
+            owner = next(
+                (cid for cid, entries in mine.items()
+                 if any((e["facility_code"], e["card_number"]) == card for e in entries)),
+                None,
+            )
+            if owner is not None:
+                entries = mine[owner]
+                if any(e["slot"] != slot.index for e in entries
+                       if (e["facility_code"], e["card_number"]) == card):
+                    for e in entries:
+                        if (e["facility_code"], e["card_number"]) == card:
+                            e["slot"] = slot.index
+                    SeosLedger.record(pid, owner, entries)
                 continue
-            if SEOS_CREDENTIAL_ID in existing:
-                logger.warning(
-                    "Millennium: cardholder %s has another trigger card in slot %d "
-                    "— no id to issue a second pass under",
-                    pid, slot.index,
+            recorded = next(
+                (e for entries in mine.values() for e in entries if e["slot"] == slot.index),
+                None,
+            )
+            if recorded is not None:
+                logger.error(
+                    "Millennium: cardholder %s slot %d holds card %s/%s, but we recorded "
+                    "%s/%s there — not issuing",
+                    pid, slot.index, *card, recorded["facility_code"], recorded["card_number"],
                 )
                 continue
-            credential = self._seos_credential(
-                pid, SEOS_CREDENTIAL_ID, [], slots, trigger
-            )
+            if not mine and (self._card_recorded_elsewhere(pid, card) or _tracked_pass(pid)):
+                logger.error(
+                    "Millennium: cardholder %s's trigger card %s/%s does not match what we "
+                    "recorded — not issuing",
+                    pid, *card,
+                )
+                continue
+            empty = [s for s in slots if s.empty]
+            needed = PAIR_EMPTY_SLOTS if self.pair else 0
+            if len(empty) < needed:
+                logger.info(
+                    "Millennium: skipping cardholder %s — a pass needs %d free card "
+                    "slot(s), found %d",
+                    pid, needed, len(empty),
+                )
+                continue
+            credential_id, n = SEOS_CREDENTIAL_ID, 2
+            while credential_id in mine:
+                credential_id, n = f"{SEOS_CREDENTIAL_ID}-{n}", n + 1
+            mine[credential_id] = [{
+                "slot": slot.index, "facility_code": card[0], "card_number": card[1],
+                "pending": "write",
+            }]
+            SeosLedger.record(pid, credential_id, mine[credential_id])
+
+        out: list[Credential] = []
+        for credential_id, entries in sorted(mine.items()):
+            credential = self._seos_credential(pid, credential_id, entries, slots)
             if credential is not None:
                 out.append(credential)
-            break
         return out
+
+    @staticmethod
+    def _card_recorded_elsewhere(pid: str, card: tuple[str, str]) -> bool:
+        return any(
+            (e["facility_code"], e["card_number"]) == card
+            for key, entries in SeosLedger.all().items()
+            if key.partition(":")[0] != pid
+            for e in entries
+        )
 
     def _seos_credential(
         self,
         pid: str,
         credential_id: str,
-        ledger: list[dict],
+        entries: list[dict],
         slots: list[Slot],
-        trigger: Slot,
     ) -> Credential | None:
-        empty = [s for s in slots if s.empty]
-
-        if not ledger and len(empty) < REQUIRED_EMPTY_SLOTS:
-            logger.info(
-                "Millennium: skipping cardholder %s — Seos needs %d free card slot(s), "
-                "found %d",
-                pid, REQUIRED_EMPTY_SLOTS, len(empty),
-            )
-            return None
+        trigger_slot = entries[0]["slot"] if entries else None
+        # A trigger card still awaiting AccessGrid's card says nothing about
+        # the pass: its Active box is the operator's placeholder.
+        ledger = [e for e in entries if not e.get("pending")]
 
         # Once written, the state of the cards we wrote drives the pass.
         #
@@ -675,12 +695,22 @@ class MillenniumUltraAdapter:
             trigger_active=True,
             allocate_identity=True,
             raw={
-                "trigger_slot": trigger.index,
+                "trigger_slot": trigger_slot,
                 "written": [
                     f"{e.get('facility_code')}/{e.get('card_number')}" for e in ledger
                 ],
             },
         )
+
+
+def _tracked_pass(pid: str) -> bool:
+    """Whether we track a live AccessGrid pass for this cardholder."""
+    from ....db.connection import execute_one
+
+    return execute_one(
+        "SELECT 1 FROM ag_credentials WHERE pacs_person_id = ? AND status != 'deleted'",
+        (pid,),
+    ) is not None
 
 
 def _describe(slots: list[Slot]) -> str:

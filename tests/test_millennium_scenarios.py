@@ -108,8 +108,10 @@ def test_s1_an_enrolled_cardholder_is_provisioned_with_no_identity_of_ours(
 def test_s1_a_cardholder_without_room_is_not_provisioned(
     make_millennium_adapter, seos_ledger
 ):
-    """A phone and a watch need a slot each; the marker's is one of them."""
-    adapter, _ = _adapter(make_millennium_adapter, _enrolled(written={2: "5001", 3: "5002"}))
+    """A pair needs a slot for each card; the marker's is one of them."""
+    adapter, _ = _adapter(
+        make_millennium_adapter, _enrolled(written={2: "5001", 3: "5002"}), pair=True,
+    )
     list(adapter.list_people())
     assert list(adapter.list_credentials("11587")) == []
 

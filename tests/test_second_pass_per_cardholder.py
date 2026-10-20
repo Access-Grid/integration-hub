@@ -12,8 +12,6 @@ on the card's CardID, which the export does not carry.
 
 from __future__ import annotations
 
-import logging
-
 from agsync.lib.pacs.base import CredentialStatus
 from agsync.lib.pacs.millennium_ultra.adapter import MODE_SEOS, SeosLedger
 from tests._fakes import FakeMillenniumClient, export_row
@@ -70,13 +68,12 @@ def test_a_second_pass_is_suspended_on_its_own_cards_only(
     assert creds["seos-card8200"].status is CredentialStatus.SUSPENDED
 
 
-def test_another_trigger_card_only_warns(make_millennium_adapter, seos_ledger, caplog):
-    """No id to issue a second pass under, so it is reported, not issued."""
+def test_another_trigger_card_asks_for_a_second_pass(make_millennium_adapter, seos_ledger):
+    """A new device gets a new pass, under the next id the ledger hands out."""
     _record("seos", 2, "74")
-    with caplog.at_level(logging.WARNING):
-        creds = _creds(make_millennium_adapter, _card("1"), _card("74"))
-    assert set(creds) == {"seos"}
-    assert "another trigger card in slot 1" in caplog.text
+    creds = _creds(make_millennium_adapter, _card("1"), _card("74"))
+    assert set(creds) == {"seos", "seos-2"}
+    assert SeosLedger.get(PID, "seos-2")[0]["pending"] == "write"
 
 
 def test_clearing_the_cards_forgets_every_credential(make_millennium_adapter, seos_ledger):
