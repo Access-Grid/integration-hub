@@ -42,7 +42,9 @@ _CARD_KEYS = ("card_number", "cardNumber", "number")
 # pass's `details` — that is how phase 3 detects it — so without this filter
 # phase 3 would release the card and phase 4 would write it straight back
 # on the same cycle, forever.
-_DEAD_STATES = frozenset({"deleted"})
+# A card AccessGrid has deleted, or its holder has unlinked from their
+# device. The SDK documents the state as "unlink"; "unlinked" is accepted too.
+_DEAD_STATES = frozenset({"deleted", "unlink", "unlinked"})
 
 
 def _as_datetime(value: Any) -> datetime | None:

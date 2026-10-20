@@ -272,7 +272,8 @@ class MillenniumUltraAdapter:
 
     @property
     def supports_credential_retirement(self) -> bool:
-        return False
+        """Only Seos cards are ours to remove; DESFire cards are the customer's."""
+        return self.mode == MODE_SEOS
 
     def update_credential_status(
         self, person_id: str, credential_id: str, status: CredentialStatus
@@ -293,7 +294,7 @@ class MillenniumUltraAdapter:
         cards = [
             e for e in entries
             if (e["facility_code"], e["card_number"]) in boxes
-            and e.get("pending") not in UNWRITTEN
+            and e.get("pending") not in (*UNWRITTEN, "delete")
         ]
         if not cards:
             return False
@@ -343,6 +344,7 @@ class MillenniumUltraAdapter:
                 else:
                     row.cells[(e["slot"], "Active")] = str(e["pending"] == "activate")
             pending.append((pid, credential_id, entries))
+        self._delete_cards()
         if not rows:
             return
         if dryrun.active():
@@ -367,6 +369,45 @@ class MillenniumUltraAdapter:
                 if e.get("pending") in ("activate", "deactivate", "insert"):
                     e["active"] = e.pop("pending") == "activate"
             PacsCards.record(pid, credential_id, entries)
+
+    def _delete_cards(self) -> None:
+        """Delete the cards marked for deletion, one request each.
+
+        A card already gone from the cardholder is simply forgotten. One that
+        Millennium will not delete stays marked, and is tried again.
+        """
+        for key, entries in PacsCards.all().items():
+            pid, _, credential_id = key.partition(":")
+            doomed = [e for e in entries if e.get("pending") == "delete"]
+            holder = self._cardholders.get(pid)
+            if not doomed or holder is None:
+                continue
+            present = {(s.facility_code, s.card_number) for s in holder.slots if not s.empty}
+            for e in doomed:
+                card = (e["facility_code"], e["card_number"])
+                if card in present:
+                    if dryrun.active():
+                        dryrun.would("delete card %s/%s from cardholder %s", *card, pid)
+                        continue
+                    try:
+                        deleted = self._client.delete_card_by_number(pid, *card)
+                    except MillenniumError as err:
+                        logger.warning(
+                            "Millennium: could not delete card %s/%s from %s: %s",
+                            *card, pid, err,
+                        )
+                        continue
+                    if not deleted:
+                        logger.warning(
+                            "Millennium refused to delete card %s/%s from %s", *card, pid,
+                        )
+                        continue
+                    logger.info("Millennium: deleted card %s/%s from %s", *card, pid)
+                entries.remove(e)
+            if entries:
+                PacsCards.record(pid, credential_id, entries)
+            else:
+                PacsCards.forget(pid, credential_id)
 
     def _new_card_cells(
         self, slot: int, entries: list[dict], holder: export.Cardholder
@@ -435,7 +476,26 @@ class MillenniumUltraAdapter:
     def retire_credentials(
         self, person_id: str, credential_id: str, identities: list[CredentialIdentity]
     ) -> int:
-        return 0
+        """Mark the cards AccessGrid deleted or unlinked for deletion.
+
+        Recorded only; finish_cycle deletes them. A dormant card is left
+        alone, like the rest of a held pass.
+        """
+        pid = str(person_id)
+        gone = {(str(i.site_code), str(i.card_number)) for i in identities}
+        entries = PacsCards.get(pid, credential_id)
+        marked = 0
+        for e in entries:
+            if (
+                (e["facility_code"], e["card_number"]) in gone
+                and e.get("pending") not in (*UNWRITTEN, "delete")
+                and e.get("status") != "dormant"
+            ):
+                e["pending"] = "delete"
+                marked += 1
+        if marked:
+            PacsCards.record(pid, credential_id, entries)
+        return marked
 
     def written_credentials(self) -> dict[tuple[str, str], list[str]]:
         """Card numbers this integration has written into Millennium.
