@@ -467,15 +467,15 @@ class MillenniumUltraAdapter:
         self, person_id: str, credential_id: str, identities: list[CredentialIdentity]
     ) -> bool:
         """Record AccessGrid's cards for a pass: when it is issued, and for
-        each device installed later.
+        a watch installed later.
 
-        A just-issued pass's first card goes into the trigger card's slot, a
-        pair's second into an empty one. Once its cards are in, a card number
-        we have not recorded is a new device's, a watch installed after the
-        phone, and goes into an empty slot. Only beside a card of the pass
-        we already hold: a pass none of whose cards we recorded is not
-        written. finish_cycle sends them, switched off; the install gate
-        switches them on.
+        A just-issued pass's first card goes into the trigger card's slot.
+        An empty slot is taken only by a pair's second card, or by a watch:
+        a watch has its own card number, which appears once it installs,
+        after the pass's cards are in. Only beside a card of the pass we
+        already hold: a pass none of whose cards we recorded is not written.
+        A number already on any cardholder is never written. finish_cycle
+        sends them, switched off; the install gate switches them on.
         """
         pid = str(person_id)
         holder = self._cardholders.get(pid)
@@ -491,6 +491,34 @@ class MillenniumUltraAdapter:
             i for i in identities
             if (str(i.site_code), str(i.card_number)) not in recorded
         ]
+        if not new:
+            return True
+        # Seen on-site: AccessGrid put one cardholder's number on another's
+        # watch. Written, two cardholders would hold the same card.
+        on_cardholders = {
+            (s.facility_code, s.card_number): pid_
+            for pid_, h in self._cardholders.items() for s in h.slots if not s.empty
+        }
+        for i in new:
+            card = (str(i.site_code), str(i.card_number))
+            if card in on_cardholders:
+                _card_problem(
+                    pid, card,
+                    f"Millennium: AccessGrid reports card {card[0]}/{card[1]} on the pass "
+                    f"of {who(pid)} ({credential_id}), but cardholder "
+                    f"{who(on_cardholders[card])} already holds it — not writing",
+                )
+                return False
+        first = [new.pop(0)] if trigger else []
+        if not (trigger and self.pair):
+            for i in [i for i in new if "watch" not in i.device_type.lower()]:
+                logger.info(
+                    "Millennium: not writing card %s/%s for %s — device type %r is not "
+                    "a watch",
+                    i.site_code, i.card_number, who(pid), i.device_type or "none",
+                )
+                new.remove(i)
+        new = first + new
         if not new:
             return True
         taken = {

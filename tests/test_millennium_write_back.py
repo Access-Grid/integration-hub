@@ -145,6 +145,10 @@ def test_a_retried_second_card_copies_the_levels_from_the_first(make_millennium_
     assert row["Card2AccessLevel1"] == "MASTER 1"
 
 
+PHONE = CredentialIdentity("66", "5001", device_type="iphone")
+WATCH = CredentialIdentity("66", "5002", device_type="apple_watch")
+
+
 def _written(make_millennium_adapter, *extra_slots):
     """A pass whose phone card, 66/5001, is already in slot 1 and switched on."""
     PacsCards.record(PID, "card", [
@@ -159,9 +163,7 @@ def test_a_watch_installed_after_the_phone_gets_its_own_card(make_millennium_ada
     """Seen on-site: the watch's card number appears only once it installs,
     after the pass's cards are written, and was never written."""
     adapter, client = _written(make_millennium_adapter, None)
-    assert adapter.write_back_credentials(
-        PID, "card", [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
-    )
+    assert adapter.write_back_credentials(PID, "card", [PHONE, WATCH])
     adapter.finish_cycle()
     row = _row(client.imports[0])
     assert (row["Card2EncodedCardNo."], row["Card2FacilityCode"]) == ("5002", "66")
@@ -194,9 +196,57 @@ def test_a_new_device_with_no_empty_slot_is_not_written(make_millennium_adapter,
     other = {"card_number": "7", "facility_code": "1", "card_format": "Wiegand", "active": True}
     adapter, client = _written(make_millennium_adapter, other, other)
     with caplog.at_level(logging.WARNING):
-        assert not adapter.write_back_credentials(
-            PID, "card", [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
-        )
+        assert not adapter.write_back_credentials(PID, "card", [PHONE, WATCH])
     adapter.finish_cycle()
     assert client.imports == []
     assert "no room on cardholder 33137 (Ada Lovelace) for 1 card(s)" in caplog.text
+
+
+def test_only_a_watch_takes_an_empty_slot_later(make_millennium_adapter, caplog):
+    """A new number on any other device is logged and left out."""
+    import logging
+
+    adapter, client = _written(make_millennium_adapter, None)
+    ipad = CredentialIdentity("66", "5003", device_type="ipad")
+    with caplog.at_level(logging.INFO):
+        adapter.write_back_credentials(PID, "card", [PHONE, ipad])
+    adapter.finish_cycle()
+    assert client.imports == []
+    assert "not writing card 66/5003 for 33137 (Ada Lovelace) — device type 'ipad'" in caplog.text
+
+
+def test_a_single_passs_extra_card_does_not_take_an_empty_slot(make_millennium_adapter):
+    """At issue, only a pair's second card goes into an empty slot."""
+    adapter, client = _adapter(make_millennium_adapter, MARKER, None)
+    cid = _issued(adapter)
+    adapter.write_back_credentials(
+        PID, cid, [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
+    )
+    adapter.finish_cycle()
+    row = _row(client.imports[0])
+    assert row["Card1EncodedCardNo."] == "5001"
+    assert "Card2EncodedCardNo." not in row
+
+
+def test_a_number_another_cardholder_holds_is_never_written(make_millennium_adapter, caplog):
+    """Seen on-site: AccessGrid put one cardholder's number on another's watch."""
+    import logging
+
+    PacsCards.record(PID, "card", [
+        {"slot": 1, "card_number": "5001", "facility_code": "66", "active": True},
+    ])
+    phone = {"card_number": "5001", "facility_code": "66", "card_format": "HID 37", "active": True}
+    theirs = {"card_number": "5002", "facility_code": "66", "card_format": "HID 37", "active": True}
+    client = FakeMillenniumClient(rows=[
+        export_row(PID, "Ada", "Lovelace", slots=[phone, None]),
+        export_row("44444", "Grace", "Hopper", slots=[theirs]),
+    ])
+    client.imports = []
+    client.import_cardholders = lambda f: (client.imports.append(f), ImportLog({}, [], []))[1]
+    adapter = make_millennium_adapter(client, mode=MODE_SEOS)
+    list(adapter.list_people())
+    with caplog.at_level(logging.ERROR):
+        assert not adapter.write_back_credentials(PID, "card", [PHONE, WATCH])
+    adapter.finish_cycle()
+    assert client.imports == []
+    assert "cardholder 44444 (Grace Hopper) already holds it" in caplog.text
