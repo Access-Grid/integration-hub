@@ -137,6 +137,7 @@ def identities_from_card(card: Any) -> list[CredentialIdentity]:
                     activate,
                     # Each half of a pair carries its own dates.
                     _as_datetime(_attr(entry, ("expiration_date",))) or expire,
+                    _attr(entry, ("device_type",)),
                 )
             )
 

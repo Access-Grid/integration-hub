@@ -125,6 +125,9 @@ class CredentialIdentity:
     card_number: str
     activate_date: datetime | None = None
     deactivate_date: datetime | None = None
+    # The device holding it, as AccessGrid names it ("iphone", "apple_watch");
+    # empty for a card of the pass itself rather than one device's.
+    device_type: str = ""
 
 
 @dataclass
