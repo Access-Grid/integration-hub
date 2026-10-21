@@ -91,6 +91,23 @@ def test_rows_9_11_a_tracked_pass_with_no_card_recorded_is_an_error(
     assert "does not match what we recorded" in caplog.text
 
 
+def test_a_row_that_never_got_a_pass_does_not_block_a_new_one(make_millennium_adapter, caplog):
+    """Seen on-site: a cardholder's pass was deleted, and rows left pending
+    since an issue that failed long ago refused the new trigger card."""
+    tracking.upsert(
+        pacs_person_id=PID, pacs_credential_id="seos", ag_card_id=None,
+        full_name="x", employee_id=PID, status="deleted",
+    )
+    for credential_id in ("slot2", "slot3"):
+        tracking.upsert(
+            pacs_person_id=PID, pacs_credential_id=credential_id, ag_card_id=None,
+            full_name="x", employee_id=PID, status="pending",
+        )
+    with caplog.at_level(logging.ERROR):
+        assert set(_creds(make_millennium_adapter, _card("432", facility="111"))) == {"card"}
+    assert "does not match what we recorded" not in caplog.text
+
+
 def test_row_12_a_new_cardholder_with_a_new_trigger_card_gets_a_pass(make_millennium_adapter):
     """Recorded at once, so the next cycle sees a known card, not a new one."""
     [cred] = _creds(make_millennium_adapter, _card("1", active=False)).values()
