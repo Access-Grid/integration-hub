@@ -949,10 +949,18 @@ def _card_problem(pid: str, card: tuple[str, str], problem: str) -> None:
 
 
 def _tracked_pass(pid: str, credential_id: str | None = None) -> bool:
-    """Whether we track a live AccessGrid pass for this cardholder (or one pass)."""
+    """Whether we track a live AccessGrid pass for this cardholder (or one pass).
+
+    A row counts only if it has a pass. Seen on-site: rows left pending since
+    an issue that failed, never given a pass, read as a pass and refused
+    every new trigger card the cardholder was given.
+    """
     from ....db.connection import execute_one
 
-    sql = "SELECT 1 FROM ag_credentials WHERE pacs_person_id = ? AND status != 'deleted'"
+    sql = (
+        "SELECT 1 FROM ag_credentials WHERE pacs_person_id = ? AND status != 'deleted' "
+        "AND ag_card_id IS NOT NULL AND ag_card_id != ''"
+    )
     params: tuple = (pid,)
     if credential_id is not None:
         sql += " AND pacs_credential_id = ?"
