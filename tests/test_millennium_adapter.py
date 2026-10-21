@@ -236,10 +236,14 @@ def test_the_ledger_stores_card_identity_encrypted():
     assert PacsCards.get("33137", "seos")[0]["card_number"] == "5001"
 
 
-def test_every_change_to_the_ledger_is_logged(caplog):
-    """So the Logs tab shows what the sync is tracking, card by card."""
+def test_every_change_to_the_ledger_is_logged(caplog, monkeypatch):
+    """So the Logs tab shows what the sync is tracking, card by card, with
+    whose card it is and which slot it is in."""
     import logging
 
+    from agsync.lib.pacs.millennium_ultra import pacs_cards
+
+    monkeypatch.setattr(pacs_cards, "NAMES", {"33137": "Ada Lovelace"})
     card = {"slot": 1, "card_number": "5001", "facility_code": "66", "pending": "write"}
     with caplog.at_level(logging.INFO):
         PacsCards.record("33137", "card", [card])
@@ -247,8 +251,10 @@ def test_every_change_to_the_ledger_is_logged(caplog):
         PacsCards.forget("33137", "card")
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Millennium cards:")]
     assert lines == [
-        "Millennium cards: 33137 card — now tracking card 66/5001 "
+        "Millennium cards: 33137 (Ada Lovelace) card — now tracking card 66/5001 "
         "(slot 1, waiting for AccessGrid's card to replace it)",
-        "Millennium cards: 33137 card — card 66/5001: moved to slot 3; done",
-        "Millennium cards: 33137 card — no longer tracking card 66/5001",
+        "Millennium cards: 33137 (Ada Lovelace) card — card 66/5001 in slot 1: "
+        "moved to slot 3; done",
+        "Millennium cards: 33137 (Ada Lovelace) card — no longer tracking card 66/5001 "
+        "(was slot 3)",
     ]

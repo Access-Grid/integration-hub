@@ -50,7 +50,7 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
-from . import export, import_file, migrate
+from . import export, import_file, migrate, pacs_cards
 from .client import (
     ANTIFORGERY_COOKIE_PREFIX,
     COMPANY_COOKIE,
@@ -59,7 +59,7 @@ from .client import (
     MillenniumUltraClient,
 )
 from .export import Slot
-from .pacs_cards import PacsCards
+from .pacs_cards import PacsCards, who
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +214,7 @@ class MillenniumUltraAdapter:
             by_id.setdefault(row.employee_id, []).append((row, email))
 
         self._cardholders = {}
+        pacs_cards.NAMES.clear()
         self._ours = {key.partition(":")[0] for key in PacsCards.all()}
         for employee_id, matches in by_id.items():
             if len(matches) > 1:
@@ -225,6 +226,9 @@ class MillenniumUltraAdapter:
                 continue
             row, email = matches[0]
             self._cardholders[employee_id] = row
+            pacs_cards.NAMES[employee_id] = " ".join(
+                p for p in (row.first_name, row.last_name) if p
+            )
             yield Person(
                 id=employee_id,
                 full_name=" ".join(p for p in (row.first_name, row.last_name) if p),
@@ -305,7 +309,7 @@ class MillenniumUltraAdapter:
             logger.warning(
                 "Millennium: cardholder %s credential %s was switched off in Millennium "
                 "after we switched it on — leaving it off",
-                pid, credential_id,
+                who(pid), credential_id,
             )
             return False
         for e in cards:
@@ -370,9 +374,9 @@ class MillenniumUltraAdapter:
                 card = (e["facility_code"], e["card_number"])
                 if card in skipped_cards:
                     logger.error(
-                        "Millennium did not take card %s/%s for %s — keeping it to try "
-                        "again: %s",
-                        *card, pid, skipped_cards[card],
+                        "Millennium did not take card %s/%s in slot %s for %s — keeping "
+                        "it to try again: %s",
+                        *card, e["slot"], who(pid), skipped_cards[card],
                     )
                     continue
                 taken = taken or e["pending"] == "insert"
@@ -400,22 +404,29 @@ class MillenniumUltraAdapter:
                 card = (e["facility_code"], e["card_number"])
                 if card in present:
                     if dryrun.active():
-                        dryrun.would("delete card %s/%s from cardholder %s", *card, pid)
+                        dryrun.would(
+                            "delete card %s/%s in slot %s from cardholder %s",
+                            *card, e["slot"], who(pid),
+                        )
                         continue
                     try:
                         deleted = self._client.delete_card_by_number(pid, *card)
                     except MillenniumError as err:
                         logger.warning(
-                            "Millennium: could not delete card %s/%s from %s: %s",
-                            *card, pid, err,
+                            "Millennium: could not delete card %s/%s in slot %s from %s: %s",
+                            *card, e["slot"], who(pid), err,
                         )
                         continue
                     if not deleted:
                         logger.warning(
-                            "Millennium refused to delete card %s/%s from %s", *card, pid,
+                            "Millennium refused to delete card %s/%s in slot %s from %s",
+                            *card, e["slot"], who(pid),
                         )
                         continue
-                    logger.info("Millennium: deleted card %s/%s from %s", *card, pid)
+                    logger.info(
+                        "Millennium: deleted card %s/%s in slot %s from %s",
+                        *card, e["slot"], who(pid),
+                    )
                 entries.remove(e)
             if entries:
                 PacsCards.record(pid, credential_id, entries)
@@ -483,7 +494,7 @@ class MillenniumUltraAdapter:
         if any(e.get("pending") == "insert" for e in entries) or len(new) > len(slots):
             logger.warning(
                 "Millennium: no room on cardholder %s for %d card(s) of %s — not writing",
-                pid, len(new), credential_id,
+                who(pid), len(new), credential_id,
             )
             return False
         for identity, slot in zip(new, slots, strict=False):
@@ -600,9 +611,9 @@ class MillenniumUltraAdapter:
             logger.info(
                 "Millennium: forgetting the cards recorded for cardholder %s "
                 "under %s (%s) — none of them are on the cardholder any more",
-                pid, credential_id,
+                who(pid), credential_id,
                 ", ".join(
-                    f"{e.get('facility_code')}/{e.get('card_number')}"
+                    f"{e.get('facility_code')}/{e.get('card_number')} in slot {e.get('slot')}"
                     for e in entries
                 ) or "nothing",
             )
@@ -702,8 +713,9 @@ class MillenniumUltraAdapter:
                     e["status"] = "dormant" if dormant else "live"
                     changed = True
                     logger.info(
-                        "Millennium: cardholder %s card %s/%s %s the trigger format — %s",
-                        pid, e["facility_code"], e["card_number"],
+                        "Millennium: cardholder %s card %s/%s in slot %s %s the trigger "
+                        "format — %s",
+                        who(pid), e["facility_code"], e["card_number"], e.get("slot"),
                         "left" if dormant else "is back in",
                         "holding its pass" if dormant else "tracking it again",
                     )
@@ -738,7 +750,7 @@ class MillenniumUltraAdapter:
                 held.update(cid for cid, entries in mine.items() if recorded in entries)
                 _card_problem(
                     pid, card,
-                    f"Millennium: cardholder {pid} slot {slot.index} holds card "
+                    f"Millennium: cardholder {who(pid)} slot {slot.index} holds card "
                     f"{card[0]}/{card[1]}, but we recorded {recorded['facility_code']}/"
                     f"{recorded['card_number']} there — not issuing",
                 )
@@ -746,8 +758,8 @@ class MillenniumUltraAdapter:
             if not mine and (self._card_recorded_elsewhere(pid, card) or _tracked_pass(pid)):
                 _card_problem(
                     pid, card,
-                    f"Millennium: cardholder {pid}'s trigger card {card[0]}/{card[1]} "
-                    "does not match what we recorded — not issuing",
+                    f"Millennium: cardholder {who(pid)}'s trigger card {card[0]}/{card[1]} "
+                    f"in slot {slot.index} does not match what we recorded — not issuing",
                 )
                 continue
             seos = self.mode == MODE_SEOS
@@ -797,7 +809,7 @@ class MillenniumUltraAdapter:
             logger.info(
                 "Millennium: skipping cardholder %s — a pass needs %d free card "
                 "slot(s), found %d",
-                pid, needed, empty,
+                who(pid), needed, empty,
             )
             return False
         return True
@@ -860,9 +872,9 @@ class MillenniumUltraAdapter:
             slot = live.get(key)
             if slot is None:
                 logger.info(
-                    "Millennium: card %s/%s is gone from cardholder %s — "
-                    "suspending the pass",
-                    key[0], key[1], pid,
+                    "Millennium: card %s/%s (was in slot %s) is gone from cardholder "
+                    "%s — suspending the pass",
+                    key[0], key[1], entry.get("slot"), who(pid),
                 )
                 status = CredentialStatus.SUSPENDED
                 break
@@ -873,16 +885,16 @@ class MillenniumUltraAdapter:
                     held_for_install = True
                     continue
                 logger.info(
-                    "Millennium: card %s/%s is inactive on cardholder %s — "
+                    "Millennium: card %s/%s in slot %s is inactive on cardholder %s — "
                     "suspending the pass",
-                    key[0], key[1], pid,
+                    key[0], key[1], slot.index, who(pid),
                 )
                 status = CredentialStatus.SUSPENDED
                 break
         if status is CredentialStatus.ACTIVE and held_for_install:
             logger.info(
                 "Millennium: cardholder %s %s is off until the pass is installed",
-                pid, credential_id,
+                who(pid), credential_id,
             )
             status = CredentialStatus.AWAITING_INSTALL
         now = datetime.now(UTC)
@@ -892,15 +904,16 @@ class MillenniumUltraAdapter:
             logger.info(
                 "Millennium: cardholder %s is not valid until %s — holding the "
                 "pass until then",
-                pid, activate_date.strftime("%Y-%m-%d"),
+                who(pid), activate_date.strftime("%Y-%m-%d"),
             )
             status = CredentialStatus.SUSPENDED
 
         logger.info(
             "Millennium: cardholder %s → %s %s credential (%s); slots %s",
-            pid, status.value, credential_id,
+            who(pid), status.value, credential_id,
             ", ".join(
-                f"{e.get('facility_code')}/{e.get('card_number')}" for e in ledger
+                f"{e.get('facility_code')}/{e.get('card_number')} in slot {e.get('slot')}"
+                for e in ledger
             ) or "nothing written yet",
             _describe(slots),
         )

@@ -152,9 +152,15 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
             )
 
         try:
-            logger.info("  Deleting AG card %s — %s", tracked.ag_card_id, reason)
+            logger.info(
+                "  Deleting AG card %s for %s — %s",
+                tracked.ag_card_id, tracking.label(tracked), reason,
+            )
             if dryrun.active():
-                dryrun.would("delete AG card %s — %s", tracked.ag_card_id, reason)
+                dryrun.would(
+                    "delete AG card %s for %s — %s",
+                    tracked.ag_card_id, tracking.label(tracked), reason,
+                )
                 continue
             ag.access_cards.delete(card_id=tracked.ag_card_id)
             tracking.mark_deleted(
@@ -243,8 +249,8 @@ def _retire_deleted_credentials(
             )
         except Exception as e:  # noqa: BLE001 — one cardholder must not stop the cycle
             logger.error(
-                "  Failed to retire credentials for %s/%s: %s",
-                tracked.pacs_person_id, tracked.pacs_credential_id, e,
+                "  Failed to retire credentials for %s: %s",
+                tracking.label(tracked), e,
             )
             continue
         retired += count
