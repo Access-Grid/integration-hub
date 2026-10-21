@@ -123,7 +123,7 @@ def test_a_card_millennium_skipped_stays_pending_and_is_an_error(make_millennium
     )
     with caplog.at_level(logging.ERROR):
         adapter.finish_cycle()
-    assert "Millennium did not take card 66/5002 for 33137" in caplog.text
+    assert "Millennium did not take card 66/5002 in slot 2 for 33137 (Ada Lovelace)" in caplog.text
     by_card = {e["card_number"]: e for e in PacsCards.get(PID, cid)}
     assert by_card["5002"]["pending"] == "insert", "tried again next cycle"
     assert "pending" not in by_card["5001"]

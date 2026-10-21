@@ -70,9 +70,9 @@ def _gate_debug(tracked, cards: list, desired, cred) -> None:
             else cred.status is not CredentialStatus.ACTIVE
         )
         logger.info(
-            "%s %s/%s: install gate read %d card(s) via tracked id %s: %s "
+            "%s %s: install gate read %d card(s) via tracked id %s: %s "
             "| pacs=%r -> wants %s -> %s",
-            SUSPEND_DEBUG, tracked.pacs_person_id, tracked.pacs_credential_id,
+            SUSPEND_DEBUG, tracking.label(tracked),
             len(cards), tracked.ag_card_id, seen, cred.status.value,
             desired.value,
             "leaving it alone" if already
@@ -142,9 +142,9 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
         )
         if not cards:
             logger.warning(
-                "  Not setting the card state for %s/%s — AG card %s did not "
+                "  Not setting the card state for %s — AG card %s did not "
                 "resolve to any card",
-                tracked.pacs_person_id, tracked.pacs_credential_id,
+                tracking.label(tracked),
                 tracked.ag_card_id,
             )
             continue
@@ -165,8 +165,8 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
         try:
             verb, why = _STATUS_REASON[desired]
             logger.info(
-                "  %s card for %s/%s — the pass is %s",
-                verb, tracked.pacs_person_id, tracked.pacs_credential_id, why,
+                "  %s card for %s — the pass is %s",
+                verb, tracking.label(tracked), why,
             )
             if pacs.update_credential_status(
                 tracked.pacs_person_id, tracked.pacs_credential_id, desired,
@@ -174,8 +174,8 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
                 changed += 1
         except Exception as e:  # noqa: BLE001 — one cardholder must not stop the cycle
             logger.error(
-                "  Could not set the card state for %s/%s: %s",
-                tracked.pacs_person_id, tracked.pacs_credential_id, e,
+                "  Could not set the card state for %s: %s",
+                tracking.label(tracked), e,
             )
     if changed:
         logger.info("Phase 4: %d card(s) brought in line with their pass", changed)
@@ -237,8 +237,8 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
 
         try:
             logger.info(
-                "  Pushing AG state '%s' to PACS for %s/%s",
-                ag_state, tracked.pacs_person_id, tracked.pacs_credential_id,
+                "  Pushing AG state '%s' to PACS for %s",
+                ag_state, tracking.label(tracked),
             )
             ok = pacs.update_credential_status(
                 tracked.pacs_person_id, tracked.pacs_credential_id, desired,
@@ -250,13 +250,13 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
                 )
             else:
                 logger.warning(
-                    "  PACS rejected status update for %s/%s",
-                    tracked.pacs_person_id, tracked.pacs_credential_id,
+                    "  PACS rejected status update for %s",
+                    tracking.label(tracked),
                 )
         except Exception as e:  # noqa: BLE001
             logger.error(
-                "  Failed to update PACS for %s/%s: %s",
-                tracked.pacs_person_id, tracked.pacs_credential_id, e,
+                "  Failed to update PACS for %s: %s",
+                tracking.label(tracked), e,
             )
 
     logger.info("Phase 4 done: %d PACS update(s)", updated)
@@ -287,9 +287,9 @@ def _push_new_credentials(
             # The exit that hides a missing watch credential: nothing is
             # offered to the PACS, nothing is written, and nothing is said.
             logger.warning(
-                "  Not writing credentials for %s/%s — the PACS reported no such "
+                "  Not writing credentials for %s — the PACS reported no such "
                 "credential this cycle",
-                tracked.pacs_person_id, tracked.pacs_credential_id,
+                tracking.label(tracked),
             )
             continue
         if not cred.allocate_identity:
@@ -310,15 +310,15 @@ def _push_new_credentials(
         )
         if not cards:
             logger.warning(
-                "  Not writing credentials for %s/%s — AG card %s did not resolve "
+                "  Not writing credentials for %s — AG card %s did not resolve "
                 "to any card (sync_ref %s)",
-                tracked.pacs_person_id, tracked.pacs_credential_id,
+                tracking.label(tracked),
                 tracked.ag_card_id, tracked.sync_ref or "none",
             )
             continue
         logger.info(
-            "  %s/%s resolved to %d AG card(s): %s",
-            tracked.pacs_person_id, tracked.pacs_credential_id, len(cards),
+            "  %s resolved to %d AG card(s): %s",
+            tracking.label(tracked), len(cards),
             ", ".join(
                 f"{getattr(c, 'id', '?')} {getattr(c, 'site_code', '?')}/"
                 f"{getattr(c, 'card_number', '?')} {state_of(c) or '?'}"

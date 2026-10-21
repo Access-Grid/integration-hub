@@ -50,9 +50,9 @@ def _suspend_debug_before(snapshot, tracked, ag_state: str, cred) -> None:
         )
         ids = [getattr(c, "id", "?") for c in halves]
         logger.info(
-            "%s %s/%s: suspending by tracked id %s — resolves to %d card(s): %s "
+            "%s %s: suspending by tracked id %s — resolves to %d card(s): %s "
             "| listing state=%r last_known=%r pacs=%r | tracked id is %s",
-            SUSPEND_DEBUG, tracked.pacs_person_id, tracked.pacs_credential_id,
+            SUSPEND_DEBUG, tracking.label(tracked),
             tracked.ag_card_id, len(halves),
             "; ".join(_describe_card(c) for c in halves) or "none",
             ag_state, tracked.last_known_ag_state, cred.status.value,
@@ -87,8 +87,8 @@ def _suspend_debug_after(snapshot, tracked, ag) -> None:
         except Exception as e:  # noqa: BLE001
             pass_state = f"{tracked.ag_card_id} re-read failed: {e}"
         logger.info(
-            "%s %s/%s: suspend returned without error. Pass now %s | halves now %s",
-            SUSPEND_DEBUG, tracked.pacs_person_id, tracked.pacs_credential_id,
+            "%s %s: suspend returned without error. Pass now %s | halves now %s",
+            SUSPEND_DEBUG, tracking.label(tracked),
             pass_state, "; ".join(fresh) or "none",
         )
     except Exception as e:  # noqa: BLE001
@@ -115,8 +115,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         if not cred.trigger_active:
             try:
                 logger.info(
-                    "  Terminating AG card %s — trigger no longer set on %s/%s",
-                    tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+                    "  Terminating AG card %s — trigger no longer set on %s",
+                    tracked.ag_card_id, tracking.label(tracked),
                 )
                 if dryrun.active():
                     dryrun.would(
@@ -144,8 +144,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         # If AG state diverged from what we last knew, leave it for phase 4.
         if ag_state and ag_state != tracked.last_known_ag_state and tracked.last_known_ag_state:
             logger.debug(
-                "  Skip %s/%s — AG changed (%s → %s); phase 4 will reconcile",
-                tracked.pacs_person_id, tracked.pacs_credential_id,
+                "  Skip %s — AG changed (%s → %s); phase 4 will reconcile",
+                tracking.label(tracked),
                 tracked.last_known_ag_state, ag_state,
             )
             continue
@@ -176,17 +176,17 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             and getattr(cred, "allocate_identity", False)
         ):
             logger.debug(
-                "  Skip %s/%s — the pass is not installed yet, so its card is "
+                "  Skip %s — the pass is not installed yet, so its card is "
                 "inactive by design",
-                tracked.pacs_person_id, tracked.pacs_credential_id,
+                tracking.label(tracked),
             )
             continue
 
         try:
             if desired == "suspended" and ag_state in ("active", "created", ""):
                 logger.info(
-                    "  Suspending AG card %s (PACS credential %s/%s is %s)",
-                    tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+                    "  Suspending AG card %s (PACS credential %s is %s)",
+                    tracked.ag_card_id, tracking.label(tracked),
                     cred.status.value,
                 )
                 if dryrun.active():
@@ -206,8 +206,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                 updated += 1
             elif desired == "active" and ag_state == "suspended":
                 logger.info(
-                    "  Resuming AG card %s (PACS credential %s/%s is %s)",
-                    tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
+                    "  Resuming AG card %s (PACS credential %s is %s)",
+                    tracked.ag_card_id, tracking.label(tracked),
                     cred.status.value,
                 )
                 if dryrun.active():
@@ -226,8 +226,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         except AccessGridError as e:
             logger.error("  Failed to update AG card %s: %s", tracked.ag_card_id, e)
             logger.info(
-                "%s %s/%s: the call raised %s: %s",
-                SUSPEND_DEBUG, tracked.pacs_person_id, tracked.pacs_credential_id,
+                "%s %s: the call raised %s: %s",
+                SUSPEND_DEBUG, tracking.label(tracked),
                 type(e).__name__, e,
             )
 

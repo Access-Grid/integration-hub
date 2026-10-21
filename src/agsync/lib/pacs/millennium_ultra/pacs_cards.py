@@ -10,6 +10,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Employee ID -> cardholder name, from the latest export, so every log line
+# can say who a card belongs to.
+NAMES: dict[str, str] = {}
+
+
+def who(person_id: str) -> str:
+    """How the logs name a cardholder: "990001 (Smoke Alpha)"."""
+    name = NAMES.get(person_id)
+    return f"{person_id} ({name})" if name else person_id
+
 # What a pending change means, in the words the log uses.
 _WAITING = {
     "write": "waiting for AccessGrid's card to replace it",
@@ -27,7 +37,7 @@ def _log_changes(person_id: str, credential_id: str, before: list[dict], after: 
 
     old = {card(e): e for e in before}
     new = {card(e): e for e in after}
-    where = f"Millennium cards: {person_id} {credential_id} —"
+    where = f"Millennium cards: {who(person_id)} {credential_id} —"
     for key, e in new.items():
         was = old.get(key)
         if was is None:
@@ -48,9 +58,13 @@ def _log_changes(person_id: str, credential_id: str, before: list[dict], after: 
         if "active" in e and e.get("active") != was.get("active"):
             changes.append(f"Active recorded {'on' if e['active'] else 'off'}")
         if changes:
-            logger.info("%s card %s/%s: %s", where, *key, "; ".join(changes))
+            logger.info(
+                "%s card %s/%s in slot %s: %s", where, *key, was.get("slot"), "; ".join(changes),
+            )
     for key in old.keys() - new.keys():
-        logger.info("%s no longer tracking card %s/%s", where, *key)
+        logger.info(
+            "%s no longer tracking card %s/%s (was slot %s)", where, *key, old[key].get("slot"),
+        )
 
 
 class PacsCards:

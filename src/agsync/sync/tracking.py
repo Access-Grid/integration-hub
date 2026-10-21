@@ -56,6 +56,13 @@ class TrackedCredential:
     last_synced_expiration: str | None = None
 
 
+def label(tracked: Any) -> str:
+    """How the logs name a tracked pass: "990001/card (Smoke Alpha)"."""
+    who = f"{tracked.pacs_person_id}/{tracked.pacs_credential_id}"
+    name = getattr(tracked, "full_name", "")
+    return f"{who} ({name})" if name else who
+
+
 def _row_to_tracked(row: Any) -> TrackedCredential:
     return TrackedCredential(
         pacs_person_id=row["pacs_person_id"],

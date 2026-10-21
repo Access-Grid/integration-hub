@@ -159,7 +159,7 @@ def test_a_pass_not_yet_issued_waits_when_its_room_is_taken(make_millennium_adap
     assert set(_pair(make_millennium_adapter, _card("1"))) == {"card"}
     with caplog.at_level(logging.INFO):
         assert _pair(make_millennium_adapter, _card("1"), other, other) == {}
-    assert f"skipping cardholder {PID} — a pass needs 1 free card slot(s), found 0" in caplog.text
+    assert f"skipping cardholder {PID} (Ada Lovelace) — a pass needs 1 free card slot(s), found 0" in caplog.text
     assert PacsCards.get(PID, "card"), "still recorded, for when room appears"
     assert set(_pair(make_millennium_adapter, _card("1"), other)) == {"card"}
 
