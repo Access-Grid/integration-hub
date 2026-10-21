@@ -466,20 +466,27 @@ class MillenniumUltraAdapter:
     def write_back_credentials(
         self, person_id: str, credential_id: str, identities: list[CredentialIdentity]
     ) -> bool:
-        """Record AccessGrid's cards for a pass that has just been issued.
+        """Record AccessGrid's cards for a pass: when it is issued, and for
+        each device installed later.
 
-        Only a pass whose trigger card is still waiting to be overwritten is
-        written to; once its cards are in, later offers change nothing. The
-        first card goes into the trigger card's slot, a pair's second into
-        an empty one. finish_cycle sends them.
+        A just-issued pass's first card goes into the trigger card's slot, a
+        pair's second into an empty one. Once its cards are in, a card number
+        we have not recorded is a new device's, a watch installed after the
+        phone, and goes into an empty slot. Only beside a card of the pass
+        we already hold: a pass none of whose cards we recorded is not
+        written. finish_cycle sends them, switched off; the install gate
+        switches them on.
         """
         pid = str(person_id)
         holder = self._cardholders.get(pid)
         entries = PacsCards.get(pid, credential_id)
         trigger = next((e for e in entries if e.get("pending") == "write"), None)
-        if holder is None or trigger is None:
+        if holder is None or not entries:
             return False
         recorded = {(e["facility_code"], e["card_number"]) for e in entries}
+        offered = {(str(i.site_code), str(i.card_number)) for i in identities}
+        if trigger is None and not recorded & offered:
+            return False
         new = [
             i for i in identities
             if (str(i.site_code), str(i.card_number)) not in recorded
@@ -490,7 +497,7 @@ class MillenniumUltraAdapter:
             e["slot"] for cards in PacsCards.entries_for_person(pid).values() for e in cards
         }
         empty = [s.index for s in holder.slots if s.empty and s.index not in taken]
-        slots = [trigger["slot"]] + empty
+        slots = ([trigger["slot"]] if trigger else []) + empty
         if any(e.get("pending") == "insert" for e in entries) or len(new) > len(slots):
             logger.warning(
                 "Millennium: no room on cardholder %s for %d card(s) of %s — not writing",

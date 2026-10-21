@@ -143,3 +143,60 @@ def test_a_retried_second_card_copies_the_levels_from_the_first(make_millennium_
     row = _row(client.imports[0])
     assert row["Card2EncodedCardNo."] == "5002"
     assert row["Card2AccessLevel1"] == "MASTER 1"
+
+
+def _written(make_millennium_adapter, *extra_slots):
+    """A pass whose phone card, 66/5001, is already in slot 1 and switched on."""
+    PacsCards.record(PID, "card", [
+        {"slot": 1, "card_number": "5001", "facility_code": "66", "active": True},
+    ])
+    phone = {"card_number": "5001", "facility_code": "66", "card_format": "HID 37",
+             "active": True, "access_levels": ["MASTER 1"]}
+    return _adapter(make_millennium_adapter, phone, *extra_slots)
+
+
+def test_a_watch_installed_after_the_phone_gets_its_own_card(make_millennium_adapter):
+    """Seen on-site: the watch's card number appears only once it installs,
+    after the pass's cards are written, and was never written."""
+    adapter, client = _written(make_millennium_adapter, None)
+    assert adapter.write_back_credentials(
+        PID, "card", [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
+    )
+    adapter.finish_cycle()
+    row = _row(client.imports[0])
+    assert (row["Card2EncodedCardNo."], row["Card2FacilityCode"]) == ("5002", "66")
+    assert row["Card2Active"] == "False", "the install gate switches it on"
+    assert row["Card2AccessLevel1"] == "MASTER 1"
+    assert "Card1EncodedCardNo." not in row, "the phone's card is left as it is"
+    assert {e["card_number"]: e["active"] for e in PacsCards.get(PID, "card")} == {
+        "5001": True, "5002": False,
+    }
+
+
+def test_a_recorded_card_deleted_in_millennium_is_not_written_again(make_millennium_adapter):
+    """Its pass is suspended for it, as before; the sync does not put it back."""
+    PacsCards.record(PID, "card", [
+        {"slot": 1, "card_number": "5001", "facility_code": "66", "active": True},
+        {"slot": 2, "card_number": "5002", "facility_code": "66", "active": True},
+    ])
+    phone = {"card_number": "5001", "facility_code": "66", "card_format": "HID 37", "active": True}
+    adapter, client = _adapter(make_millennium_adapter, phone, None)
+    adapter.write_back_credentials(
+        PID, "card", [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
+    )
+    adapter.finish_cycle()
+    assert client.imports == []
+
+
+def test_a_new_device_with_no_empty_slot_is_not_written(make_millennium_adapter, caplog):
+    import logging
+
+    other = {"card_number": "7", "facility_code": "1", "card_format": "Wiegand", "active": True}
+    adapter, client = _written(make_millennium_adapter, other, other)
+    with caplog.at_level(logging.WARNING):
+        assert not adapter.write_back_credentials(
+            PID, "card", [CredentialIdentity("66", "5001"), CredentialIdentity("66", "5002")],
+        )
+    adapter.finish_cycle()
+    assert client.imports == []
+    assert "no room on cardholder 33137 (Ada Lovelace) for 1 card(s)" in caplog.text
