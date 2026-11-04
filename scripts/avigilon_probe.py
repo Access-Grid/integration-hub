@@ -73,6 +73,63 @@ _WHOLE_LIST_TIMEOUT = 300.0  # unpaged; a large site took over 30s
 _PIECE_TIMEOUT = 120.0
 MODES = ("all", "xml")
 
+# What our adapter reads and writes (src/agsync/lib/pacs/avigilon/). Copied
+# rather than imported so the exe stays standalone; tests/test_avigilon_probe.py
+# fails if these drift from the client's. Field names are suffixes after the
+# `plasec` (or `avigilon`) prefix, as the client looks them up.
+_PREFIXES = ("plasec", "avigilon")
+IDENTITY_FIELDS = ("Fname", "Lname", "Name", "Idstatus", "identityEmailaddress", "identityPhone",
+                   "identityWorkphone", "identityTitle", "identityDepartment")
+# Token status and dates may instead sit under extended_attributes.
+TOKEN_FIELDS = {"Internalnumber": None, "Embossednumber": None, "Tokenstatus": "token_status",
+                "Issuedate": "formatted_issue_date", "Activatedate": "formatted_activate_date",
+                "Deactivatedate": "formatted_deactivate_date"}
+TOKEN_FORM_FIELDS = [
+    "plasecInternalnumber", "plasecEmbossednumber", "plasecPIN", "plasecTokenType",
+    "plasecTokenlevel", "plasecTokenMobileAppType", "plasecTokenOrigoMobileIdType",
+    "plasecDownload", "plasecTokenEnableReValidation", "plasecTokenUnitofUpdatePeriod",
+    "plasecTokenVIP", "plasecTrace", "plasectokenExtaccess", "plasecTokennoexpire",
+    "plasectokenPinexempt", "plasectokenUseloseexempt", "plasecTokenOffice",
+    "plasecTokenSetLockDown", "plasecTokenAuditOpenings", "plasecTokenOverridePrivacy",
+    "plasecTokenOverrideLockDown",
+]
+TOKEN_FORM_DATES = ["plasecIssuedate", "plasecActivatedate", "plasecDeactivatedate"]
+STATUS_CODES = {"active": "1", "inactive": "2", "not yet active": "3", "expired": "4"}
+DATE_FORMATS = ("%Y%m%d%H%M%SZ", "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y")
+
+
+def adapter_reads_date(text: str) -> bool:
+    """Whether the adapter's parse_date would accept this text."""
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        pass
+    for fmt in DATE_FORMATS:
+        try:
+            datetime.strptime(text, fmt)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _name_for(suffix: str, alt: str | None, names: set[str], ext_names: set[str]) -> str | None:
+    """The field name Unity used for what the adapter looks up as `suffix`, or None."""
+    hit = next((p + suffix for p in _PREFIXES if p + suffix in names), None)
+    if hit is None and alt and (alt in ext_names or alt in names):
+        hit = alt
+    return hit
+
+
+def attrs_of(raw: Any) -> dict[str, Any]:
+    """The fields of a row in either shape: flat, JSON:API, or wrapped in `data`."""
+    if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+        raw = raw["data"]
+    if not isinstance(raw, dict):
+        return {}
+    return raw["attributes"] if isinstance(raw.get("attributes"), dict) else raw
+
 
 def redact(value: Any, key: str = "", pii: bool = True) -> Any:
     """The value with anything personal swapped for a description of it."""
@@ -118,7 +175,10 @@ class Probe:
         # `formats` comes first so the answer to "JSON, XML or both?" heads
         # the report: per read, how many times each format answered or why not.
         self.report: dict[str, Any] = {"host": host, "mode": mode, "started": datetime.now().isoformat(),
-                                       "accessgrid": {}, "formats": {}, "steps": {}}
+                                       "accessgrid": {}, "formats": {}, "fields": {}, "steps": {}}
+        # Rows as read, per source ("token xml", "identity list json", ...), for
+        # comparing their field names and values against what the adapter expects.
+        self.rows: dict[str, list[dict[str, Any]]] = {}
         if mode == "xml":
             self.report = {**dict(list(self.report.items())[:4]), "xml_paging": {}, **self.report}
 
@@ -242,6 +302,7 @@ class Probe:
         xml_ids = self.identities_xml(samples)
         self.per_identity(json_ids or xml_ids, samples)
         self.card_formats()
+        self.compare_fields()
         return self.report
 
     def run_xml(self, samples: int) -> dict[str, Any]:
@@ -252,6 +313,7 @@ class Probe:
         self.dashboard()
         self.per_identity(self.xml_paging(samples), samples)
         self.card_formats()
+        self.compare_fields()
         return self.report
 
     def landing(self) -> None:
@@ -302,6 +364,7 @@ class Probe:
         if not isinstance(body, dict):
             return []
         rows = body.get("data") or []
+        self.rows.setdefault("identity list json", []).extend(attrs_of(r) for r in rows)
         self.note("identities_json", top_keys=sorted(body), meta=body.get("meta"),
                   rows_on_page=len(rows), sample=redact(rows[:samples]))
         self.report["formats"]["identities"]["json_total"] = (body.get("meta") or {}).get("recordsFiltered")
@@ -323,6 +386,7 @@ class Probe:
             return []
         self.report["formats"]["identities"]["xml_rows"] = len(rows)
         self.note("identities_xml", sample=redact(rows[:samples]))
+        self.rows.setdefault("identity list xml", []).extend(rows)
         return [r["cn"] for r in rows if r.get("cn") not in (None, "", "0")]
 
     def xml_paging(self, samples: int) -> list[str]:
@@ -402,6 +466,8 @@ class Probe:
                     for k, v in {**attrs, **ext}.items():
                         if "date" in k.lower() and v and len(s["date_examples"]) < 8:
                             s["date_examples"].add(f"{k}={v}")
+            self.rows.setdefault("token json", []).extend(attrs_of(t) for t in json_tokens)
+            self.rows.setdefault("token xml", []).extend(xml_tokens)
             if json_tokens:
                 self.note(f"tokens_json:{cn}", top_keys=sorted(body) if isinstance(body, dict) else "list",
                           sample=redact(json_tokens[:2]))
@@ -410,11 +476,62 @@ class Probe:
             detail = self.read_json("identity_detail", f"identity_json:{cn}", f"/identities/{cn}.json")
             if detail is not None:
                 self.note(f"identity_json:{cn}", sample=redact(detail))
-            self.read_xml("identity_detail", f"identity_xml:{cn}", f"/identities/{cn}.xml", "identities", "identity")
+                self.rows.setdefault("identity detail json", []).append(attrs_of(detail))
+            detail_xml = self.read_xml("identity_detail", f"identity_xml:{cn}", f"/identities/{cn}.xml",
+                                       "identities", "identity")
+            self.rows.setdefault("identity detail xml", []).extend(detail_xml or [])
             found.append(cn)
         for s in stats.values():
             s["date_examples"] = sorted(s["date_examples"])
         self.report["token_summary"] = stats
+
+    def compare_fields(self) -> None:
+        """Per source, which of the adapter's field names Unity actually sent,
+        whether the token form could be built, and whether the statuses and
+        dates are ones the adapter reads. Names, statuses and dates only —
+        none of them identify a person."""
+        for source, rows in self.rows.items():
+            if not rows:
+                continue
+            names = set().union(*(r.keys() for r in rows))
+            ext_names = set().union(*((r.get("extended_attributes") or {}).keys()
+                                      for r in rows if isinstance(r.get("extended_attributes"), dict)))
+            found: dict[str, Any] = {}
+            token = source.startswith("token")
+            wanted = TOKEN_FIELDS if token else dict.fromkeys(IDENTITY_FIELDS)
+            found["rows"] = len(rows)
+            found["adapter_reads"] = {s: _name_for(s, alt, names, ext_names) for s, alt in wanted.items()}
+            known = {v for v in found["adapter_reads"].values() if v}
+            if token:
+                form = TOKEN_FORM_FIELDS + TOKEN_FORM_DATES
+                found["write_form_missing"] = [f for f in form if f not in names]
+                known |= set(form)
+            # Names the adapter never looks at: a near-miss spelling shows up here.
+            found["other_names"] = sorted(names - known - {"extended_attributes"} | ext_names - known)
+
+            status_key = "Tokenstatus" if token else "Idstatus"
+            statuses: dict[str, int] = {}
+            dates = {"read": 0, "unreadable": []}
+            for r in rows:
+                ext = r.get("extended_attributes") if isinstance(r.get("extended_attributes"), dict) else {}
+                raw = ext.get("token_status") if token and ext.get("token_status") else \
+                    next((r[p + status_key] for p in _PREFIXES if r.get(p + status_key) not in (None, "")), "")
+                text = str(raw).strip()
+                label = f"{text!r} -> {'recognised' if text in ('1', '2', '3', '4') or text.lower() in STATUS_CODES else 'NOT RECOGNISED'}"
+                statuses[label] = statuses.get(label, 0) + 1
+                if token:
+                    for s in ("Issuedate", "Activatedate", "Deactivatedate"):
+                        v = str(ext.get(TOKEN_FIELDS[s]) or next((r[p + s] for p in _PREFIXES if r.get(p + s)), "")).strip()
+                        if not v:
+                            continue
+                        if adapter_reads_date(v):
+                            dates["read"] += 1
+                        elif v not in dates["unreadable"] and len(dates["unreadable"]) < 8:
+                            dates["unreadable"].append(v)
+            found["statuses"] = statuses
+            if token:
+                found["dates"] = dates
+            self.report["fields"][source] = found
 
     def card_formats(self) -> None:
         body = self.read_json("card_formats", "card_formats", "/card_formats.json")
