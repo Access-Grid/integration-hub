@@ -16,6 +16,7 @@ import pytest
 
 from agsync.lib.pacs.avigilon.adapter import AvigilonAdapter, parse_date
 from agsync.lib.pacs.avigilon.client import (
+    ROSTER_TIMEOUT,
     TOKEN_FORM_DATES,
     TOKEN_FORM_FIELDS,
     UnityAuthError,
@@ -50,9 +51,15 @@ class FakeUnity:
         self.fail = {}  # path -> status code
         self.posts = []
         self.ignore_writes = False
+        self.default_on_write = {}  # fields Unity sets on a write we did not send
         self.json_off = False  # a box with only the XML endpoints
         self.gets = []
         self.raw = {}  # path -> body served verbatim once signed in
+        # Where the CSRF token is handed out: "meta" (the live box), "cookie", or None.
+        self.csrf_where = "meta"
+        self.csrf = "csrf-abc"
+        self.xml_params = []  # query params of each /identities.xml read
+        self.timeouts = {}  # path -> read timeout of the last request for it
 
     @staticmethod
     def _xml(root, row, rows):
@@ -63,6 +70,7 @@ class FakeUnity:
         path = req.url.path
         if req.method == "GET":
             self.gets.append(path)
+        self.timeouts[path] = req.extensions.get("timeout", {}).get("read")
         if path in self.fail:
             return httpx.Response(self.fail[path])
         if path in self.raw and self.signed_in:
@@ -72,13 +80,17 @@ class FakeUnity:
         if path == "/sessions" and req.method == "POST":
             kind = "json" if "json" in req.headers.get("content-type", "") else "form"
             self.signed_in = kind == self.accept
-            return httpx.Response(302 if kind == "form" else 200, headers={"Location": "/"})
+            headers = {"Location": "/"}
+            if self.signed_in and self.csrf_where == "cookie":
+                headers["set-cookie"] = f"XSRF-TOKEN={self.csrf}; path=/"
+            return httpx.Response(302 if kind == "form" else 200, headers=headers)
         if path == "/sessions/new":
             return httpx.Response(200, text="<html>sign in</html>")
         if not self.signed_in:
             return httpx.Response(302, headers={"Location": "https://unity/sessions/new"})
         if path == "/":
-            return httpx.Response(200, text="dashboard")
+            meta = f'<meta name="csrf-token" content="{self.csrf}" />' if self.csrf_where == "meta" else ""
+            return httpx.Response(200, text=f"<html><head>{meta}</head>dashboard</html>")
         if path == "/identities.json":
             page, per = int(req.url.params.get("page", 1)), int(req.url.params.get("perpage", 100))
             start = 0 if self.per_page_cap else (page - 1) * per
@@ -86,7 +98,13 @@ class FakeUnity:
             return httpx.Response(200, json={"data": rows, "meta": {"recordsFiltered": len(self.identities)}})
         parts = path.strip("/").split("/")
         if path == "/identities.xml":
-            return self._xml("identities", "identity", self.identities)
+            q = dict(req.url.params)
+            self.xml_params.append(q)
+            rows = self.identities
+            if "page" in q:  # the live box honours page/perpage on the XML list
+                per = int(q["perpage"])
+                rows = rows[(int(q["page"]) - 1) * per:int(q["page"]) * per]
+            return self._xml("identities", "identity", rows)
         if parts[-1] == "tokens.xml":
             rows = [{k: v for k, v in t["attributes"].items() if k != "extended_attributes"}
                     | {"plasecTokenstatus": {"Active": "1", "Inactive": "2"}[
@@ -99,9 +117,13 @@ class FakeUnity:
             return httpx.Response(200, json={"data": self.details[parts[1][:-5]]})
         if req.method == "POST" and len(parts) == 4:
             form = {k: v[0] for k, v in parse_qs(req.content.decode()).items()}
+            if self.csrf_where is None or form.get("authenticity_token") != self.csrf \
+                    or req.headers.get("X-CSRF-Token") != self.csrf:
+                return httpx.Response(422, text="InvalidAuthenticityToken")
             self.posts.append(form)
             for t in [] if self.ignore_writes else self.tokens[parts[1]]:
                 if t["id"] == parts[3]:
+                    t["attributes"].update(self.default_on_write)
                     t["attributes"]["extended_attributes"]["token_status"] = {"1": "Active", "2": "Inactive"}[
                         form["token[plasecTokenstatus]"]]
             return httpx.Response(302, headers={"Location": f"/identities/{parts[1]}"})
@@ -317,15 +339,84 @@ def test_suspend_echoes_every_field_unchanged():
     assert all(f"token[{f}]" in form for f in TOKEN_FORM_FIELDS)
 
 
-def test_write_refused_when_unity_did_not_return_a_field():
+def test_field_unity_did_not_return_is_left_out_not_invented():
+    # The live box omits every field that was never set.
     token = _token("t1")
     del token["attributes"]["plasecTokenVIP"]
     fake = FakeUnity([_identity("a")], tokens={"a": [token]})
+    assert _adapter(fake).update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+    (form,) = fake.posts
+    assert "token[plasecTokenVIP]" not in form
+    assert form["token[plasecTokennoexpire]"] == "TRUE"
+
+
+def test_write_that_also_changes_another_field_is_a_failure():
+    token = _token("t1")
+    del token["attributes"]["plasecTokenVIP"]
+    fake = FakeUnity([_identity("a")], tokens={"a": [token]})
+    fake.default_on_write = {"plasecTokenVIP": "TRUE"}  # Unity filling in a field we left out
     assert not _adapter(fake).update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
-    assert fake.posts == []
 
 
 def test_write_that_does_not_stick_is_a_failure():
     fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1")]})
     fake.ignore_writes = True  # answers 302, changes nothing
     assert not _adapter(fake).update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+
+
+def test_csrf_token_comes_from_the_dashboard_meta_tag():
+    fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1")]})  # meta tag, no cookie: the live box
+    assert _adapter(fake).update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+    assert fake.posts[0]["authenticity_token"] == "csrf-abc"
+
+
+def test_csrf_cookie_is_the_fallback():
+    fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1")]})
+    fake.csrf_where = "cookie"
+    assert _adapter(fake).update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+
+
+def test_no_csrf_token_refuses_the_write_without_sending_it():
+    fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1")]})
+    fake.csrf_where = None
+    assert not _adapter(fake).update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+    assert not [g for g in fake.gets if "/tokens/" in g] and fake.posts == []
+
+
+def test_ldap_dates_are_utc():
+    # As the live box sends them; the Z once read as local time, hours off.
+    assert parse_date("20260520164208Z") == datetime(2026, 5, 20, 16, 42, 8, tzinfo=UTC)
+
+
+def test_sign_in_check_asks_xml_for_one_row():
+    # The whole XML list took 78s on the live box, past the 30s limit.
+    fake = FakeUnity([_identity(c) for c in "abc"])
+    fake.json_off = True
+    _client(fake).login()
+    assert fake.xml_params[0]["page"] == "1" and fake.xml_params[0]["perpage"] == "1"
+
+
+def test_whole_roster_read_gets_the_long_timeout():
+    fake = FakeUnity([_identity("a")])
+    fake.json_off = True
+    client = _client(fake)
+    client.list_identities()
+    assert fake.timeouts["/identities.xml"] == ROSTER_TIMEOUT
+    assert "page" not in fake.xml_params[-1]  # the roster itself is one whole read
+
+
+def _xml_identity(cn, **fields):
+    return {"cn": cn, "plasecFname": "Jim", "plasecLname": "Cooper", "plasecIdstatus": "1", **fields}
+
+
+def test_list_fields_are_not_blanked_by_a_sparser_detail():
+    fake = FakeUnity([_xml_identity("a", plasecidentityTitle="Nurse")], tokens={"a": [_token("t1")]},
+                     details={"a": {"cn": "a", "plasecFname": "Jim", "plasecidentityEmailaddress": "j@x.co"}})
+    (person,) = _adapter(fake).list_people()
+    assert person.title == "Nurse" and person.email == "j@x.co"
+
+
+def test_detail_is_not_fetched_when_the_list_has_the_email():
+    fake = FakeUnity([_xml_identity("a", plasecidentityEmailaddress="j@x.co")], tokens={"a": [_token("t1")]})
+    (person,) = _adapter(fake).list_people()
+    assert person.email == "j@x.co" and "/identities/a.json" not in fake.gets

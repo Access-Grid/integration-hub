@@ -19,6 +19,7 @@ deletes.
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Any
@@ -28,6 +29,9 @@ import httpx
 logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT = 30.0
+# The XML roster is one unpaged response. A live box with 12,939 identities
+# sent 20 MB in 78s, three times running; this leaves room for a slower one.
+ROSTER_TIMEOUT = 300.0
 HTTP_USER_AGENT = "AGSyncTool/0.1"
 PAGE_SIZE = 100
 # Ten thousand pages of a hundred is far past any real roster; reaching it
@@ -61,6 +65,11 @@ XML_IDENTITY_SEARCH = {
     "quick_search": "true", "qck_search_and_or": "&", "lnam": "", "fnam": "", "tkn": "",
     "search_pattern_fnam": "2", "search_pattern_lnam": "2", "group_id": "", "id": "",
 }
+
+# The CSRF token as Unity's pages carry it. A live box (Nov 2026) set no
+# XSRF-TOKEN cookie at all, so the cookie is only the fallback; our first
+# port of the Unity bridge read it this way too.
+_CSRF_META = re.compile(r"<meta[^>]+name=[\"']csrf-token[\"'][^>]+content=[\"']([^\"']+)[\"']", re.I)
 
 # Unity writes statuses as words in some responses and digits in others.
 _STATUS_CODES = {"active": "1", "inactive": "2", "not yet active": "3", "expired": "4"}
@@ -109,6 +118,10 @@ def xml_rows(text: str, root_tag: str, row_tag: str) -> list[dict[str, str]]:
                 row.setdefault(child.tag, (child.text or "").strip())
         rows.append(row)
     return rows
+
+
+def _text(value: Any) -> str:
+    return "" if value is None else str(value)
 
 
 def _field(attrs: dict[str, Any], suffix: str) -> str:
@@ -202,6 +215,7 @@ class UnityClient:
             follow_redirects=False,
         )
         self._logged_in = False
+        self._csrf_meta = ""
         # Reads ("identities", "tokens") where XML answered after JSON failed.
         self._xml_first: set[str] = set()
 
@@ -239,6 +253,7 @@ class UnityClient:
                 raise UnityError(f"Unity unreachable: {type(e).__name__}: {e}") from e
             if signed_in:
                 self._logged_in = True
+                self._csrf_meta = self._read_csrf_meta()
                 return
         raise UnityAuthError("Unity rejected the username or password")
 
@@ -251,13 +266,15 @@ class UnityClient:
         identity list errors raises, so a 500 is never reported to the
         operator as a wrong password.
         """
+        # One row is enough. The live XML list honours page/perpage; a box
+        # that ignores them sends the whole roster, hence the roster timeout.
         probes = (
             ("/identities.json", {"page": 1, "perpage": 1}, "json"),
-            ("/identities.xml", XML_IDENTITY_SEARCH, "xml"),
+            ("/identities.xml", {**XML_IDENTITY_SEARCH, "page": 1, "perpage": 1}, "xml"),
         )
         answers = []
         for path, params, kind in probes:
-            resp = self._client.get(path, params=params)
+            resp = self._client.get(path, params=params, timeout=ROSTER_TIMEOUT)
             if self._is_session_expired(resp):
                 return False
             if resp.status_code == 200 and kind in resp.headers.get("content-type", ""):
@@ -268,9 +285,21 @@ class UnityClient:
         raise UnityError("signed in, but the identity list would not answer: "
                          + "; ".join(f"{p} HTTP {s}" for p, s in answers))
 
+    def _read_csrf_meta(self) -> str:
+        """The CSRF token from the dashboard's meta tag, or '' if there is none."""
+        try:
+            resp = self._client.get("/", follow_redirects=True, headers={"Accept": "text/html"})
+        except httpx.HTTPError as e:
+            logger.warning("Unity: could not load the dashboard for its CSRF token: %s", e)
+            return ""
+        match = _CSRF_META.search(resp.text)
+        if not match and not self._client.cookies.get("XSRF-TOKEN"):
+            logger.warning("Unity: no CSRF token in the dashboard or the cookies — writes will be refused")
+        return match.group(1) if match else ""
+
     @property
     def csrf_token(self) -> str:
-        return self._client.cookies.get("XSRF-TOKEN") or ""
+        return self._csrf_meta or self._client.cookies.get("XSRF-TOKEN") or ""
 
     @staticmethod
     def _is_session_expired(resp: httpx.Response) -> bool:
@@ -348,7 +377,7 @@ class UnityClient:
         return rows
 
     def _identities_xml(self) -> list[dict[str, str]]:
-        resp = self._request("GET", "/identities.xml", params=XML_IDENTITY_SEARCH,
+        resp = self._request("GET", "/identities.xml", params=XML_IDENTITY_SEARCH, timeout=ROSTER_TIMEOUT,
                              headers={"X-Requested-With": "XMLHttpRequest", "Accept": "*/*"})
         if resp.status_code != 200:
             raise UnityError(f"GET /identities.xml: HTTP {resp.status_code}")
@@ -383,7 +412,7 @@ class UnityClient:
         return list(rows.values())
 
     def get_identity(self, identity_id: str) -> dict[str, str]:
-        """Full detail — the list has no email, phone, title or department."""
+        """Full detail — the JSON list has no email, phone, title or department."""
         body = self._get_json(f"/identities/{identity_id}.json")
         raw = body.get("data", body) if isinstance(body, dict) else None
         if not isinstance(raw, dict):
@@ -422,22 +451,23 @@ class UnityClient:
 
         Unity's token update is a full form post: a field left out is reset.
         So the form is built only from what Unity itself returned for this
-        token, and if any field the form needs is missing from that, nothing
-        is sent — inventing a value would overwrite whatever the operator set.
-        Raises on refusal or failure; returns only once a re-read shows the
-        new status.
+        token. A field Unity did not return is left out — a live box omits
+        every field that was never set, so leaving it out keeps it unset,
+        where inventing a value would set it. Raises on refusal or failure;
+        returns only once a re-read shows the new status and every other
+        form field as it was.
         """
         attrs = token["fields"]
-        missing = [f for f in TOKEN_FORM_FIELDS + TOKEN_FORM_DATES if f not in attrs]
-        if missing:
-            raise UnityError(f"token {token['id']}: Unity did not return {', '.join(missing)}")
+        if not self.csrf_token:
+            raise UnityError(f"token {token['id']}: no CSRF token to send, so Unity would refuse the write")
+        sent = [f for f in TOKEN_FORM_FIELDS + TOKEN_FORM_DATES if f in attrs]
         form = {
             "utf8": "✓",
             "_method": "put",
             "authenticity_token": self.csrf_token,
             "enrollVirdiAfter": "false",
-            **{f"token[{f}]": str(attrs[f] if attrs[f] is not None else "") for f in TOKEN_FORM_FIELDS},
-            **{f: str(attrs[f] if attrs[f] is not None else "") for f in TOKEN_FORM_DATES},
+            **{f"token[{f}]": str(attrs[f] if attrs[f] is not None else "") for f in sent if f in TOKEN_FORM_FIELDS},
+            **{f: str(attrs[f] if attrs[f] is not None else "") for f in sent if f in TOKEN_FORM_DATES},
             "token[plasecTokenstatus]": status,
         }
         path = f"/identities/{token['identity_id']}/tokens/{token['id']}"
@@ -445,8 +475,16 @@ class UnityClient:
         if resp.status_code != 302:
             raise UnityError(f"POST {path}: HTTP {resp.status_code}")
         after = next((t for t in self.list_tokens(token["identity_id"]) if t["id"] == token["id"]), None)
-        if after is None or after["status"] != status:
-            raise UnityError(f"token {token['id']}: status reads {after and after['status']!r} after writing {status!r}")
+        if after is not None and after["status"] == status:
+            # Unity may default a field we left out; it is written by then,
+            # but it must not pass as a clean write.
+            changed = [f for f in TOKEN_FORM_FIELDS + TOKEN_FORM_DATES
+                       if _text(after["fields"].get(f)) != _text(attrs.get(f))]
+            if changed:
+                logger.error("Unity token %s: writing its status also changed %s", token["id"], ", ".join(changed))
+                raise UnityError(f"token {token['id']}: writing its status also changed {', '.join(changed)}")
+            return
+        raise UnityError(f"token {token['id']}: status reads {after and after['status']!r} after writing {status!r}")
 
     def list_card_formats(self) -> list[dict[str, str]]:
         body = self._get_json("/card_formats.json")

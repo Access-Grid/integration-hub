@@ -4,9 +4,9 @@ The trigger is per token: Embossed Number set to `accessgrid` (any case).
 The card number is the token's Internal Number — never the Embossed Number,
 which by then holds the trigger word.
 
-All of a cycle's Unity reads happen in list_people(). The identity list has
-no email, phone or title, so for anyone holding a trigger token we fetch
-their detail too, and their tokens are fetched anyway to know who that is.
+All of a cycle's Unity reads happen in list_people(). The JSON identity
+list has no email, phone or title, so for anyone holding a trigger token
+whose row lacks them we fetch their detail too. The XML list carries them.
 list_credentials() then answers from what was read, and says plainly when a
 person was not read — a failed read is never passed on as "no tokens".
 """
@@ -48,7 +48,7 @@ _WRITABLE_STATUS: dict[CredentialStatus, str] = {
 # dc=plasec`) plausibly sends. A date matching none of them holds the
 # credential rather than being read as "no date".
 _DATE_FORMATS = (
-    "%Y%m%d%H%M%SZ",  # LDAP generalized time
+    "%Y%m%d%H%M%S%z",  # LDAP generalized time, as a live box sends it: 20260520164208Z (UTC)
     "%m/%d/%Y %I:%M %p",
     "%m/%d/%Y %H:%M:%S",
     "%m/%d/%Y %H:%M",
@@ -112,9 +112,11 @@ class AvigilonAdapter:
                     self._tokens[pid] = self._client.list_tokens(pid)
                 except UnityError as e:
                     logger.warning("Unity: tokens for %s (%s) unread this cycle: %s", pid, row["full_name"], e)
-            if any(_is_trigger(t) for t in self._tokens.get(pid, [])):
+            if not row["email"] and any(_is_trigger(t) for t in self._tokens.get(pid, [])):
                 try:
-                    row = {**self._client.get_identity(pid), "status": row["status"]}
+                    detail = self._client.get_identity(pid)
+                    # Fill gaps only: a live box's detail lacked fields its list had.
+                    row = {**row, **{k: v for k, v in detail.items() if v and not row.get(k)}}
                 except UnityError as e:
                     # Without the detail we would push a blank title and
                     # phone; holding the person's tokens makes every phase
