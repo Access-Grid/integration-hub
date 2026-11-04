@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -91,6 +92,11 @@ class AvigilonAdapter:
         # Filled by list_people(), one cycle at a time.
         self._tokens: dict[str, list[dict[str, Any]]] = {}
         self._held: set[str] = set()
+        self._inactive: set[str] = set()
+
+    # A deactivated identity's passes are suspended, not deleted: the snapshot
+    # asks list_credentials for the inactive people it holds passes for.
+    suspends_inactive_people = True
 
     def descriptor(self) -> PacsDescriptor:
         return self._descriptor
@@ -103,10 +109,12 @@ class AvigilonAdapter:
         # The roster read raises on any failure — the engine then skips the
         # whole cycle, which is right: a partial roster looks like deletions.
         identities = self._client.list_identities()
-        self._tokens, self._held = {}, set()
+        self._tokens, self._held, self._inactive = {}, set(), set()
         for row in identities:
             pid = row["id"]
             active = row["status"] not in ("2", "3", "4")  # unknown counts as active: see below
+            if not active:
+                self._inactive.add(pid)
             if active:
                 try:
                     self._tokens[pid] = self._client.list_tokens(pid)
@@ -140,6 +148,15 @@ class AvigilonAdapter:
 
     def list_credentials(self, person_id: str) -> Iterable[Credential]:
         pid = str(person_id)
+        if pid in self._inactive:
+            # Read only now: the snapshot asks just for the few inactive
+            # people holding a pass, not the thousands that don't. An
+            # inactive identity's tokens open no door, whatever they say.
+            try:
+                tokens = self._client.list_tokens(pid)
+            except UnityError as e:
+                raise PacsRecordUnavailable(f"Unity tokens for inactive {pid} unread: {e}") from e
+            return [replace(self._credential(pid, t), status=CredentialStatus.SUSPENDED) for t in tokens]
         if pid not in self._tokens:
             raise PacsRecordUnavailable(f"Unity tokens for {pid} were not read this cycle")
         return [self._credential(pid, t) for t in self._tokens[pid]]

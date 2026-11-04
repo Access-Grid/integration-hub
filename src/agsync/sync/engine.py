@@ -124,6 +124,25 @@ def _totals(snapshot: Any) -> dict[str, int]:
     return counts
 
 
+def _no_contact(snapshot: Any) -> int:
+    """Active people with an untracked trigger credential and no email or phone."""
+    count = 0
+    try:
+        for pid, person in snapshot.people.items():
+            if not person.active or person.email or person.phone:
+                continue
+            for cred in snapshot.credentials_by_person.get(pid, []):
+                if not cred.trigger_active or cred.hold:
+                    continue
+                existing = tracking.get(pid, cred.id)
+                if existing is None or not existing.ag_card_id:
+                    count += 1
+                    break
+    except Exception as e:  # noqa: BLE001 — a count must not fail a cycle
+        logger.debug("Could not count people without contact details: %s", e)
+    return count
+
+
 @dataclass
 class CycleResult:
     started_at: str
@@ -135,6 +154,10 @@ class CycleResult:
     retried: int = 0
     field_updates: int = 0
     error: str | None = None
+    # People holding a trigger credential who cannot be sent a pass: no
+    # email and no phone. Shown on the status page, since a log line per
+    # person per cycle is where nobody looks.
+    no_contact: int = 0
     # False for failures that retrying cannot fix and that a human is
     # already being asked about, or for a cycle deliberately abandoned.
     # Counting those toward the circuit breaker pauses the engine for a
@@ -386,8 +409,9 @@ class SyncEngine:
         try:
             pacs = self._pacs_adapter(pacs_cfg)
             with self._status_lock:
+                # Optional: only adapters that write credentials define it.
                 self._status.pacs_writes_credentials = bool(
-                    pacs.supports_credential_writeback
+                    getattr(pacs, "supports_credential_writeback", False)
                 )
         except Exception as e:  # noqa: BLE001
             result.error = f"pacs_init: {e}"
@@ -418,6 +442,14 @@ class SyncEngine:
                 # not help.
                 self._status.pacs_reachable = False
             return result
+
+        result.no_contact = _no_contact(snapshot)
+        if result.no_contact:
+            logger.warning(
+                "%d cardholder(s) are marked for a pass but have no email or "
+                "phone in the PACS, so none can be sent — add one to issue it",
+                result.no_contact,
+            )
 
         with self._status_lock:
             generation = self._generation

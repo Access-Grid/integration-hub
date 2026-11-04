@@ -9,6 +9,7 @@ agent captured from a live server.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from urllib.parse import parse_qs
 
 import httpx
@@ -24,6 +25,11 @@ from agsync.lib.pacs.avigilon.client import (
     UnityError,
 )
 from agsync.lib.pacs.base import CredentialStatus, PacsRecordUnavailable
+from agsync.sync import engine as engine_mod
+from agsync.sync import snapshot as snapshot_mod
+from agsync.sync import tracking
+from agsync.sync.engine import SyncEngine
+from agsync.sync.snapshot import Snapshot, build_snapshot
 
 
 def _identity(cn, name="Cooper, Jim", status="Active"):
@@ -420,3 +426,63 @@ def test_detail_is_not_fetched_when_the_list_has_the_email():
     fake = FakeUnity([_xml_identity("a", plasecidentityEmailaddress="j@x.co")], tokens={"a": [_token("t1")]})
     (person,) = _adapter(fake).list_people()
     assert person.email == "j@x.co" and "/identities/a.json" not in fake.gets
+
+
+# --- in the engine --------------------------------------------------------------
+
+
+@pytest.fixture
+def tracked(monkeypatch):
+    """Make the tracking table hold a pass for each person id given."""
+    def hold(*pids):
+        rows = [SimpleNamespace(pacs_person_id=p, ag_card_id=f"card-{p}", status="active") for p in pids]
+        monkeypatch.setattr(tracking, "all_tracked", lambda: rows)
+    monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
+    return hold
+
+
+def test_deactivated_identity_holding_a_pass_reads_as_suspended_not_gone(tracked):
+    tracked("b")
+    fake = FakeUnity([_identity("a"), _identity("b", status="Inactive"), _identity("c", status="Inactive")],
+                     tokens={"a": [_token("ta", embossed="")], "b": [_token("tb")], "c": [_token("tc")]})
+    snap = build_snapshot(_adapter(fake), None, "t")
+    (cred,) = snap.credentials_by_person["b"]
+    assert cred.status == CredentialStatus.SUSPENDED and cred.trigger_active
+    assert snap.credentials_by_person["c"] == []  # no pass: not read at all
+    assert not any("/identities/c/" in g for g in fake.gets)
+
+
+def test_inactive_people_are_unread_when_tracking_cannot_be_read(tracked, monkeypatch):
+    def broken():
+        raise RuntimeError("db locked")
+    monkeypatch.setattr(tracking, "all_tracked", broken)
+    fake = FakeUnity([_identity("b", status="Inactive")], tokens={"b": [_token("tb")]})
+    snap = build_snapshot(_adapter(fake), None, "t")
+    assert "b" not in snap.credentials_by_person  # no entry: phase 3 deletes nothing
+
+
+def test_engine_runs_an_adapter_that_writes_no_credentials(monkeypatch):
+    # The engine once read supports_credential_writeback directly, which only
+    # Millennium defines: every Unity cycle failed before reading anything.
+    monkeypatch.setattr(engine_mod.AccessGridConfig, "load",
+                        lambda: {"account_id": "a", "api_secret": "s", "template_id": "t"})
+    monkeypatch.setattr(engine_mod.PacsConfig, "load", lambda: {"vendor": "avigilon", "params": {}, "options": {}})
+    monkeypatch.setattr(engine_mod, "build_ag_client", lambda *a: object())
+    monkeypatch.setattr(engine_mod, "build_snapshot", lambda *a: Snapshot())
+    for name in ("phase1_provision", "phase2_local_to_ag", "phase3_deletions",
+                 "phase4_ag_to_local", "phase5_retries", "phase6_field_changes"):
+        monkeypatch.setattr(getattr(engine_mod, name), "run", lambda *a, **k: 0)
+    engine = SyncEngine()
+    monkeypatch.setattr(engine, "_with_derived_mode", lambda ag, a, p: p)
+    monkeypatch.setattr(engine, "_pacs_adapter", lambda cfg: AvigilonAdapter("unity", "admin", "pw"))
+    assert engine._run_one_cycle_locked().error is None
+
+
+def test_trigger_holders_without_email_or_phone_are_counted(tracked, monkeypatch):
+    tracked()
+    monkeypatch.setattr(tracking, "get", lambda pid, cid: None)
+    fake = FakeUnity([_identity("a"), _xml_identity("b", plasecidentityEmailaddress="b@x.co")],
+                     tokens={"a": [_token("ta")], "b": [_token("tb")]})
+    adapter = _adapter(fake)
+    adapter._client.get_identity = lambda pid: {}  # the detail adds nothing either
+    assert engine_mod._no_contact(build_snapshot(adapter, None, "t")) == 1
