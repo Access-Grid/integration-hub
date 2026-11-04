@@ -39,6 +39,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from html.parser import HTMLParser
 from typing import Any
 
 import httpx
@@ -95,7 +96,7 @@ TOKEN_FORM_FIELDS = [
 ]
 TOKEN_FORM_DATES = ["plasecIssuedate", "plasecActivatedate", "plasecDeactivatedate"]
 STATUS_CODES = {"active": "1", "inactive": "2", "not yet active": "3", "expired": "4"}
-DATE_FORMATS = ("%Y%m%d%H%M%SZ", "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y")
+DATE_FORMATS = ("%Y%m%d%H%M%S%z", "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y")
 
 
 def adapter_reads_date(text: str) -> bool:
@@ -112,6 +113,40 @@ def adapter_reads_date(text: str) -> bool:
         except ValueError:
             continue
     return False
+
+
+class FormFields(HTMLParser):
+    """Every input, select and textarea on a page, as the browser would post
+    them: name, type, and the value it would send (checked boxes, selected
+    options). Values are redacted later by field name, as everywhere else."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fields: list[dict[str, Any]] = []
+        self._select: dict[str, Any] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = dict(attrs)
+        if tag == "input" and a.get("name"):
+            kind = (a.get("type") or "text").lower()
+            field = {"name": a["name"], "type": kind, "value": a.get("value") or ""}
+            if kind in ("checkbox", "radio"):
+                field["checked"] = "checked" in a
+            self.fields.append(field)
+        elif tag == "select" and a.get("name"):
+            self._select = {"name": a["name"], "type": "select", "value": None, "options": 0}
+            self.fields.append(self._select)
+        elif tag == "option" and self._select is not None:
+            self._select["options"] += 1
+            # A browser posts the selected option, or the first if none is.
+            if "selected" in a or self._select["options"] == 1:
+                self._select["value"] = a.get("value") or ""
+        elif tag == "textarea" and a.get("name"):
+            self.fields.append({"name": a["name"], "type": "textarea", "value": ""})
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "select":
+            self._select = None
 
 
 def _name_for(suffix: str, alt: str | None, names: set[str], ext_names: set[str]) -> str | None:
@@ -176,6 +211,7 @@ class Probe:
         # the report: per read, how many times each format answered or why not.
         self.report: dict[str, Any] = {"host": host, "mode": mode, "started": datetime.now().isoformat(),
                                        "accessgrid": {}, "formats": {}, "fields": {}, "steps": {}}
+        self.report["token_form"] = {}
         # Rows as read, per source ("token xml", "identity list json", ...), for
         # comparing their field names and values against what the adapter expects.
         self.rows: dict[str, list[dict[str, Any]]] = {}
@@ -480,10 +516,49 @@ class Probe:
             detail_xml = self.read_xml("identity_detail", f"identity_xml:{cn}", f"/identities/{cn}.xml",
                                        "identities", "identity")
             self.rows.setdefault("identity detail xml", []).extend(detail_xml or [])
+            if not found and xml_tokens and xml_tokens[0].get("cn"):
+                self.token_form(cn, xml_tokens[0])
             found.append(cn)
         for s in stats.values():
             s["date_examples"] = sorted(s["date_examples"])
         self.report["token_summary"] = stats
+
+    def token_form(self, cn: str, token: dict[str, str]) -> None:
+        """Unity's own edit form for one token, read and never submitted.
+
+        Unity leaves out fields that were never set, so our writeback cannot
+        tell from a token what to send for them. The form can: it is what a
+        browser posts, defaults and all. Reported against the fields our
+        writeback sends, and against what the token itself carried.
+        """
+        path = f"/identities/{cn}/tokens/{token['cn']}/edit"
+        resp = self.get("token_edit_form", path, follow_redirects=True)
+        if resp is None or resp.status_code != 200:
+            return
+        parser = FormFields()
+        parser.feed(resp.text)
+        fields = []
+        for f in parser.fields:
+            if f["name"] in ("authenticity_token", "utf8"):
+                f = {**f, "value": "<withheld>" if f["value"] else ""}
+            else:
+                # token[plasecPIN] -> plasecPIN, so the PII check sees the field name.
+                key = f["name"].removeprefix("token[").removesuffix("]")
+                f = {**f, "value": redact(f["value"], key)}
+            fields.append(f)
+        names = {f["name"].removeprefix("token[").removesuffix("]") for f in fields}
+        unset = [n for n in TOKEN_FORM_FIELDS + TOKEN_FORM_DATES if n not in token]
+        sent = set(TOKEN_FORM_FIELDS + TOKEN_FORM_DATES) | {"plasecTokenstatus"}  # status is set, not echoed
+        self.report["token_form"] = {
+            "fields": fields,
+            "writeback_sends_but_form_lacks": [n for n in TOKEN_FORM_FIELDS + TOKEN_FORM_DATES if n not in names],
+            "form_has_but_writeback_omits": sorted(n for n in names if n.startswith(("plasec", "Token"))
+                                                   and n not in sent),
+            # What a browser sends for each field this token's XML left out —
+            # every input of that name, since a checkbox comes with a hidden twin.
+            "form_value_when_unset": {n: [f for f in fields if f["name"] in (n, f"token[{n}]")] or None
+                                      for n in unset},
+        }
 
     def compare_fields(self) -> None:
         """Per source, which of the adapter's field names Unity actually sent,
