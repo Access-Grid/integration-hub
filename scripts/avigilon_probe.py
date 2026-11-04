@@ -3,7 +3,9 @@
 Collects what we need to know before trusting an adapter against a box we
 have never seen: which login form it accepts, where its CSRF token lives,
 whether the JSON and XML endpoints both answer, what shape each returns, how
-token status and dates are written, and which card formats exist.
+token status and dates are written, and which card formats exist. It also
+checks that this machine can reach AccessGrid, which the hub needs as much
+as it needs the appliance.
 
 Three rules, because the output is meant to be pasted into a chat or ticket:
 
@@ -26,7 +28,9 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import re
+import socket
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -38,6 +42,8 @@ _PII_KEY = re.compile(r"name|email|phone|pin$|number|photo|address|udf|login", r
 _VERSION = re.compile(r"(?:version|ver|v)[\s:=\"']{0,3}(\d+\.\d+(?:\.\d+){0,2})", re.I)
 _CSRF_META = re.compile(r"<meta[^>]+csrf-token[^>]*>", re.I)
 _PREFIX_SIGNALS = ("Fname", "Lname", "Idstatus", "Tokenstatus", "Internalnumber")
+ACCESSGRID_HOST = "api.accessgrid.com"
+_PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "NO_PROXY", "no_proxy")
 
 # The XML identity search 500s unless every one of these is present.
 _XML_SEARCH = {
@@ -93,7 +99,7 @@ class Probe:
         # `formats` comes first so the answer to "JSON, XML or both?" heads
         # the report: per read, how many times each format answered or why not.
         self.report: dict[str, Any] = {"host": host, "started": datetime.now().isoformat(),
-                                       "formats": {}, "steps": {}}
+                                       "accessgrid": {}, "formats": {}, "steps": {}}
 
     def get(self, step: str, path: str, **kw: Any) -> httpx.Response | None:
         """GET, recording status, timing, type and the server's self-description."""
@@ -168,7 +174,41 @@ class Probe:
         self.tally(read, "xml", result)
         return rows
 
+    def accessgrid(self) -> None:
+        """Can this machine reach AccessGrid, as the hub will need to?
+
+        Not an ICMP ping: that is often blocked on networks where HTTPS works,
+        and HTTPS is what the hub uses. Checked in layers so a failure names
+        the layer — name lookup, a direct TCP connection, then HTTPS with the
+        certificate verified, where a proxy that re-signs traffic shows up.
+        Every layer runs even if one before it failed: a site that must go
+        through a proxy fails the first two and still passes the third.
+        """
+        result = self.report["accessgrid"]
+        result["host"] = ACCESSGRID_HOST
+        # Names only: a proxy URL can carry a username and password.
+        result["proxy_env_vars"] = [k for k in _PROXY_VARS if os.environ.get(k)]
+        try:
+            result["dns"] = sorted({i[4][0] for i in socket.getaddrinfo(ACCESSGRID_HOST, 443, type=socket.SOCK_STREAM)})
+        except OSError as e:
+            result["dns"] = f"failed: {e}"
+        t = time.monotonic()
+        try:
+            with socket.create_connection((ACCESSGRID_HOST, 443), timeout=10):
+                result["tcp_443"] = f"ok in {time.monotonic() - t:.2f}s"
+        except OSError as e:
+            result["tcp_443"] = f"failed: {type(e).__name__}: {e}"
+        t = time.monotonic()
+        try:
+            resp = httpx.get(f"https://{ACCESSGRID_HOST}/", timeout=15, headers={"User-Agent": "AGSyncProbe/1"})
+            # Any status at all means we reached AccessGrid and trusted its certificate.
+            result["https"] = f"ok: HTTP {resp.status_code} in {time.monotonic() - t:.2f}s"
+        except httpx.HTTPError as e:
+            result["https"] = f"failed: {type(e).__name__}: {e}"
+        result["reachable"] = result["https"].startswith("ok")
+
     def run(self, samples: int) -> dict[str, Any]:
+        self.accessgrid()
         self.landing()
         if not self.login():
             return self.report
