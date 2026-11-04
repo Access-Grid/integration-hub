@@ -88,6 +88,26 @@ jobs:
           if ($out -notmatch "diagnostic dump") { throw "unexpected output: $out" }
         shell: pwsh
 
+      # A standalone, read-only probe of an Avigilon Unity box: which login
+      # and formats (JSON/XML) it answers, and whether AccessGrid is
+      # reachable. Built from the script alone — it needs only httpx — so a
+      # site can run it before the hub is installed.
+      - name: Build avigilon-discovery.exe with PyInstaller
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --onefile `
+            --name avigilon-discovery `
+            scripts/avigilon_probe.py
+        shell: pwsh
+
+      - name: Verify avigilon-discovery runs
+        run: |
+          $out = dist\avigilon-discovery.exe --help | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "avigilon-discovery exited $LASTEXITCODE" }
+          if ($out -notmatch "username") { throw "unexpected output: $out" }
+        shell: pwsh
+
       - name: Compute release name
         id: rel
         run: |
@@ -103,6 +123,7 @@ jobs:
           path: |
             dist/agsync.exe
             dist/agdiag.exe
+            dist/avigilon-discovery.exe
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -112,6 +133,7 @@ jobs:
           files: |
             dist/agsync.exe
             dist/agdiag.exe
+            dist/avigilon-discovery.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
 
