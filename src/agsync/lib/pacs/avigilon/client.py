@@ -34,6 +34,9 @@ HTTP_TIMEOUT = 30.0
 ROSTER_TIMEOUT = 300.0
 HTTP_USER_AGENT = "AGSyncTool/0.1"
 PAGE_SIZE = 100
+# The XML list is read a thousand at a time: thirteen pages for the live
+# box's 12,939 identities rather than one 20 MB response.
+XML_PAGE_SIZE = 1000
 # Ten thousand pages of a hundred is far past any real roster; reaching it
 # means the paging is broken, and stopping is better than spinning forever.
 MAX_PAGES = 10_000
@@ -56,8 +59,8 @@ TOKEN_FORM_FIELDS = [
 ]
 TOKEN_FORM_DATES = ["plasecIssuedate", "plasecActivatedate", "plasecDeactivatedate"]
 
-# The XML identity search 500s unless every one of these is present. It is
-# not paged: one response carries the whole roster.
+# The XML identity search 500s unless every one of these is present. A live
+# box honours page/perpage alongside them (not start/length).
 XML_IDENTITY_SEARCH = {
     "identity_search_exec_search": "true", "adv_search_field_0": "",
     "adv_search_udf_0": "", "adv_search_val_0": "", "search_pattern_0": "2",
@@ -65,6 +68,10 @@ XML_IDENTITY_SEARCH = {
     "quick_search": "true", "qck_search_and_or": "&", "lnam": "", "fnam": "", "tkn": "",
     "search_pattern_fnam": "2", "search_pattern_lnam": "2", "group_id": "", "id": "",
 }
+
+# Unity's advanced search on a token's Embossed Number, as its own search
+# page sends it. The value goes in adv_search_val_0.
+EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
 
 # The CSRF token as Unity's pages carry it. A live box (Nov 2026) set no
 # XSRF-TOKEN cookie at all, so the cookie is only the fallback; our first
@@ -376,13 +383,44 @@ class UnityClient:
         logger.info("Unity: %d identities", len(rows))
         return rows
 
-    def _identities_xml(self) -> list[dict[str, str]]:
-        resp = self._request("GET", "/identities.xml", params=XML_IDENTITY_SEARCH, timeout=ROSTER_TIMEOUT,
-                             headers={"X-Requested-With": "XMLHttpRequest", "Accept": "*/*"})
-        if resp.status_code != 200:
-            raise UnityError(f"GET /identities.xml: HTTP {resp.status_code}")
-        rows = [identity_row(r) for r in xml_rows(resp.text, "identities", "identity")]
-        return [r for r in rows if r["id"]]
+    def search_embossed(self, value: str) -> list[dict[str, str]]:
+        """Identities holding a token whose Embossed Number matches `value`.
+
+        Unity's search skips inactive tokens and may match loosely, so this
+        only says whose tokens are worth reading — the tokens themselves
+        decide. Every page or an exception, like the roster.
+        """
+        rows = self._identities_xml({**EMBOSSED_SEARCH, "adv_search_val_0": value})
+        logger.info("Unity: %d identities hold a token embossed %r", len(rows), value)
+        return rows
+
+    def _identities_xml(self, search: dict[str, str] | None = None) -> list[dict[str, str]]:
+        """Page through the XML list, a thousand at a time.
+
+        XML carries no total to check against, so a page shorter than asked
+        ends the read. A page that repeats earlier pages means paging is
+        ignored, and stops the read; a first page longer than asked is a box
+        that ignores paging and sent everything, which is the whole list.
+        """
+        params = {**XML_IDENTITY_SEARCH, **(search or {})}
+        rows: dict[str, dict[str, str]] = {}
+        for page in range(1, MAX_PAGES + 1):
+            resp = self._request("GET", "/identities.xml", timeout=ROSTER_TIMEOUT,
+                                 params={**params, "page": page, "perpage": XML_PAGE_SIZE},
+                                 headers={"X-Requested-With": "XMLHttpRequest", "Accept": "*/*"})
+            if resp.status_code != 200:
+                raise UnityError(f"GET /identities.xml page {page}: HTTP {resp.status_code}")
+            items = xml_rows(resp.text, "identities", "identity")
+            found = [r for r in map(identity_row, items) if r["id"]]
+            new = [r for r in found if r["id"] not in rows]
+            if found and not new:
+                raise UnityError(f"identities.xml page {page} repeated earlier pages — paging ignored")
+            rows.update((r["id"], r) for r in new)
+            if len(items) < XML_PAGE_SIZE or (page == 1 and len(items) > XML_PAGE_SIZE):
+                break
+        else:
+            raise UnityError(f"identities.xml: still paging after {MAX_PAGES} pages")
+        return list(rows.values())
 
     def _identities_json(self) -> list[dict[str, str]]:
         """Page through the JSON list.

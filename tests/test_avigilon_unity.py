@@ -20,6 +20,7 @@ from agsync.lib.pacs.avigilon.client import (
     ROSTER_TIMEOUT,
     TOKEN_FORM_DATES,
     TOKEN_FORM_FIELDS,
+    XML_PAGE_SIZE,
     UnityAuthError,
     UnityClient,
     UnityError,
@@ -66,6 +67,9 @@ class FakeUnity:
         self.csrf = "csrf-abc"
         self.xml_params = []  # query params of each /identities.xml read
         self.timeouts = {}  # path -> read timeout of the last request for it
+        self.xml_paging = "honour"  # or "ignore" (send everything) or "repeat" (always page 1)
+        self.search_fails = False
+        self.hide_once = set()  # left out of the next roster read only: a row skipped mid-read
 
     @staticmethod
     def _xml(root, row, rows):
@@ -107,9 +111,19 @@ class FakeUnity:
             q = dict(req.url.params)
             self.xml_params.append(q)
             rows = self.identities
-            if "page" in q:  # the live box honours page/perpage on the XML list
-                per = int(q["perpage"])
-                rows = rows[(int(q["page"]) - 1) * per:int(q["page"]) * per]
+            if q.get("adv_search_field_0") == "plasecEmbossednumber":
+                if self.search_fails:
+                    return httpx.Response(500)
+                # Like the live search: any case, and only active tokens.
+                rows = [r for r in rows if any(
+                    t["attributes"]["plasecEmbossednumber"].lower() == q["adv_search_val_0"].lower()
+                    and t["attributes"]["extended_attributes"]["token_status"] == "Active"
+                    for t in self.tokens.get(r["cn"], []))]
+            elif q.get("perpage") != "1" and self.hide_once:
+                rows, self.hide_once = [r for r in rows if r["cn"] not in self.hide_once], set()
+            if "page" in q and self.xml_paging != "ignore":  # the live box honours page/perpage
+                page, per = int(q["page"]) if self.xml_paging == "honour" else 1, int(q["perpage"])
+                rows = rows[(page - 1) * per:page * per]
             return self._xml("identities", "identity", rows)
         if parts[-1] == "tokens.xml":
             rows = [{k: v for k, v in t["attributes"].items() if k != "extended_attributes"}
@@ -321,7 +335,8 @@ def test_unreadable_expiry_holds_rather_than_never_expiring():
 
 
 def test_unknown_identity_status_counts_as_active():
-    fake = FakeUnity([_identity("a", status="Pending review")], tokens={"a": []})
+    fake = FakeUnity([_identity("a", status="Pending review")], tokens={"a": [_token("t1")]},
+                     details={"a": {"id": "a", "attributes": {}}})
     _, people, _ = _read(fake)
     assert people["a"].active
 
@@ -408,7 +423,30 @@ def test_whole_roster_read_gets_the_long_timeout():
     client = _client(fake)
     client.list_identities()
     assert fake.timeouts["/identities.xml"] == ROSTER_TIMEOUT
-    assert "page" not in fake.xml_params[-1]  # the roster itself is one whole read
+    assert fake.xml_params[-1]["perpage"] == str(XML_PAGE_SIZE)
+
+
+def test_xml_roster_reads_every_page(monkeypatch):
+    monkeypatch.setattr("agsync.lib.pacs.avigilon.client.XML_PAGE_SIZE", 2)
+    fake = FakeUnity([_identity(str(i)) for i in range(5)])
+    fake.json_off = True
+    assert len(_client(fake).list_identities()) == 5
+    assert [q["page"] for q in fake.xml_params[1:]] == ["1", "2", "3"]  # after the sign-in check
+
+
+def test_xml_box_ignoring_paging_sends_the_whole_list(monkeypatch):
+    monkeypatch.setattr("agsync.lib.pacs.avigilon.client.XML_PAGE_SIZE", 2)
+    fake = FakeUnity([_identity(str(i)) for i in range(5)])
+    fake.json_off, fake.xml_paging = True, "ignore"
+    assert len(_client(fake).list_identities()) == 5
+
+
+def test_xml_page_repeating_earlier_pages_raises(monkeypatch):
+    monkeypatch.setattr("agsync.lib.pacs.avigilon.client.XML_PAGE_SIZE", 2)
+    fake = FakeUnity([_identity(str(i)) for i in range(5)])
+    fake.json_off, fake.xml_paging = True, "repeat"
+    with pytest.raises(UnityError, match="paging ignored"):
+        _client(fake).list_identities()
 
 
 def _xml_identity(cn, **fields):
@@ -486,3 +524,63 @@ def test_trigger_holders_without_email_or_phone_are_counted(tracked, monkeypatch
     adapter = _adapter(fake)
     adapter._client.get_identity = lambda pid: {}  # the detail adds nothing either
     assert engine_mod._no_contact(build_snapshot(adapter, None, "t")) == 1
+
+
+# --- embossed-number search -------------------------------------------------------
+
+
+def _search_fake():
+    """a holds a trigger; b's trigger is inactive, which the search skips; c has none."""
+    return FakeUnity(
+        [_identity("a"), _identity("b"), _identity("c")],
+        tokens={"a": [_token("ta")], "b": [_token("tb", status="Inactive")], "c": [_token("tc", embossed="9")]},
+        details={p: {"id": p, "attributes": {"plasecidentityEmailaddress": f"{p}@x"}} for p in "abc"},
+    )
+
+
+def test_tokens_are_read_for_search_hits_and_tracked_people_only(tracked):
+    tracked("b")
+    fake = _search_fake()
+    a = _adapter(fake)
+    assert {p.id for p in a.list_people()} == {"a", "b", "c"}
+    assert not any("/c/tokens" in g for g in fake.gets)
+    [ta] = a.list_credentials("a")
+    [tb] = a.list_credentials("b")  # missed by the search, read because tracked
+    assert ta.trigger_active and tb.trigger_active and tb.status is CredentialStatus.SUSPENDED
+    with pytest.raises(PacsRecordUnavailable):
+        a.list_credentials("c")
+
+
+def test_failed_search_reads_everyones_tokens(tracked):
+    tracked()
+    fake = _search_fake()
+    fake.search_fails = True
+    a = _adapter(fake)
+    list(a.list_people())
+    assert [c.id for c in a.list_credentials("c")] == ["tc"]
+
+
+def test_unreadable_tracking_reads_everyones_tokens_without_searching(monkeypatch):
+    def broken():
+        raise RuntimeError("db locked")
+    monkeypatch.setattr(tracking, "all_tracked", broken)
+    fake = _search_fake()
+    a = _adapter(fake)
+    list(a.list_people())
+    assert [c.id for c in a.list_credentials("c")] == ["tc"]
+    assert not any(q.get("adv_search_field_0") for q in fake.xml_params)
+
+
+def test_tracked_person_skipped_by_one_read_is_kept(tracked):
+    tracked("a")
+    fake = _search_fake()
+    fake.json_off, fake.hide_once = True, {"a"}
+    a = _adapter(fake)
+    assert "a" in {p.id for p in a.list_people()}
+    assert [c.id for c in a.list_credentials("a")] == ["ta"]
+
+
+def test_tracked_person_missing_from_both_reads_is_gone(tracked):
+    tracked("gone")
+    a = _adapter(_search_fake())
+    assert "gone" not in {p.id for p in a.list_people()}

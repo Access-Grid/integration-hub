@@ -19,11 +19,13 @@ Three rules, because the output is meant to be pasted into a chat or ticket:
     there. Dates, statuses and flags are kept: their format is the point.
 
 Usage:
-    python scripts/avigilon_probe.py [all|xml] <host> <username> [--samples 3]
+    python scripts/avigilon_probe.py [all|xml|search] <host> <username> [--samples 3]
 `all` (the default) reads everything as JSON and as XML. `xml` skips the
 JSON list and tests whether `/identities.xml` can be read in pieces — page
 and perpage, start and length, the A–Z last-name filter — against the whole
-list, read with a long timeout. The password is prompted for. The report is
+list, read with a long timeout. `search` checks the embossed-number search
+the adapter sends: whether it answers, filters, ignores case and returns only
+holders of an `accessgrid` token. The password is prompted for. The report is
 printed and saved as JSON.
 """
 
@@ -72,7 +74,12 @@ _XML_PIECES = {
 _PIECE_SIZE = 25
 _WHOLE_LIST_TIMEOUT = 300.0  # unpaged; a large site took over 30s
 _PIECE_TIMEOUT = 120.0
-MODES = ("all", "xml")
+# The adapter's embossed-number search and XML page size (client.py
+# EMBOSSED_SEARCH and XML_PAGE_SIZE), and how many hits get their tokens read.
+_EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
+_XML_PAGE = 1000
+_SEARCH_CHECKED = 25
+MODES = ("all", "xml", "search")
 
 # What our adapter reads and writes (src/agsync/lib/pacs/avigilon/). Copied
 # rather than imported so the exe stays standalone; tests/test_avigilon_probe.py
@@ -215,8 +222,9 @@ class Probe:
         # Rows as read, per source ("token xml", "identity list json", ...), for
         # comparing their field names and values against what the adapter expects.
         self.rows: dict[str, list[dict[str, Any]]] = {}
-        if mode == "xml":
-            self.report = {**dict(list(self.report.items())[:4]), "xml_paging": {}, **self.report}
+        if mode in ("xml", "search"):
+            head = "xml_paging" if mode == "xml" else "search"
+            self.report = {**dict(list(self.report.items())[:4]), head: {}, **self.report}
 
     def get(self, step: str, path: str, **kw: Any) -> httpx.Response | None:
         """GET, recording status, timing, type and the server's self-description."""
@@ -351,6 +359,78 @@ class Probe:
         self.card_formats()
         self.compare_fields()
         return self.report
+
+    def run_search(self) -> dict[str, Any]:
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        self.search()
+        return self.report
+
+    def _xml_ids(self, step: str, value: str | None, page: int = 1) -> set[str] | None:
+        """Identity ids on one page of the XML list, searched for `value` if given."""
+        extra = {} if value is None else {**_EMBOSSED_SEARCH, "adv_search_val_0": value}
+        rows = self.read_xml("identity_search", step, "/identities.xml", "identities", "identity",
+                             params={**_XML_SEARCH, **extra, "page": page, "perpage": _XML_PAGE},
+                             timeout=_WHOLE_LIST_TIMEOUT)
+        if rows is None:
+            return None
+        self.note(step, rows=len(rows))
+        return {r.get("cn", "") for r in rows} - {"", "0"}
+
+    def search(self) -> None:
+        """Does /identities.xml take the adapter's embossed-number search, and
+        is every hit really holding an accessgrid token? Counts only."""
+        roster = self._xml_ids("roster_page_1", None)
+        hits: set[str] | None = set()
+        pages = 0
+        for page in range(1, 51):
+            got = self._xml_ids(f"search_page_{page}", "accessgrid", page)
+            if got is None:
+                hits = None
+                break
+            hits, pages = hits | got, page
+            if len(got) < _XML_PAGE:
+                break
+        upper = self._xml_ids("search_upper_case", "ACCESSGRID")
+        nothing = self._xml_ids("search_no_such_value", "zz-no-such-embossed-zz")
+        checked = sorted(hits or [])[:_SEARCH_CHECKED]
+        confirmed, statuses = 0, {}
+        for cn in checked:
+            tokens = self.read_xml("search_hit_tokens", "search_hit_tokens", f"/identities/{cn}/tokens.xml",
+                                   "tokens", "token") or []
+            triggers = [t for t in tokens if any(
+                str(t.get(f"{p}Embossednumber") or "").strip().lower() == "accessgrid" for p in _PREFIXES)]
+            confirmed += bool(triggers)
+            for t in triggers:
+                status = next((t[f"{p}Tokenstatus"] for p in _PREFIXES if t.get(f"{p}Tokenstatus")), "")
+                statuses[status] = statuses.get(status, 0) + 1
+        if hits is None:
+            verdict = "not answered"
+        elif nothing:
+            verdict = "ignored: a value no token holds returned rows"
+        elif not hits:
+            verdict = "no hits"
+        elif confirmed < len(checked):
+            verdict = f"loose: {len(checked) - confirmed} of {len(checked)} checked hits hold no accessgrid token"
+        else:
+            verdict = "works"
+        steps = self.report["steps"]
+        self.report["search"] = {
+            "verdict": verdict,
+            "hits": None if hits is None else len(hits),
+            "pages": pages,
+            "first_page_seconds": steps.get("search_page_1", {}).get("seconds"),
+            "same_hits_in_upper_case": None if upper is None or hits is None or pages > 1 else upper == hits,
+            "no_such_value_rows": None if nothing is None else len(nothing),
+            "hits_checked": len(checked),
+            "hits_holding_accessgrid_token": confirmed,
+            "accessgrid_token_statuses": statuses,
+            "roster_page": {"rows": None if roster is None else len(roster),
+                            "seconds": steps.get("roster_page_1", {}).get("seconds")},
+        }
 
     def landing(self) -> None:
         resp = self.get("login_page", "/sessions/new", follow_redirects=True)
@@ -622,7 +702,8 @@ def main() -> int:
     if argv and argv[0] not in MODES and not argv[0].startswith("-"):
         argv.insert(0, "all")  # the form before modes existed: <host> <username>
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("mode", choices=MODES, help="all: JSON and XML; xml: test paging the XML identity list")
+    ap.add_argument("mode", choices=MODES, help="all: JSON and XML; xml: test paging the XML identity list; "
+                                               "search: test the embossed-number search")
     ap.add_argument("host", help="appliance address, e.g. 10.0.0.5 (no https://)")
     ap.add_argument("username")
     ap.add_argument("--samples", type=int, default=3, help="identities with tokens to sample")
@@ -630,7 +711,10 @@ def main() -> int:
     password = getpass.getpass("Unity password: ")
 
     probe = Probe(args.host, args.username, password, args.mode)
-    report = probe.run_xml(args.samples) if args.mode == "xml" else probe.run(args.samples)
+    if args.mode == "search":
+        report = probe.run_search()
+    else:
+        report = probe.run_xml(args.samples) if args.mode == "xml" else probe.run(args.samples)
     report["finished"] = datetime.now().isoformat()
     out = f"avigilon-probe-{args.mode}-{args.host.replace(':', '_')}-{datetime.now():%Y%m%d-%H%M%S}.json"
     text = json.dumps(report, indent=2, default=str)
