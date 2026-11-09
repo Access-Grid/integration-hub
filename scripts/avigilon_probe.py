@@ -407,6 +407,19 @@ class Probe:
             for t in triggers:
                 status = next((t[f"{p}Tokenstatus"] for p in _PREFIXES if t.get(f"{p}Tokenstatus")), "")
                 statuses[status] = statuses.get(status, 0) + 1
+        # What an identity that does not exist reads as: the adapter takes a
+        # 404 from the detail page as "deleted" and revokes that person's pass.
+        missing = {}
+        for name, path in (("detail_json", "/identities/ffffffffffffffff.json"),
+                           ("detail_xml", "/identities/ffffffffffffffff.xml"),
+                           ("tokens_xml", "/identities/ffffffffffffffff/tokens.xml")):
+            resp = self.get(f"missing_identity_{name}", path, headers={"Accept": "*/*"})
+            missing[name] = None if resp is None else resp.status_code
+        known = next(iter(sorted(hits or [])), None)
+        if known is not None:
+            resp = self.get("known_identity_detail_json", f"/identities/{known}.json",
+                            headers={"Accept": "application/json"})
+            missing["known_identity_detail_json"] = None if resp is None else resp.status_code
         if hits is None:
             verdict = "not answered"
         elif nothing:
@@ -428,6 +441,7 @@ class Probe:
             "hits_checked": len(checked),
             "hits_holding_accessgrid_token": confirmed,
             "accessgrid_token_statuses": statuses,
+            "missing_identity_statuses": missing,
             "roster_page": {"rows": None if roster is None else len(roster),
                             "seconds": steps.get("roster_page_1", {}).get("seconds")},
         }
