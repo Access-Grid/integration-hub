@@ -4,17 +4,22 @@ The trigger is per token: Embossed Number set to `accessgrid` (any case).
 The card number is the token's Internal Number — never the Embossed Number,
 which by then holds the trigger word.
 
-All of a cycle's Unity reads happen in list_people(). The identity list has
-no email, phone or title, so for anyone holding a trigger token we fetch
-their detail too, and their tokens are fetched anyway to know who that is.
-list_credentials() then answers from what was read, and says plainly when a
-person was not read — a failed read is never passed on as "no tokens".
+All of a cycle's Unity reads happen in list_people(). The whole roster is
+read, because who is missing from it is who phase 3 deletes. Tokens are read
+only for the identities Unity's embossed-number search returns plus everyone
+we track — one request a person, so reading the whole roster's tokens cost
+thousands a cycle. The JSON identity list has no email, phone or title, so
+for anyone holding a trigger token whose row lacks them we fetch their
+detail too. The XML list carries them. list_credentials() then answers from
+what was read, and says plainly when a person was not read — a failed read
+is never passed on as "no tokens".
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -26,7 +31,7 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
-from .client import UnityClient, UnityError
+from .client import UnityAuthError, UnityClient, UnityError
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +53,7 @@ _WRITABLE_STATUS: dict[CredentialStatus, str] = {
 # dc=plasec`) plausibly sends. A date matching none of them holds the
 # credential rather than being read as "no date".
 _DATE_FORMATS = (
-    "%Y%m%d%H%M%SZ",  # LDAP generalized time
+    "%Y%m%d%H%M%S%z",  # LDAP generalized time, as a live box sends it: 20260520164208Z (UTC)
     "%m/%d/%Y %I:%M %p",
     "%m/%d/%Y %H:%M:%S",
     "%m/%d/%Y %H:%M",
@@ -83,6 +88,23 @@ def _is_trigger(token: dict[str, Any]) -> bool:
     return token["embossed_number"].strip().lower() == TRIGGER_VALUE
 
 
+def _tracked_people() -> set[str] | None:
+    """Everyone we hold a pass for, or None if the table can't be read.
+
+    Rows with a pass only, as the snapshot counts them: a row left pending by
+    a failed issue has nothing to lose, and one for somebody since removed
+    from Unity would otherwise have every cycle read the roster twice.
+    """
+    try:
+        from ....sync import tracking
+
+        return {t.pacs_person_id for t in tracking.all_tracked()
+                if t.ag_card_id and t.status not in ("deleted", "deduped")}
+    except Exception as e:  # noqa: BLE001 — the caller falls back to reading everyone
+        logger.warning("Unity: could not read the tracking table: %s", e)
+        return None
+
+
 class AvigilonAdapter:
     def __init__(self, host: str, username: str, password: str, verify_ssl: bool = False):
         self._client = UnityClient(host=host, username=username, password=password, verify_ssl=verify_ssl)
@@ -91,6 +113,11 @@ class AvigilonAdapter:
         # Filled by list_people(), one cycle at a time.
         self._tokens: dict[str, list[dict[str, Any]]] = {}
         self._held: set[str] = set()
+        self._inactive: set[str] = set()
+
+    # A deactivated identity's passes are suspended, not deleted: the snapshot
+    # asks list_credentials for the inactive people it holds passes for.
+    suspends_inactive_people = True
 
     def descriptor(self) -> PacsDescriptor:
         return self._descriptor
@@ -103,18 +130,32 @@ class AvigilonAdapter:
         # The roster read raises on any failure — the engine then skips the
         # whole cycle, which is right: a partial roster looks like deletions.
         identities = self._client.list_identities()
-        self._tokens, self._held = {}, set()
+        tracked = _tracked_people()
+        missing = (tracked or set()) - {r["id"] for r in identities}
+        if missing:
+            # A paged read can skip a row when Unity gains someone mid-read,
+            # and a skipped cardholder reads to phase 3 as deleted. Anyone
+            # still absent from a second read is gone; anyone in either stays.
+            logger.warning("Unity: %d tracked identities missing from the roster — reading it again", len(missing))
+            again = self._client.list_identities()
+            identities = list(({r["id"]: r for r in identities} | {r["id"]: r for r in again}).values())
+        to_read = self._whose_tokens(tracked)
+        self._tokens, self._held, self._inactive = {}, set(), set()
         for row in identities:
             pid = row["id"]
             active = row["status"] not in ("2", "3", "4")  # unknown counts as active: see below
-            if active:
+            if not active:
+                self._inactive.add(pid)
+            if active and (to_read is None or pid in to_read):
                 try:
                     self._tokens[pid] = self._client.list_tokens(pid)
                 except UnityError as e:
                     logger.warning("Unity: tokens for %s (%s) unread this cycle: %s", pid, row["full_name"], e)
-            if any(_is_trigger(t) for t in self._tokens.get(pid, [])):
+            if not row["email"] and any(_is_trigger(t) for t in self._tokens.get(pid, [])):
                 try:
-                    row = {**self._client.get_identity(pid), "status": row["status"]}
+                    detail = self._client.get_identity(pid)
+                    # Fill gaps only: a live box's detail lacked fields its list had.
+                    row = {**row, **{k: v for k, v in detail.items() if v and not row.get(k)}}
                 except UnityError as e:
                     # Without the detail we would push a blank title and
                     # phone; holding the person's tokens makes every phase
@@ -136,8 +177,36 @@ class AvigilonAdapter:
                 raw=row,
             )
 
+    def _whose_tokens(self, tracked: set[str] | None) -> set[str] | None:
+        """Whose tokens to read this cycle: None means everyone's.
+
+        The search only adds people. Everyone tracked is read whatever it
+        says — it skips inactive tokens, and a token whose trigger was
+        removed is exactly what phase 2 needs to see — so a search that
+        misses someone delays an enrollment and never revokes a pass.
+        """
+        if tracked is None:
+            return None
+        try:
+            hits = self._client.search_embossed(TRIGGER_VALUE)
+        except UnityAuthError:
+            raise
+        except UnityError as e:
+            logger.warning("Unity: embossed-number search failed, reading every identity's tokens: %s", e)
+            return None
+        return {r["id"] for r in hits} | tracked
+
     def list_credentials(self, person_id: str) -> Iterable[Credential]:
         pid = str(person_id)
+        if pid in self._inactive:
+            # Read only now: the snapshot asks just for the few inactive
+            # people holding a pass, not the thousands that don't. An
+            # inactive identity's tokens open no door, whatever they say.
+            try:
+                tokens = self._client.list_tokens(pid)
+            except UnityError as e:
+                raise PacsRecordUnavailable(f"Unity tokens for inactive {pid} unread: {e}") from e
+            return [replace(self._credential(pid, t), status=CredentialStatus.SUSPENDED) for t in tokens]
         if pid not in self._tokens:
             raise PacsRecordUnavailable(f"Unity tokens for {pid} were not read this cycle")
         return [self._credential(pid, t) for t in self._tokens[pid]]

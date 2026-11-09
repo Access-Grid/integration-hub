@@ -27,6 +27,9 @@
   <dt>{{ t('status.results.deleted') }}</dt><dd>{{ engine_status.last_cycle.deleted }}</dd>
   <dt>{{ t('status.results.ag_to_pacs') }}</dt><dd>{{ engine_status.last_cycle.ag_to_pacs }}</dd>
   <dt>{{ t('status.results.field_changes') }}</dt><dd>{{ engine_status.last_cycle.field_updates }}</dd>
+  {% if engine_status.last_cycle.no_contact %}
+  <dt>{{ t('status.results.no_contact') }}</dt><dd class="err">{{ engine_status.last_cycle.no_contact }}</dd>
+  {% endif %}
   {% endif %}
 
   <dt>{{ t('status.next_sync') }}</dt>

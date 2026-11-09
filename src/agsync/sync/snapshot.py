@@ -156,6 +156,7 @@ def build_snapshot(
     # Cardholders we are tracking. An unread stranger is routine; an unread
     # cardholder we hold a pass for is the thing that hides a bug, because
     # every phase downstream reads their absence as "nothing to do".
+    tracking_read = True
     try:
         from . import tracking
 
@@ -166,12 +167,23 @@ def build_snapshot(
     except Exception as e:  # noqa: BLE001 — diagnostics must not break a cycle
         logger.debug("Could not read the tracking table for diagnostics: %s", e)
         tracked_people = set()
+        tracking_read = False
+    # An adapter whose inactive people keep their credentials (suspended,
+    # not gone) is read for the inactive people we hold a pass for; reading
+    # them as no credentials would have phase 3 delete those passes.
+    suspends_inactive = getattr(pacs, "suspends_inactive_people", False)
 
     unread = 0
     for pid, person in snap.people.items():
         if not person.active:
-            snap.credentials_by_person[pid] = []
-            continue
+            if not suspends_inactive:
+                snap.credentials_by_person[pid] = []
+                continue
+            if not tracking_read:
+                continue  # unread: no entry, so no phase acts on them
+            if pid not in tracked_people:
+                snap.credentials_by_person[pid] = []
+                continue
         try:
             creds = list(pacs.list_credentials(pid))
         except PacsRecordUnavailable:

@@ -124,6 +124,7 @@
   "status.results.ag_to_pacs": "Actualizaciones AG → PACS",
   "status.results.deleted": "Eliminadas",
   "status.results.field_changes": "Actualizaciones de campos",
+  "status.results.no_contact": "Esperando un correo o teléfono",
   "status.results.new": "Nuevas",
   "status.results.status_changes": "Cambios de estado",
   "status.run_now": "Sincronizar ahora",
