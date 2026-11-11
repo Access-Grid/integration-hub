@@ -386,14 +386,29 @@ class AvigilonAdapter:
             # field, so it has to be built from what Unity holds right now.
             token = next((t for t in self._client.list_tokens(person_id) if t["id"] == credential_id), None)
             if token is None:
-                logger.warning("Unity token %s is no longer on %s — status not written", credential_id, person_id)
+                _problem(f"{person_id}:{credential_id}",
+                         f"Unity: AccessGrid wants the pass of identity {person_id} {status.value}, but its token "
+                         f"{credential_id} is no longer in Unity — status not written")
                 return False
             if token["status"] != wanted:
                 self._client.set_token_status(token, wanted)
         except UnityError as e:
-            logger.error("Unity: could not set token %s to %s: %s", credential_id, status.value, e)
+            self._status_unwritable(str(person_id), credential_id, status, e)
             return False
         return True
+
+    def _status_unwritable(self, pid: str, credential_id: str, status: CredentialStatus, err: UnityError) -> None:
+        """A status write that failed: mailed if the identity itself is gone."""
+        try:
+            self._client.get_identity(pid)
+        except UnityNotFound:
+            _problem(f"{pid}:{credential_id}",
+                     f"Unity: AccessGrid wants the pass of identity {pid} ({credential_id}) {status.value}, "
+                     f"but the identity is no longer in Unity — status not written")
+            return
+        except UnityError:
+            pass
+        logger.error("Unity: could not set %s %s to %s: %s", pid, credential_id, status.value, err)
 
     @property
     def supports_status_writeback(self) -> bool:
@@ -429,13 +444,15 @@ class AvigilonAdapter:
             for e in ours:
                 token = tokens.get(e["token_id"])
                 if token is None:
-                    logger.warning("Unity token %s of %s is gone — not setting its status", e["token_id"], pid)
+                    _problem(f"{pid}:{e['token_id']}",
+                             f"Unity: AccessGrid wants the pass of identity {pid} ({credential_id}) {status.value}, "
+                             f"but its token {e['token_id']} is no longer in Unity — status not written to it")
                     continue
                 if token["status"] != code:
                     self._client.set_token_status(token, code)
                 written.set_active(e["token_id"], want)
         except UnityError as e:
-            logger.error("Unity: could not set the tokens of %s %s to %s: %s", pid, credential_id, status.value, e)
+            self._status_unwritable(pid, credential_id, status, e)
             return False
         return True
 
@@ -562,10 +579,15 @@ class AvigilonAdapter:
 
 def _card_problem(pid: str, card: tuple[str, str], problem: str) -> None:
     """A card we will not write: logged here, and mailed to the operator."""
+    _problem(f"{pid}:{card[0]}/{card[1]}", problem)
+
+
+def _problem(key: str, problem: str) -> None:
+    """Logged here, and mailed to the operator, at most once a while per key."""
     from .... import notifications
 
     logger.error("%s", problem)
-    notifications.notify_card_problem(f"{pid}:{card[0]}/{card[1]}", problem)
+    notifications.notify_card_problem(key, problem)
 
 
 # Add localized help text. Stored as a flat dict on the package so the

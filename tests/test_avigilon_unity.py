@@ -980,3 +980,37 @@ def test_seos_number_check_that_cannot_answer_writes_nothing(tracked, broken):
         fake.internal_search_ignored = True
     assert not a.write_back_credentials("a", "t1", [_card("9001")])
     assert fake.posts == []
+
+
+# --- AccessGrid status for a token or identity Unity no longer has ------------------
+
+
+def test_status_for_a_token_no_longer_in_unity_is_mailed(mailed):
+    fake = FakeUnity([_identity("a")], tokens={"a": []})
+    assert not _adapter(fake).update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+    assert "token t1 is no longer in Unity" in mailed[0]
+
+
+def test_status_for_an_identity_no_longer_in_unity_is_mailed(mailed):
+    fake = FakeUnity([], tokens={})
+    fake.fail["/identities/gone/tokens.json"] = 404
+    fake.fail["/identities/gone/tokens.xml"] = 404
+    assert not _adapter(fake).update_credential_status("gone", "t1", CredentialStatus.SUSPENDED)
+    assert "the identity is no longer in Unity" in mailed[0]
+
+
+def test_status_that_fails_otherwise_is_logged_not_mailed(mailed):
+    fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1")]})
+    fake.fail["/identities/a/tokens.json"] = 500
+    fake.fail["/identities/a/tokens.xml"] = 500
+    assert not _adapter(fake).update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+    assert mailed == []
+
+
+def test_seos_status_for_a_hub_token_no_longer_in_unity_is_mailed(seos, mailed):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])
+    fake.tokens["a"] = fake.tokens["a"][1:]
+    assert a.update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+    assert "is no longer in Unity" in mailed[0]
