@@ -4,6 +4,13 @@ The trigger is per token: Embossed Number set to `accessgrid` (any case).
 The card number is the token's Internal Number — never the Embossed Number,
 which by then holds the trigger word.
 
+With a Seos template it runs the other way: AccessGrid allocates the card
+number, and the hub creates a token holding it on the identity, one per
+device, embossed `accessgrid` too and switched off until the pass is
+installed. Those tokens are recorded in `unity_tokens` (written.py), which
+is the only thing telling them from enrollments; once written, they drive
+the pass.
+
 All of a cycle's Unity reads happen in list_people(). The whole roster is
 read, because who is missing from it is who phase 3 deletes. Tokens are read
 only for the identities Unity's embossed-number search returns plus everyone
@@ -26,11 +33,13 @@ from typing import Any
 from ..base import (
     ConnectionResult,
     Credential,
+    CredentialIdentity,
     CredentialStatus,
     PacsDescriptor,
     PacsRecordUnavailable,
     Person,
 )
+from . import written
 from .client import UnityAuthError, UnityClient, UnityError
 
 logger = logging.getLogger(__name__)
@@ -106,8 +115,11 @@ def _tracked_people() -> set[str] | None:
 
 
 class AvigilonAdapter:
-    def __init__(self, host: str, username: str, password: str, verify_ssl: bool = False):
+    def __init__(self, host: str, username: str, password: str, verify_ssl: bool = False,
+                 mode: str = "desfire", pair: bool = False):
         self._client = UnityClient(host=host, username=username, password=password, verify_ssl=verify_ssl)
+        # From the AccessGrid template (descriptor.derives_mode_from_template).
+        self.seos = mode == "seos"
         from . import DESCRIPTOR
         self._descriptor = DESCRIPTOR
         # Filled by list_people(), one cycle at a time.
@@ -206,14 +218,65 @@ class AvigilonAdapter:
                 tokens = self._client.list_tokens(pid)
             except UnityError as e:
                 raise PacsRecordUnavailable(f"Unity tokens for inactive {pid} unread: {e}") from e
-            return [replace(self._credential(pid, t), status=CredentialStatus.SUSPENDED) for t in tokens]
+            return [replace(c, status=CredentialStatus.SUSPENDED) for c in self._credentials(pid, tokens)]
         if pid not in self._tokens:
             raise PacsRecordUnavailable(f"Unity tokens for {pid} were not read this cycle")
-        return [self._credential(pid, t) for t in self._tokens[pid]]
+        return self._credentials(pid, self._tokens[pid])
 
-    def _credential(self, pid: str, token: dict[str, Any]) -> Credential:
-        trigger = _is_trigger(token)
-        hold = pid in self._held
+    def _credentials(self, pid: str, tokens: list[dict[str, Any]]) -> list[Credential]:
+        if not self.seos:
+            return [self._credential(pid, t) for t in tokens]
+        # One credential per enrollment token. Tokens we created are not
+        # credentials of their own: they are the pass's, under its enrollment.
+        ours = written.for_person(pid)
+        mine = {e["token_id"] for e in ours}
+        by_id = {t["id"]: t for t in tokens}
+        return [
+            self._seos_credential(pid, t, [e for e in ours if e["credential_id"] == t["id"]], by_id)
+            for t in tokens if _is_trigger(t) and t["id"] not in mine
+        ]
+
+    def _seos_credential(self, pid: str, enrollment: dict[str, Any], ours: list[dict],
+                         tokens: dict[str, dict[str, Any]]) -> Credential:
+        """A Seos pass, judged by the tokens we wrote for it once there are any.
+
+        Every one has to be there and on. AccessGrid suspends a pass, not one
+        device, so a token deleted or switched off in Unity suspends it — but
+        a token off because we wrote it off, to wait for the install, is our
+        own hold. Before anything is written, the enrollment's status stands.
+        """
+        dates, hold = self._dates(enrollment)
+        if not ours:
+            status = _TOKEN_STATUS.get(enrollment["status"], CredentialStatus.UNKNOWN)
+        else:
+            status, waiting = CredentialStatus.ACTIVE, False
+            for e in ours:
+                token = tokens.get(e["token_id"])
+                if token is None or (token["status"] != "1" and e["active"]):
+                    logger.info("Unity token %s of %s is %s — suspending the pass", e["token_id"], pid,
+                                "gone" if token is None else "switched off in Unity")
+                    status = CredentialStatus.SUSPENDED
+                    break
+                waiting = waiting or token["status"] != "1"
+            if status is CredentialStatus.ACTIVE and waiting:
+                status = CredentialStatus.AWAITING_INSTALL
+        return Credential(
+            id=enrollment["id"],
+            person_id=pid,
+            # Empty on purpose: AccessGrid allocates the card number.
+            card_number="",
+            status=status,
+            activate_date=dates["activate_date"],
+            deactivate_date=dates["deactivate_date"],
+            trigger_active=True,
+            allocate_identity=True,
+            hold=hold or pid in self._held,
+            raw={"enrollment": enrollment, "written": [e["token_id"] for e in ours]},
+        )
+
+    @staticmethod
+    def _dates(token: dict[str, Any]) -> tuple[dict[str, datetime | None], bool]:
+        hold = False
         dates: dict[str, datetime | None] = {}
         for name in ("activate_date", "deactivate_date"):
             try:
@@ -223,6 +286,12 @@ class AvigilonAdapter:
                 # treating it as "none" would keep a pass alive forever.
                 logger.warning("Unity token %s: %s — holding it", token["id"], e)
                 dates[name], hold = None, True
+        return dates, hold
+
+    def _credential(self, pid: str, token: dict[str, Any]) -> Credential:
+        trigger = _is_trigger(token)
+        dates, hold = self._dates(token)
+        hold = hold or pid in self._held
         if trigger and not token["internal_number"]:
             logger.warning("Unity token %s is marked accessgrid but has no Internal Number — holding it", token["id"])
             hold = True
@@ -241,6 +310,8 @@ class AvigilonAdapter:
     def update_credential_status(
         self, person_id: str, credential_id: str, status: CredentialStatus
     ) -> bool:
+        if self.seos:
+            return self._set_written_status(str(person_id), credential_id, status)
         wanted = _WRITABLE_STATUS.get(status)
         if wanted is None:
             return False
@@ -261,6 +332,105 @@ class AvigilonAdapter:
     @property
     def supports_status_writeback(self) -> bool:
         return True
+
+    # -- Seos: tokens the hub writes ---------------------------------------
+
+    @property
+    def supports_credential_writeback(self) -> bool:
+        return self.seos
+
+    @property
+    def supports_credential_retirement(self) -> bool:
+        """Only tokens we created are ours to delete."""
+        return self.seos
+
+    def _set_written_status(self, pid: str, credential_id: str, status: CredentialStatus) -> bool:
+        """Switch the pass's tokens on (installed) or off (suspended, or not
+        installed yet). A token we switched on that is now off was switched
+        off by an operator, and is not switched back on."""
+        ours = written.for_credential(pid, credential_id)
+        if not ours:
+            return False
+        want = status is CredentialStatus.ACTIVE
+        code = "1" if want else "2"
+        try:
+            tokens = {t["id"]: t for t in self._client.list_tokens(pid)}
+            if want and any(e["active"] and e["token_id"] in tokens and tokens[e["token_id"]]["status"] != "1"
+                            for e in ours):
+                logger.warning("Unity: a token of %s %s was switched off in Unity after we switched it on "
+                               "— leaving it off", pid, credential_id)
+                return False
+            for e in ours:
+                token = tokens.get(e["token_id"])
+                if token is None:
+                    logger.warning("Unity token %s of %s is gone — not setting its status", e["token_id"], pid)
+                    continue
+                if token["status"] != code:
+                    self._client.set_token_status(token, code)
+                written.set_active(e["token_id"], want)
+        except UnityError as e:
+            logger.error("Unity: could not set the tokens of %s %s to %s: %s", pid, credential_id, status.value, e)
+            return False
+        return True
+
+    def write_back_credentials(self, person_id: str, credential_id: str,
+                               identities: list[CredentialIdentity]) -> bool:
+        """Create a token for each AccessGrid credential not yet in Unity.
+
+        Created switched off; the install gate switches it on. Offered again
+        every cycle, so a credential already written is skipped, and a token
+        holding its number that we created but failed to record is adopted
+        rather than created twice. A number recorded on another pass is
+        never written: two people would hold the same card.
+        """
+        pid = str(person_id)
+        recorded = written.all_tokens()
+        mine = {(e["facility_code"], e["card_number"]) for e in recorded
+                if (e["person_id"], e["credential_id"]) == (pid, credential_id)}
+        elsewhere = {(e["facility_code"], e["card_number"]): e["person_id"] for e in recorded
+                     if (e["person_id"], e["credential_id"]) != (pid, credential_id)}
+        new = [i for i in identities if (str(i.site_code), str(i.card_number)) not in mine]
+        if not new:
+            return True
+        known = {e["token_id"] for e in recorded}
+        tokens = self._client.list_tokens(pid)
+        for identity in new:
+            card = (str(identity.site_code), str(identity.card_number))
+            if card in elsewhere:
+                logger.error("Unity: AccessGrid reports card %s/%s on the pass of %s (%s), but it is "
+                             "already written for %s — not writing", *card, pid, credential_id, elsewhere[card])
+                return False
+            adopt = next((t for t in tokens if t["internal_number"] == card[1] and _is_trigger(t)
+                          and t["id"] not in known and t["id"] != credential_id), None)
+            token_id = adopt["id"] if adopt else self._client.create_token(pid, card[1], TRIGGER_VALUE, "2")
+            written.add(pid, credential_id, token_id, *card)
+        return True
+
+    def retire_credentials(self, person_id: str, credential_id: str,
+                           identities: list[CredentialIdentity]) -> int:
+        """Delete the tokens of credentials AccessGrid deleted or unlinked."""
+        pid = str(person_id)
+        gone = {(str(i.site_code), str(i.card_number)) for i in identities}
+        retired = 0
+        for e in written.for_credential(pid, credential_id):
+            if (e["facility_code"], e["card_number"]) not in gone:
+                continue
+            try:
+                self._client.delete_token(pid, e["token_id"])
+            except UnityError as err:
+                if any(t["id"] == e["token_id"] for t in self._client.list_tokens(pid)):
+                    logger.error("Unity: could not delete token %s of %s: %s", e["token_id"], pid, err)
+                    continue
+            written.remove(e["token_id"])
+            retired += 1
+        return retired
+
+    def written_credentials(self) -> dict[tuple[str, str], list[str]]:
+        """Card numbers written into Unity, per pass, from our own record."""
+        out: dict[tuple[str, str], list[str]] = {}
+        for e in written.all_tokens():
+            out.setdefault((e["person_id"], e["credential_id"]), []).append(e["card_number"])
+        return out
 
 
 # Add localized help text. Stored as a flat dict on the package so the

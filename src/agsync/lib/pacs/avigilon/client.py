@@ -524,6 +524,59 @@ class UnityClient:
             return
         raise UnityError(f"token {token['id']}: status reads {after and after['status']!r} after writing {status!r}")
 
+    def create_token(self, identity_id: str, internal_number: str, embossed: str, status: str) -> str:
+        """Create a token on an identity and return its id.
+
+        Only the card number, embossed number and status are sent; Unity
+        defaults the rest, as its own form does for a field left blank. No
+        dates: the format Unity takes them back in has not been seen, and a
+        token without them is limited by its status alone. Returns only once
+        a re-read shows the token; raises on refusal or doubt.
+        """
+        if not self._logged_in:
+            self.login()  # the CSRF token comes with the session
+        if not self.csrf_token:
+            raise UnityError(f"identity {identity_id}: no CSRF token to send, so Unity would refuse the token")
+        form = {
+            "utf8": "✓",
+            "authenticity_token": self.csrf_token,
+            "enrollVirdiAfter": "false",
+            "token[plasecInternalnumber]": internal_number,
+            "token[plasecEmbossednumber]": embossed,
+            "token[plasecTokenstatus]": status,
+        }
+        path = f"/identities/{identity_id}/tokens"
+        resp = self._request("POST", path, data=form)
+        if resp.status_code != 302:
+            raise UnityError(f"POST {path}: HTTP {resp.status_code}")
+        located = re.search(r"/tokens/([0-9A-Za-z]+)", resp.headers.get("Location", ""))
+        made = [t for t in self.list_tokens(identity_id)
+                if t["internal_number"] == internal_number and t["embossed_number"] == embossed]
+        token = next((t for t in made if located and t["id"] == located.group(1)), None)
+        if token is None and len(made) == 1:
+            token = made[0]
+        if token is None:
+            raise UnityError(f"identity {identity_id}: {len(made)} tokens read back after creating one")
+        if token["status"] != status:
+            raise UnityError(f"token {token['id']}: created with status {token['status']!r}, not {status!r}")
+        logger.info("Unity: created token %s on identity %s", token["id"], identity_id)
+        return token["id"]
+
+    def delete_token(self, identity_id: str, token_id: str) -> None:
+        """Delete one token. Returns only once a re-read no longer shows it."""
+        if not self._logged_in:
+            self.login()  # the CSRF token comes with the session
+        if not self.csrf_token:
+            raise UnityError(f"token {token_id}: no CSRF token to send, so Unity would refuse the delete")
+        path = f"/identities/{identity_id}/tokens/{token_id}"
+        form = {"utf8": "✓", "_method": "delete", "authenticity_token": self.csrf_token}
+        resp = self._request("POST", path, data=form)
+        if resp.status_code != 302:
+            raise UnityError(f"POST {path} (delete): HTTP {resp.status_code}")
+        if any(t["id"] == token_id for t in self.list_tokens(identity_id)):
+            raise UnityError(f"token {token_id}: still on identity {identity_id} after deleting it")
+        logger.info("Unity: deleted token %s from identity %s", token_id, identity_id)
+
     def list_card_formats(self) -> list[dict[str, str]]:
         body = self._get_json("/card_formats.json")
         items = body.get("data", body) if isinstance(body, dict) else body

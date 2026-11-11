@@ -322,6 +322,26 @@ MIGRATIONS: list[tuple[str, Step]] = [
         "ALTER TABLE ag_credentials ADD COLUMN last_synced_expiration TEXT;",
     ),
     ("013_legacy_cards_wait_for_install", _legacy_cards_wait_for_install),
+    (
+        "014_unity_tokens",
+        """
+        -- Tokens the hub created in Avigilon Unity for a Seos pass, one per
+        -- AccessGrid credential. They carry the same `accessgrid` embossed
+        -- number as an enrollment, so this is how they are told apart.
+        CREATE TABLE IF NOT EXISTS unity_tokens (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            pacs_person_id     TEXT NOT NULL,
+            pacs_credential_id TEXT NOT NULL,  -- the enrollment token the pass was issued for
+            token_id           TEXT NOT NULL UNIQUE,
+            facility_code      TEXT NOT NULL,  -- encrypted
+            card_number        TEXT NOT NULL,  -- encrypted
+            -- the status we last wrote: 1 active, 0 off (our own hold)
+            active             INTEGER NOT NULL DEFAULT 0,
+            created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_unity_tokens_person ON unity_tokens(pacs_person_id);
+        """,
+    ),
 ]
 
 

@@ -25,7 +25,8 @@ JSON list and tests whether `/identities.xml` can be read in pieces — page
 and perpage, start and length, the A–Z last-name filter — against the whole
 list, read with a long timeout. `search` checks the embossed-number search
 the adapter sends: whether it answers, filters, ignores case and returns only
-holders of an `accessgrid` token. The password is prompted for. The report is
+holders of an `accessgrid` token; and reads, without submitting, the form
+Unity uses to add a token. The password is prompted for. The report is
 printed and saved as JSON.
 """
 
@@ -79,6 +80,9 @@ _PIECE_TIMEOUT = 120.0
 _EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
 _XML_PAGE = 1000
 _SEARCH_CHECKED = 25
+# What the client's create_token posts (client.py), besides the CSRF token.
+_CREATE_SENDS = ["utf8", "enrollVirdiAfter", "token[plasecInternalnumber]",
+                 "token[plasecEmbossednumber]", "token[plasecTokenstatus]"]
 MODES = ("all", "xml", "search")
 
 # What our adapter reads and writes (src/agsync/lib/pacs/avigilon/). Copied
@@ -367,7 +371,42 @@ class Probe:
             return self.report
         self.dashboard()
         self.search()
+        self.new_token_form()
         return self.report
+
+    def new_token_form(self) -> None:
+        """Unity's form for adding a token, read and never submitted.
+
+        A Seos pass has the hub create a token holding AccessGrid's card
+        number, sending only the fields in _CREATE_SENDS; this shows whether
+        the form has them, what else it would post, and how it writes dates.
+        """
+        rows = self.read_xml("identity_search", "new_token_identity", "/identities.xml", "identities",
+                             "identity", params={**_XML_SEARCH, "page": 1, "perpage": 1})
+        cn = next((r.get("cn") for r in rows or [] if r.get("cn") not in (None, "", "0")), None)
+        if cn is None:
+            self.report["new_token_form"] = {"error": "no identity to read the form on"}
+            return
+        resp = self.get("new_token_form", f"/identities/{cn}/tokens/new", follow_redirects=True)
+        if resp is None or resp.status_code != 200:
+            self.report["new_token_form"] = {"status": None if resp is None else resp.status_code}
+            return
+        parser = FormFields()
+        parser.feed(resp.text)
+        fields = []
+        for f in parser.fields:
+            if f["name"] in ("authenticity_token", "utf8"):
+                f = {**f, "value": "<withheld>" if f["value"] else ""}
+            else:
+                f = {**f, "value": redact(f["value"], f["name"].removeprefix("token[").removesuffix("]"))}
+            fields.append(f)
+        names = {f["name"] for f in fields}
+        self.report["new_token_form"] = {
+            "status": 200,
+            "fields": fields,
+            "create_sends_but_form_lacks": [n for n in _CREATE_SENDS if n not in names],
+            "posts_to": sorted(set(re.findall(r"<form[^>]+action=[\"']([^\"']+)[\"']", resp.text, re.I)))[:5],
+        }
 
     def _xml_ids(self, step: str, value: str | None, page: int = 1) -> set[str] | None:
         """Identity ids on one page of the XML list, searched for `value` if given."""

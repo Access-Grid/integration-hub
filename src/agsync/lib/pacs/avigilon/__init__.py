@@ -13,6 +13,9 @@ DESCRIPTOR = PacsDescriptor(
         ConnectionField("username", "pacs.avigilon.username"),
         ConnectionField("password", "pacs.avigilon.password", kind="password"),
     ],
+    # DESFire/SmartTap or Seos, from the AccessGrid template: Seos has the
+    # hub create a token holding the card number AccessGrid allocated.
+    derives_mode_from_template=True,
 )
 
 register("avigilon", DESCRIPTOR, lambda params: AvigilonAdapter(**params))

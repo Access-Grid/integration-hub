@@ -15,6 +15,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
+from agsync.lib.pacs.avigilon import written
 from agsync.lib.pacs.avigilon.adapter import AvigilonAdapter, parse_date
 from agsync.lib.pacs.avigilon.client import (
     ROSTER_TIMEOUT,
@@ -25,7 +26,7 @@ from agsync.lib.pacs.avigilon.client import (
     UnityClient,
     UnityError,
 )
-from agsync.lib.pacs.base import CredentialStatus, PacsRecordUnavailable
+from agsync.lib.pacs.base import CredentialIdentity, CredentialStatus, PacsRecordUnavailable
 from agsync.sync import engine as engine_mod
 from agsync.sync import snapshot as snapshot_mod
 from agsync.sync import tracking
@@ -134,13 +135,33 @@ class FakeUnity:
         if parts[-1] == "tokens.json":
             return httpx.Response(200, json={"tokens": self.tokens.get(parts[1], []), "recordsTotal": 0})
         if path.endswith(".json") and len(parts) == 2:
+            if parts[1][:-5] not in self.details:
+                return httpx.Response(404)
             return httpx.Response(200, json={"data": self.details[parts[1][:-5]]})
-        if req.method == "POST" and len(parts) == 4:
+        if parts[-1] == "new" and req.method == "GET":
+            return httpx.Response(200, text=(
+                f'<form action="/identities/{parts[1]}/tokens" method="post">'
+                '<input name="utf8" type="hidden" value="✓"><input name="authenticity_token" value="x">'
+                '<input name="token[plasecInternalnumber]"><input name="token[plasecEmbossednumber]">'
+                '<select name="token[plasecTokenstatus]"><option value="1">Active</option></select></form>'))
+        if req.method == "POST" and len(parts) in (3, 4) and parts[2] == "tokens":
             form = {k: v[0] for k, v in parse_qs(req.content.decode()).items()}
             if self.csrf_where is None or form.get("authenticity_token") != self.csrf \
                     or req.headers.get("X-CSRF-Token") != self.csrf:
                 return httpx.Response(422, text="InvalidAuthenticityToken")
             self.posts.append(form)
+            tokens = self.tokens.setdefault(parts[1], [])
+            if len(parts) == 3:  # create
+                made = _token(f"new{len(self.posts)}", internal=form["token[plasecInternalnumber]"],
+                              embossed=form["token[plasecEmbossednumber]"],
+                              status={"1": "Active", "2": "Inactive"}[form["token[plasecTokenstatus]"]])
+                if not self.ignore_writes:
+                    tokens.append(made)
+                return httpx.Response(302, headers={"Location": f"/identities/{parts[1]}/tokens/{made['id']}"})
+            if form.get("_method") == "delete":
+                if not self.ignore_writes:
+                    tokens[:] = [t for t in tokens if t["id"] != parts[3]]
+                return httpx.Response(302, headers={"Location": f"/identities/{parts[1]}"})
             for t in [] if self.ignore_writes else self.tokens[parts[1]]:
                 if t["id"] == parts[3]:
                     t["attributes"].update(self.default_on_write)
@@ -584,3 +605,204 @@ def test_tracked_person_missing_from_both_reads_is_gone(tracked):
     tracked("gone")
     a = _adapter(_search_fake())
     assert "gone" not in {p.id for p in a.list_people()}
+
+
+# --- creating and deleting tokens (Seos) -------------------------------------------
+
+
+def test_created_token_is_read_back_and_its_id_returned():
+    fake = FakeUnity([_identity("a")], tokens={"a": []})
+    c = _client(fake)
+    token_id = c.create_token("a", "777", "accessgrid", "2")
+    [made] = c.list_tokens("a")
+    assert (made["id"], made["internal_number"], made["embossed_number"], made["status"]) == \
+        (token_id, "777", "accessgrid", "2")
+    assert "token[plasecTokenstatus]" in fake.posts[-1] and "_method" not in fake.posts[-1]
+
+
+def test_create_that_does_not_stick_raises():
+    fake = FakeUnity([_identity("a")], tokens={"a": []})
+    fake.ignore_writes = True
+    with pytest.raises(UnityError, match="0 tokens read back"):
+        _client(fake).create_token("a", "777", "accessgrid", "2")
+
+
+def test_create_without_csrf_is_refused_unsent():
+    fake = FakeUnity([_identity("a")], tokens={"a": []})
+    fake.csrf_where = None
+    with pytest.raises(UnityError, match="CSRF"):
+        _client(fake).create_token("a", "777", "accessgrid", "2")
+    assert fake.posts == []
+
+
+def test_deleted_token_is_gone_on_re_read():
+    fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1"), _token("t2")]})
+    c = _client(fake)
+    c.delete_token("a", "t1")
+    assert [t["id"] for t in c.list_tokens("a")] == ["t2"]
+
+
+def test_delete_that_does_not_stick_raises():
+    fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1")]})
+    fake.ignore_writes = True
+    with pytest.raises(UnityError, match="still on"):
+        _client(fake).delete_token("a", "t1")
+
+
+# --- Seos: AccessGrid allocates, the hub writes tokens -------------------------------
+
+
+def _seos(tokens=None):
+    """a holds enrollment token t1; tracked, so their tokens are always read."""
+    fake = FakeUnity([_identity("a")], tokens={"a": tokens if tokens is not None else [_token("t1")]},
+                     details={"a": {"id": "a", "attributes": {}}})
+    a = _adapter(fake)
+    a.seos = True
+    return fake, a
+
+
+def _cycle(a, pid="a"):
+    list(a.list_people())
+    return list(a.list_credentials(pid))
+
+
+def _card(number, site="239"):
+    return CredentialIdentity(site_code=site, card_number=number)
+
+
+@pytest.fixture
+def seos(tracked):
+    tracked("a")
+    return _seos
+
+
+def test_seos_enrollment_asks_accessgrid_for_the_number(seos):
+    _, a = seos()
+    [cred] = _cycle(a)
+    assert (cred.id, cred.card_number, cred.allocate_identity) == ("t1", "", True)
+    assert cred.status is CredentialStatus.ACTIVE and not cred.hold
+
+
+def test_seos_writeback_creates_an_inactive_token_and_records_it(seos):
+    fake, a = seos()
+    _cycle(a)
+    assert a.write_back_credentials("a", "t1", [_card("9001")])
+    made = next(t for t in fake.tokens["a"] if t["id"] != "t1")["attributes"]
+    assert (made["plasecInternalnumber"], made["plasecEmbossednumber"],
+            made["extended_attributes"]["token_status"]) == ("9001", "accessgrid", "Inactive")
+    assert a.written_credentials() == {("a", "t1"): ["9001"]}
+
+
+def test_seos_hub_token_is_not_read_as_an_enrollment(seos):
+    _, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001")])
+    [cred] = _cycle(a)
+    assert cred.id == "t1" and cred.status is CredentialStatus.AWAITING_INSTALL
+
+
+def test_seos_writeback_offered_again_creates_nothing(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001")])
+    posts = len(fake.posts)
+    assert a.write_back_credentials("a", "t1", [_card("9001")])
+    assert len(fake.posts) == posts
+
+
+def test_seos_unrecorded_token_with_the_number_is_adopted_not_duplicated(seos):
+    fake, a = seos([_token("t1"), _token("lost", internal="9001", status="Inactive")])
+    _cycle(a)
+    assert a.write_back_credentials("a", "t1", [_card("9001")])
+    assert fake.posts == []
+    assert [e["token_id"] for e in written.for_credential("a", "t1")] == ["lost"]
+
+
+def test_seos_number_written_for_another_pass_is_refused(seos):
+    fake, a = seos()
+    written.add("b", "tb", "elsewhere", "239", "9001")
+    _cycle(a)
+    assert not a.write_back_credentials("a", "t1", [_card("9001")])
+    assert fake.posts == []
+
+
+def test_seos_install_switches_tokens_on_and_suspend_off(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001")])
+    assert a.update_credential_status("a", "t1", CredentialStatus.ACTIVE)
+    [cred] = _cycle(a)
+    assert cred.status is CredentialStatus.ACTIVE
+    assert a.update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+    made = next(t for t in fake.tokens["a"] if t["id"] != "t1")
+    assert made["attributes"]["extended_attributes"]["token_status"] == "Inactive"
+    assert fake.tokens["a"][0]["attributes"]["extended_attributes"]["token_status"] == "Active"
+
+
+def test_seos_token_switched_off_by_an_operator_suspends_and_stays_off(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001")])
+    a.update_credential_status("a", "t1", CredentialStatus.ACTIVE)
+    made = next(t for t in fake.tokens["a"] if t["id"] != "t1")
+    made["attributes"]["extended_attributes"]["token_status"] = "Inactive"  # operator
+    [cred] = _cycle(a)
+    assert cred.status is CredentialStatus.SUSPENDED
+    posts = len(fake.posts)
+    assert not a.update_credential_status("a", "t1", CredentialStatus.ACTIVE)
+    assert len(fake.posts) == posts
+
+
+def test_seos_deleted_hub_token_suspends_the_pass(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001")])
+    fake.tokens["a"] = [t for t in fake.tokens["a"] if t["id"] == "t1"]
+    [cred] = _cycle(a)
+    assert cred.status is CredentialStatus.SUSPENDED
+
+
+def test_seos_retirement_deletes_the_token_and_forgets_it(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])
+    assert a.retire_credentials("a", "t1", [_card("9001")]) == 1
+    assert [t["attributes"]["plasecInternalnumber"] for t in fake.tokens["a"]] == ["42069", "9002"]
+    assert a.written_credentials() == {("a", "t1"): ["9002"]}
+
+
+def test_desfire_template_keeps_reading_internal_numbers(seos):
+    _, a = seos()
+    a.seos = False
+    [cred] = _cycle(a)
+    assert (cred.card_number, cred.allocate_identity) == ("42069", False)
+    assert not a.supports_credential_writeback and not a.supports_credential_retirement
+
+
+def test_seos_issue_writes_both_cards_of_a_pair_into_unity_at_once(seos, monkeypatch):
+    """Phase 1 against the real adapter: the numbers in the issue response
+    reach Unity in the same cycle, one Inactive token per device."""
+    from agsync.sync.phases import phase1_provision
+
+    fake, a = seos()
+    [cred] = _cycle(a)
+    snap = Snapshot()
+    snap.people["a"] = SimpleNamespace(id="a", full_name="Jim Cooper", email="j@x.co", phone="",
+                                       title="", active=True)
+    snap.credentials_by_person["a"] = [cred]
+    monkeypatch.setattr(phase1_provision.tracking, "get", lambda *a: None)
+    monkeypatch.setattr(phase1_provision.tracking, "upsert", lambda **kw: None)
+    sent = []
+    issued = SimpleNamespace(id="card-1", state="created", details=[
+        SimpleNamespace(device_type="iphone", site_code="239", card_number="9001", state="created"),
+        SimpleNamespace(device_type="apple_watch", site_code="239", card_number="9002", state="created"),
+    ])
+    ag = SimpleNamespace(access_cards=SimpleNamespace(
+        provision=lambda **kw: (sent.append(kw), issued)[1], list=lambda **kw: []))
+
+    assert phase1_provision.run(snap, ag, "tpl", pacs=a) == 1
+    assert "card_number" not in sent[0]
+    made = {t["attributes"]["plasecInternalnumber"]: t["attributes"]["extended_attributes"]["token_status"]
+            for t in fake.tokens["a"] if t["id"] != "t1"}
+    assert made == {"9001": "Inactive", "9002": "Inactive"}
+    assert a.written_credentials() == {("a", "t1"): ["9001", "9002"]}
