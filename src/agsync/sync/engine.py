@@ -467,6 +467,9 @@ class SyncEngine:
             (pacs_cfg.get("options") or {}).get("credential_encoding")
             == PacsConfig.ENCODING_FILE_DATA
         )
+        descriptor = get_descriptor(pacs_cfg.get("vendor", ""))
+        max_per_cycle = (descriptor and descriptor.max_provisions_per_cycle) or phase1_provision.MAX_PROVISIONS_PER_CYCLE
+        default_pass_days = descriptor.default_pass_days if descriptor else 365
         try:
             result.provisioned = phase1_provision.run(
                 snapshot, ag, ag_cfg["template_id"], site_code,
@@ -477,6 +480,8 @@ class SyncEngine:
                 card_classification=card_classification,
                 pacs=pacs,
                 should_stop=superseded,
+                max_per_cycle=max_per_cycle,
+                default_pass_days=default_pass_days,
             )
             if superseded():
                 return self._abandon(result, start_ms)
@@ -493,6 +498,7 @@ class SyncEngine:
                 card_title=card_title,
                 card_classification=card_classification,
                 pacs=pacs,
+                default_pass_days=default_pass_days,
             )
             result.field_updates = phase6_field_changes.run(snapshot, ag)
             # Adapters that batch their PACS writes send them now, once the

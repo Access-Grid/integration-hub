@@ -39,6 +39,7 @@ def run(
     card_title: str = "",
     card_classification: str = "",
     pacs: PacsAdapter | None = None,
+    default_pass_days: int = 365,
 ) -> int:
     failed = tracking.failed_records(MAX_RETRIES)
     if not failed:
@@ -112,7 +113,7 @@ def run(
             "employee_id": tracked.pacs_person_id,
             "full_name": person.full_name,
             "start_date": (cred.activate_date or now).isoformat(),
-            "expiration_date": (cred.deactivate_date or (now + timedelta(days=365))).isoformat(),
+            "expiration_date": (cred.deactivate_date or (now + timedelta(days=default_pass_days))).isoformat(),
             "metadata": metadata,
         }
         # Same wire-format choice as phase 1: verbatim file_data (opt-in) or

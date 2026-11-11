@@ -160,6 +160,11 @@ class PacsDescriptor:
     # The engine then resolves the template's protocol each cycle and passes
     # it in as `mode`, so the two systems cannot drift apart.
     derives_mode_from_template: bool = False
+    # Passes phase 1 may issue in one cycle; None keeps its default runaway
+    # cap (phase1_provision.MAX_PROVISIONS_PER_CYCLE).
+    max_provisions_per_cycle: int | None = None
+    # How long a pass lasts when the PACS gives its card no end date.
+    default_pass_days: int = 365
     # Set when requires_connect is True: what the side-car should open and
     # which cookies prove the human got through. Keeping it here is what
     # lets the connect flow stay vendor-agnostic — the alternative, and what

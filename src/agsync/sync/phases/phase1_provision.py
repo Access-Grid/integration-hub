@@ -55,6 +55,7 @@ def run(
     card_title: str = "",
     card_classification: str = "",
     pacs: PacsAdapter | None = None,
+    default_pass_days: int = 365,
     should_stop: Callable[[], bool] | None = None,
     max_per_cycle: int = MAX_PROVISIONS_PER_CYCLE,
 ) -> int:
@@ -151,7 +152,7 @@ def run(
 
             now = datetime.now(UTC)
             start_date = (cred.activate_date or now).isoformat()
-            expiration_date = (cred.deactivate_date or (now + timedelta(days=365))).isoformat()
+            expiration_date = (cred.deactivate_date or (now + timedelta(days=default_pass_days))).isoformat()
 
             # Start from the user-configured extras, then layer the
             # sync-managed keys on top so they always win the merge.

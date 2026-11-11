@@ -16,6 +16,10 @@ DESCRIPTOR = PacsDescriptor(
     # DESFire/SmartTap or Seos, from the AccessGrid template: Seos has the
     # hub create a token holding the card number AccessGrid allocated.
     derives_mode_from_template=True,
+    # Enrollment is one word on a token, so batches arrive large.
+    max_provisions_per_cycle=200,
+    # A token with no end date is meant to last; a year would lapse unseen.
+    default_pass_days=3650,
 )
 
 register("avigilon", DESCRIPTOR, lambda params: AvigilonAdapter(**params))
