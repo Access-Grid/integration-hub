@@ -257,42 +257,64 @@ class AvigilonAdapter:
     def _credentials(self, pid: str, tokens: list[dict[str, Any]]) -> list[Credential]:
         if not self.seos:
             return [self._credential(pid, t) for t in tokens]
-        # One credential per enrollment token. Tokens we created are not
-        # credentials of their own: they are the pass's, under its enrollment.
+        # One credential per pass: an enrollment not yet written, or the
+        # tokens we wrote for one, which go on after the enrollment is
+        # deleted. A token holding the number of a row still being created is
+        # ours too, created before a crash; write_back_credentials adopts it.
         ours = written.for_person(pid)
-        mine = {e["token_id"] for e in ours}
+        mine = {e["token_id"] for e in ours if e["token_id"]}
+        creating = {e["card_number"] for e in ours if not e["token_id"]}
         by_id = {t["id"]: t for t in tokens}
-        return [
-            self._seos_credential(pid, t, [e for e in ours if e["credential_id"] == t["id"]], by_id)
-            for t in tokens if _is_trigger(t) and t["id"] not in mine
-        ]
+        enrollments = [t["id"] for t in tokens if _is_trigger(t) and t["id"] not in mine
+                       and t["internal_number"] not in creating]
+        passes = list(dict.fromkeys(enrollments + [e["credential_id"] for e in ours]))
+        out = []
+        for cid in passes:
+            enrollment = by_id.get(cid) if cid in enrollments else None
+            cred = self._seos_credential(pid, cid, enrollment, [e for e in ours if e["credential_id"] == cid], by_id)
+            if cred is not None:
+                out.append(cred)
+        return out
 
-    def _seos_credential(self, pid: str, enrollment: dict[str, Any], ours: list[dict],
-                         tokens: dict[str, dict[str, Any]]) -> Credential:
+    def _seos_credential(self, pid: str, cid: str, enrollment: dict[str, Any] | None, ours: list[dict],
+                         tokens: dict[str, dict[str, Any]]) -> Credential | None:
         """A Seos pass, judged by the tokens we wrote for it once there are any.
 
         Every one has to be there and on. AccessGrid suspends a pass, not one
         device, so a token deleted or switched off in Unity suspends it — but
         a token off because we wrote it off, to wait for the install, is our
-        own hold. Before anything is written, the enrollment's status stands.
+        own hold. Once the enrollment is deleted and every token we wrote is
+        gone too, there is no credential, and phase 3 deletes the pass.
+        Before anything is written, the enrollment's status stands.
         """
-        dates, hold = self._dates(enrollment)
+        def gone(e: dict) -> bool:
+            token = tokens.get(e["token_id"]) if e["token_id"] else None
+            return bool(e["token_id"]) and (token is None or not _is_trigger(token))
+
+        if enrollment is not None:
+            dates, hold = self._dates(enrollment)
+        elif all(gone(e) for e in ours):
+            logger.info("Unity: every token of %s %s is gone, and the enrollment with them — the pass "
+                        "has no credential left", pid, cid)
+            return None
+        else:
+            dates, hold = {n: parse_date(ours[0][n] or "") for n in ("activate_date", "deactivate_date")}, False
         if not ours:
             status = _TOKEN_STATUS.get(enrollment["status"], CredentialStatus.UNKNOWN)
         else:
             status, waiting = CredentialStatus.ACTIVE, False
             for e in ours:
-                token = tokens.get(e["token_id"])
-                if token is None or (token["status"] != "1" and e["active"]):
+                token = tokens.get(e["token_id"]) if e["token_id"] else None
+                if gone(e) or (token is not None and token["status"] != "1" and e["active"]):
                     logger.info("Unity token %s of %s is %s — suspending the pass", e["token_id"], pid,
-                                "gone" if token is None else "switched off in Unity")
+                                "gone" if gone(e) else "switched off in Unity")
                     status = CredentialStatus.SUSPENDED
                     break
-                waiting = waiting or token["status"] != "1"
+                waiting = waiting or token is None or token["status"] != "1"
             if status is CredentialStatus.ACTIVE and waiting:
                 status = CredentialStatus.AWAITING_INSTALL
         return Credential(
-            id=enrollment["id"],
+            id=cid,
             person_id=pid,
             # Empty on purpose: AccessGrid allocates the card number.
             card_number="",
@@ -379,7 +401,7 @@ class AvigilonAdapter:
         """Switch the pass's tokens on (installed) or off (suspended, or not
         installed yet). A token we switched on that is now off was switched
         off by an operator, and is not switched back on."""
-        ours = written.for_credential(pid, credential_id)
+        ours = [e for e in written.for_credential(pid, credential_id) if e["token_id"]]
         if not ours:
             return False
         want = status is CredentialStatus.ACTIVE
@@ -406,35 +428,66 @@ class AvigilonAdapter:
 
     def write_back_credentials(self, person_id: str, credential_id: str,
                                identities: list[CredentialIdentity]) -> bool:
-        """Create a token for each AccessGrid credential not yet in Unity.
+        """Create a token for each AccessGrid credential not yet in Unity,
+        then delete the enrollment token.
 
-        Created switched off; the install gate switches it on. Offered again
-        every cycle, so a credential already written is skipped, and a token
-        holding its number that we created but failed to record is adopted
-        rather than created twice. A number recorded on another pass is
-        never written: two people would hold the same card.
+        In that order, each step only once the one before has held: the row
+        is recorded, then the token created (switched off; the install gate
+        switches it on) and its id recorded, and only when every credential
+        has its token does the enrollment go. Offered again every cycle, so a
+        credential already written is skipped, a token holding its number
+        that we created but did not record is adopted rather than created
+        twice, and an enrollment whose delete failed is deleted then. A
+        number recorded on another pass is never written: two people would
+        hold the same card.
         """
         pid = str(person_id)
         recorded = written.all_tokens()
-        mine = {(e["facility_code"], e["card_number"]) for e in recorded
+        mine = {(e["facility_code"], e["card_number"]): e for e in recorded
                 if (e["person_id"], e["credential_id"]) == (pid, credential_id)}
         elsewhere = {(e["facility_code"], e["card_number"]): e["person_id"] for e in recorded
                      if (e["person_id"], e["credential_id"]) != (pid, credential_id)}
-        new = [i for i in identities if (str(i.site_code), str(i.card_number)) not in mine]
-        if not new:
-            return True
-        known = {e["token_id"] for e in recorded}
-        tokens = self._client.list_tokens(pid)
-        for identity in new:
+        known = {e["token_id"] for e in recorded if e["token_id"]}
+        tokens = self._tokens.get(pid)
+        fresh = False
+        for identity in identities:
             card = (str(identity.site_code), str(identity.card_number))
+            if card in mine and mine[card]["token_id"]:
+                continue
             if card in elsewhere:
                 logger.error("Unity: AccessGrid reports card %s/%s on the pass of %s (%s), but it is "
                              "already written for %s — not writing", *card, pid, credential_id, elsewhere[card])
                 return False
+            if not fresh:
+                tokens, fresh = self._client.list_tokens(pid), True
+            if card in mine:
+                row = mine[card]["row"]
+            else:
+                enrollment = next((t for t in tokens if t["id"] == credential_id), None)
+                dates = self._dates(enrollment)[0] if enrollment else {}
+                row = written.add(pid, credential_id, *card,
+                                  *(d.isoformat() if (d := dates.get(n)) else None
+                                    for n in ("activate_date", "deactivate_date")))
             adopt = next((t for t in tokens if t["internal_number"] == card[1] and _is_trigger(t)
                           and t["id"] not in known and t["id"] != credential_id), None)
+            if adopt:
+                logger.info("Unity: adopting token %s of %s, created for card %s/%s but not recorded",
+                            adopt["id"], pid, *card)
             token_id = adopt["id"] if adopt else self._client.create_token(pid, card[1], TRIGGER_VALUE, "2")
-            written.add(pid, credential_id, token_id, *card)
+            written.set_token(row, token_id)
+            known.add(token_id)
+        if tokens is None:
+            return True  # not read this cycle: the enrollment's delete waits for a cycle that reads it
+        if any(t["id"] == credential_id for t in tokens):
+            try:
+                self._client.delete_token(pid, credential_id)
+            except UnityError as e:
+                logger.error("Unity: could not delete enrollment token %s of %s: %s", credential_id, pid, e)
+                return False
+            logger.info("Unity: deleted enrollment token %s of %s — its pass now has its own tokens",
+                        credential_id, pid)
+            # This cycle's read too, or the next offer deletes it again.
+            self._tokens[pid] = [t for t in tokens if t["id"] != credential_id]
         return True
 
     def retire_credentials(self, person_id: str, credential_id: str,
@@ -446,13 +499,14 @@ class AvigilonAdapter:
         for e in written.for_credential(pid, credential_id):
             if (e["facility_code"], e["card_number"]) not in gone:
                 continue
-            try:
-                self._client.delete_token(pid, e["token_id"])
-            except UnityError as err:
-                if any(t["id"] == e["token_id"] for t in self._client.list_tokens(pid)):
-                    logger.error("Unity: could not delete token %s of %s: %s", e["token_id"], pid, err)
-                    continue
-            written.remove(e["token_id"])
+            if e["token_id"]:
+                try:
+                    self._client.delete_token(pid, e["token_id"])
+                except UnityError as err:
+                    if any(t["id"] == e["token_id"] for t in self._client.list_tokens(pid)):
+                        logger.error("Unity: could not delete token %s of %s: %s", e["token_id"], pid, err)
+                        continue
+            written.remove(e["row"])
             retired += 1
         return retired
 
@@ -460,7 +514,8 @@ class AvigilonAdapter:
         """Card numbers written into Unity, per pass, from our own record."""
         out: dict[tuple[str, str], list[str]] = {}
         for e in written.all_tokens():
-            out.setdefault((e["person_id"], e["credential_id"]), []).append(e["card_number"])
+            if e["token_id"]:
+                out.setdefault((e["person_id"], e["credential_id"]), []).append(e["card_number"])
         return out
 
 

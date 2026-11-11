@@ -725,6 +725,28 @@ def test_seos_hub_token_is_not_read_as_an_enrollment(seos):
     assert cred.id == "t1" and cred.status is CredentialStatus.AWAITING_INSTALL
 
 
+def test_seos_enrollment_is_deleted_once_its_tokens_are_written(seos):
+    fake, a = seos([_token("t1", deactivate="2030-01-31T00:00:00Z")])
+    _cycle(a)
+    assert a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])
+    assert sorted(t["attributes"]["plasecInternalnumber"] for t in fake.tokens["a"]) == ["9001", "9002"]
+    assert fake.posts[-1]["_method"] == "delete"
+    [cred] = _cycle(a)  # the pass goes on, under the enrollment's id and dates
+    assert (cred.id, cred.allocate_identity) == ("t1", True)
+    assert cred.deactivate_date == datetime(2030, 1, 31, tzinfo=UTC)
+
+
+def test_seos_failed_enrollment_delete_is_retried_next_offer(seos):
+    fake, a = seos()
+    _cycle(a)
+    fake.fail["/identities/a/tokens/t1"] = 500
+    assert not a.write_back_credentials("a", "t1", [_card("9001")])
+    del fake.fail["/identities/a/tokens/t1"]
+    _cycle(a)
+    assert a.write_back_credentials("a", "t1", [_card("9001")])
+    assert [t["attributes"]["plasecInternalnumber"] for t in fake.tokens["a"]] == ["9001"]
+
+
 def test_seos_writeback_offered_again_creates_nothing(seos):
     fake, a = seos()
     _cycle(a)
@@ -734,20 +756,28 @@ def test_seos_writeback_offered_again_creates_nothing(seos):
     assert len(fake.posts) == posts
 
 
-def test_seos_unrecorded_token_with_the_number_is_adopted_not_duplicated(seos):
+def test_seos_token_created_but_not_recorded_is_adopted_not_an_enrollment(seos):
+    # The crash between creating a token and recording its id: the row
+    # written first is what keeps the token from reading as an enrollment.
     fake, a = seos([_token("t1"), _token("lost", internal="9001", status="Inactive")])
-    _cycle(a)
+    written.add("a", "t1", "239", "9001", None, None)
+    [cred] = _cycle(a)
+    assert cred.id == "t1"
     assert a.write_back_credentials("a", "t1", [_card("9001")])
-    assert fake.posts == []
+    assert [p.get("_method") for p in fake.posts] == ["delete"]  # the enrollment; nothing created
     assert [e["token_id"] for e in written.for_credential("a", "t1")] == ["lost"]
 
 
 def test_seos_number_written_for_another_pass_is_refused(seos):
     fake, a = seos()
-    written.add("b", "tb", "elsewhere", "239", "9001")
+    written.set_token(written.add("b", "tb", "239", "9001", None, None), "elsewhere")
     _cycle(a)
     assert not a.write_back_credentials("a", "t1", [_card("9001")])
     assert fake.posts == []
+
+
+def _hub_tokens(fake):
+    return [t for t in fake.tokens["a"] if t["id"] != "t1"]
 
 
 def test_seos_install_switches_tokens_on_and_suspend_off(seos):
@@ -758,9 +788,8 @@ def test_seos_install_switches_tokens_on_and_suspend_off(seos):
     [cred] = _cycle(a)
     assert cred.status is CredentialStatus.ACTIVE
     assert a.update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
-    made = next(t for t in fake.tokens["a"] if t["id"] != "t1")
+    [made] = _hub_tokens(fake)
     assert made["attributes"]["extended_attributes"]["token_status"] == "Inactive"
-    assert fake.tokens["a"][0]["attributes"]["extended_attributes"]["token_status"] == "Active"
 
 
 def test_seos_token_switched_off_by_an_operator_suspends_and_stays_off(seos):
@@ -768,7 +797,7 @@ def test_seos_token_switched_off_by_an_operator_suspends_and_stays_off(seos):
     _cycle(a)
     a.write_back_credentials("a", "t1", [_card("9001")])
     a.update_credential_status("a", "t1", CredentialStatus.ACTIVE)
-    made = next(t for t in fake.tokens["a"] if t["id"] != "t1")
+    [made] = _hub_tokens(fake)
     made["attributes"]["extended_attributes"]["token_status"] = "Inactive"  # operator
     [cred] = _cycle(a)
     assert cred.status is CredentialStatus.SUSPENDED
@@ -777,13 +806,21 @@ def test_seos_token_switched_off_by_an_operator_suspends_and_stays_off(seos):
     assert len(fake.posts) == posts
 
 
-def test_seos_deleted_hub_token_suspends_the_pass(seos):
+def test_seos_one_hub_token_deleted_suspends_the_pass(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])
+    fake.tokens["a"] = [t for t in fake.tokens["a"] if t["attributes"]["plasecInternalnumber"] != "9001"]
+    [cred] = _cycle(a)
+    assert cred.status is CredentialStatus.SUSPENDED
+
+
+def test_seos_every_hub_token_deleted_leaves_no_credential(seos):
     fake, a = seos()
     _cycle(a)
     a.write_back_credentials("a", "t1", [_card("9001")])
-    fake.tokens["a"] = [t for t in fake.tokens["a"] if t["id"] == "t1"]
-    [cred] = _cycle(a)
-    assert cred.status is CredentialStatus.SUSPENDED
+    fake.tokens["a"][0]["attributes"]["plasecEmbossednumber"] = "lost card"  # un-embossed counts as gone
+    assert _cycle(a) == []
 
 
 def test_seos_retirement_deletes_the_token_and_forgets_it(seos):
@@ -791,7 +828,7 @@ def test_seos_retirement_deletes_the_token_and_forgets_it(seos):
     _cycle(a)
     a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])
     assert a.retire_credentials("a", "t1", [_card("9001")]) == 1
-    assert [t["attributes"]["plasecInternalnumber"] for t in fake.tokens["a"]] == ["42069", "9002"]
+    assert [t["attributes"]["plasecInternalnumber"] for t in fake.tokens["a"]] == ["9002"]
     assert a.written_credentials() == {("a", "t1"): ["9002"]}
 
 
@@ -830,3 +867,35 @@ def test_seos_issue_writes_both_cards_of_a_pair_into_unity_at_once(seos, monkeyp
             for t in fake.tokens["a"] if t["id"] != "t1"}
     assert made == {"9001": "Inactive", "9002": "Inactive"}
     assert a.written_credentials() == {("a", "t1"): ["9001", "9002"]}
+
+
+def test_unity_issues_up_to_200_a_cycle_others_keep_25():
+    from agsync.lib.pacs import get_descriptor
+    from agsync.sync.phases import phase1_provision
+
+    assert get_descriptor("avigilon").max_provisions_per_cycle == 200
+    assert phase1_provision.MAX_PROVISIONS_PER_CYCLE == 25
+
+
+def test_unity_pass_with_no_end_date_lasts_3650_days_others_365(monkeypatch):
+    from datetime import timedelta
+
+    from agsync.lib.pacs import get_descriptor
+    from agsync.lib.pacs.base import Credential, Person
+    from agsync.sync.phases import phase1_provision
+
+    assert get_descriptor("avigilon").default_pass_days == 3650
+    monkeypatch.setattr(phase1_provision.tracking, "get", lambda *a: None)
+    monkeypatch.setattr(phase1_provision.tracking, "upsert", lambda **kw: None)
+    for days in (3650, 365):
+        snap = Snapshot()
+        snap.people["a"] = Person(id="a", full_name="Jim Cooper", email="j@x.co")
+        snap.credentials_by_person["a"] = [Credential(id="t1", person_id="a", card_number="42069",
+                                                      status=CredentialStatus.ACTIVE, trigger_active=True)]
+        sent = []
+        ag = SimpleNamespace(access_cards=SimpleNamespace(
+            provision=lambda sent=sent, **kw: (sent.append(kw), SimpleNamespace(id="c", state="created"))[1]))
+        kwargs = {"default_pass_days": days} if days != 365 else {}
+        phase1_provision.run(snap, ag, "tpl", **kwargs)
+        lasts = datetime.fromisoformat(sent[0]["expiration_date"]) - datetime.now(UTC)
+        assert timedelta(days=days - 1) < lasts <= timedelta(days=days)

@@ -332,11 +332,16 @@ MIGRATIONS: list[tuple[str, Step]] = [
             id                 INTEGER PRIMARY KEY AUTOINCREMENT,
             pacs_person_id     TEXT NOT NULL,
             pacs_credential_id TEXT NOT NULL,  -- the enrollment token the pass was issued for
-            token_id           TEXT NOT NULL UNIQUE,
+            -- NULL while being created: the row is written first, so a token
+            -- created but never recorded cannot pass for a new enrollment
+            token_id           TEXT UNIQUE,
             facility_code      TEXT NOT NULL,  -- encrypted
             card_number        TEXT NOT NULL,  -- encrypted
             -- the status we last wrote: 1 active, 0 off (our own hold)
             active             INTEGER NOT NULL DEFAULT 0,
+            -- the enrollment's dates, kept because the enrollment is deleted
+            activate_date      TEXT,
+            deactivate_date    TEXT,
             created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_unity_tokens_person ON unity_tokens(pacs_person_id);
