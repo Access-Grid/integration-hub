@@ -217,7 +217,12 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
             )
             continue
 
-        creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
+        # Not read this cycle: leave the change pending rather than record it
+        # as seen, or it never reaches the PACS. No entry means unread; an
+        # empty list means read and holding nothing, as phase 3 tells them.
+        if tracked.pacs_person_id not in snapshot.credentials_by_person:
+            continue
+        creds = snapshot.credentials_by_person[tracked.pacs_person_id]
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
         if cred is not None and cred.hold:
             continue
