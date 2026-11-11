@@ -4,11 +4,11 @@ Compare current PACS values to the last_synced_* values stored in the
 tracking row. If anything changed, push an AG update and store the new
 values.
 
-Email is deliberately not among them. AccessGrid rejects it on an issued
-pass — "Unexpected parameters provided" — since the address is what the pass
-was delivered to, not an attribute of it. A changed address is still worth
-knowing about, because the pass keeps the old one, so it is reported once
-rather than retried forever.
+Email is pushed only for a pass whose card the PACS supplies (DESFire,
+SmartTap), and in an update of its own. On a Seos pass AccessGrid rejects
+it — "Unexpected parameters provided" — and when it rode with the other
+fields that failed the whole update, so a rename never reached it either.
+There a changed address is reported once rather than retried forever.
 """
 
 from __future__ import annotations
@@ -63,7 +63,10 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         if not changes and not email_changed and not first_expiry:
             continue
 
-        if email_changed:
+        # Only where the PACS supplies the card: AccessGrid rejects an
+        # address on a Seos pass, whose card it allocated.
+        push_email = email_changed and cred is not None and not cred.allocate_identity
+        if email_changed and not push_email:
             logger.warning(
                 "  %s (%s): address is now %s but the pass was issued to %s — "
                 "AccessGrid does not accept an email change on an issued pass, "
@@ -96,12 +99,22 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                 # so a failed name push does not get recorded as done.
                 continue
 
+        email = person.email
+        if push_email:
+            if dryrun.active():
+                dryrun.would("update AG card %s — email", tracked.ag_card_id)
+                continue
+            if _push_email(ag, tracked, person.email):
+                updated += 1
+            else:
+                email = tracked.last_synced_email  # the rest is recorded; the address is retried
+
         # Recorded even when the only change was an address we cannot push:
         # noticing it once is useful, noticing it every cycle forever is not.
         tracking.update_field_tracking(
             tracked.pacs_person_id, tracked.pacs_credential_id,
             full_name=person.full_name,
-            email=person.email,
+            email=email,
             phone=person.phone,
             title=person.title,
             expiration=expiration or (tracked.last_synced_expiration or ""),
@@ -109,3 +122,16 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
 
     logger.info("Phase 6 done: %d field update(s)", updated)
     return updated
+
+
+def _push_email(ag: AccessGrid, tracked, email: str) -> bool:
+    """Send a changed address on its own, so a rejection cannot hold back a
+    rename sent beside it."""
+    logger.info("  Updating AG card %s — email", tracked.ag_card_id)
+    try:
+        ag.access_cards.update(card_id=tracked.ag_card_id, update_type="metadata", email=email)
+    except AccessGridError as e:
+        logger.error("  Email update rejected for %s (%s): %s — retrying next cycle",
+                     tracked.ag_card_id, tracking.label(tracked), e)
+        return False
+    return True

@@ -174,9 +174,10 @@ card numbers saved to Millennium Ultra"), with the numbers themselves on the
 badge for looking up a pass that is not working. Read from `pacs_cards`.
 
 **Changing a person's details.** Phase 6 pushes name, phone, title and the
-card's expiration date to AccessGrid, as metadata updates. It does **not**
-push email: AccessGrid rejects it on an issued pass, since the address is
-what the pass was delivered to. A changed address is logged once. A pass's
+card's expiration date to AccessGrid, as metadata updates. Email is pushed
+only for a DESFire/SmartTap pass, in an update of its own; a rejected one is
+retried. On a Seos pass AccessGrid rejects it, so a changed address is logged
+once. A pass's
 expiry is recorded the first time it is seen, rather than pushed, so
 existing passes are not all rewritten at once.
 
