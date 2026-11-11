@@ -90,6 +90,10 @@ class UnityAuthError(UnityError):
     """Unity would not give us a working session."""
 
 
+class UnityNotFound(UnityError):
+    """Unity answered 404 for an identity: it does not hold one by that id."""
+
+
 def _unwrap(raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """(id, fields) from either the flat or the JSON:API shape."""
     if isinstance(raw.get("attributes"), dict):
@@ -263,6 +267,11 @@ class UnityClient:
                 self._csrf_meta = self._read_csrf_meta()
                 return
         raise UnityAuthError("Unity rejected the username or password")
+
+    def ensure_signed_in(self) -> None:
+        """Sign in unless already signed in; raises as login() does."""
+        if not self._logged_in:
+            self.login()
 
     def _can_read(self) -> bool:
         """Does the identity list answer with data, as JSON or else as XML?
@@ -450,8 +459,23 @@ class UnityClient:
         return list(rows.values())
 
     def get_identity(self, identity_id: str) -> dict[str, str]:
-        """Full detail — the JSON list has no email, phone, title or department."""
-        body = self._get_json(f"/identities/{identity_id}.json")
+        """Full detail — the JSON list has no email, phone, title or department.
+
+        Raises UnityNotFound on a 404. Whether Unity answers 404 for an
+        identity it does not hold is still to be seen live (the probe's
+        missing_identity_statuses), so the adapter checks a known identity
+        reads before taking a 404 as gone.
+        """
+        path = f"/identities/{identity_id}.json"
+        resp = self._request("GET", path, headers={"Accept": "application/json"})
+        if resp.status_code == 404:
+            raise UnityNotFound(f"GET {path}: HTTP 404")
+        if resp.status_code != 200:
+            raise UnityError(f"GET {path}: HTTP {resp.status_code}")
+        try:
+            body = resp.json()
+        except ValueError as e:
+            raise UnityError(f"GET {path}: response is not JSON") from e
         raw = body.get("data", body) if isinstance(body, dict) else None
         if not isinstance(raw, dict):
             raise UnityError(f"identity {identity_id}: unexpected response shape")

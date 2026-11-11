@@ -71,6 +71,7 @@ class FakeUnity:
         self.xml_paging = "honour"  # or "ignore" (send everything) or "repeat" (always page 1)
         self.search_fails = False
         self.hide_once = set()  # left out of the next roster read only: a row skipped mid-read
+        self.detail_404 = False  # a box answering 404 for every identity's detail
 
     @staticmethod
     def _xml(root, row, rows):
@@ -135,9 +136,11 @@ class FakeUnity:
         if parts[-1] == "tokens.json":
             return httpx.Response(200, json={"tokens": self.tokens.get(parts[1], []), "recordsTotal": 0})
         if path.endswith(".json") and len(parts) == 2:
-            if parts[1][:-5] not in self.details:
+            cn = parts[1][:-5]
+            listed = next((r for r in self.identities if r["cn"] == cn), None)
+            if self.detail_404 or (cn not in self.details and listed is None):
                 return httpx.Response(404)
-            return httpx.Response(200, json={"data": self.details[parts[1][:-5]]})
+            return httpx.Response(200, json={"data": self.details.get(cn, listed)})
         if parts[-1] == "new" and req.method == "GET":
             return httpx.Response(200, text=(
                 f'<form action="/identities/{parts[1]}/tokens" method="post">'
@@ -293,15 +296,10 @@ def test_ignored_paging_raises_instead_of_returning_page_one(monkeypatch):
     assert len(c.list_identities()) == 5
 
 
-def test_failed_roster_raises_from_list_people():
+def test_outage_while_signing_in_is_an_error_not_a_wrong_password():
     fake = FakeUnity(identities=[_identity("a")])
-    c = _adapter(fake)
-    c._client.login()
     fake.fail["/identities.json"] = 500
     fake.fail["/identities.xml"] = 500
-    with pytest.raises(UnityError):
-        list(c.list_people())
-    # Same outage met while signing in: an error, not a "wrong password".
     with pytest.raises(UnityError, match="would not answer") as raised:
         list(_adapter(fake).list_people())
     assert not isinstance(raised.value, UnityAuthError)
@@ -494,7 +492,9 @@ def test_detail_is_not_fetched_when_the_list_has_the_email():
 def tracked(monkeypatch):
     """Make the tracking table hold a pass for each person id given."""
     def hold(*pids):
-        rows = [SimpleNamespace(pacs_person_id=p, ag_card_id=f"card-{p}", status="active") for p in pids]
+        rows = [SimpleNamespace(pacs_person_id=p, ag_card_id=f"card-{p}", status="active",
+                                last_synced_full_name=f"Tracked {p}", last_synced_email=f"{p}@x",
+                                last_synced_phone="", last_synced_title="") for p in pids]
         monkeypatch.setattr(tracking, "all_tracked", lambda: rows)
     monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
     return hold
@@ -511,13 +511,13 @@ def test_deactivated_identity_holding_a_pass_reads_as_suspended_not_gone(tracked
     assert not any("/identities/c/" in g for g in fake.gets)
 
 
-def test_inactive_people_are_unread_when_tracking_cannot_be_read(tracked, monkeypatch):
+def test_unreadable_tracking_raises_rather_than_reading_only_the_search(monkeypatch):
+    # Reading only the search would take every pass outside it for deleted.
     def broken():
         raise RuntimeError("db locked")
     monkeypatch.setattr(tracking, "all_tracked", broken)
-    fake = FakeUnity([_identity("b", status="Inactive")], tokens={"b": [_token("tb")]})
-    snap = build_snapshot(_adapter(fake), None, "t")
-    assert "b" not in snap.credentials_by_person  # no entry: phase 3 deletes nothing
+    with pytest.raises(UnityError, match="tracking table"):
+        list(_adapter(_search_fake()).list_people())
 
 
 def test_engine_runs_an_adapter_that_writes_no_credentials(monkeypatch):
@@ -563,8 +563,8 @@ def test_tokens_are_read_for_search_hits_and_tracked_people_only(tracked):
     tracked("b")
     fake = _search_fake()
     a = _adapter(fake)
-    assert {p.id for p in a.list_people()} == {"a", "b", "c"}
-    assert not any("/c/tokens" in g for g in fake.gets)
+    assert {p.id for p in a.list_people()} == {"a", "b"}
+    assert not any("/c/" in g for g in fake.gets)
     [ta] = a.list_credentials("a")
     [tb] = a.list_credentials("b")  # missed by the search, read because tracked
     assert ta.trigger_active and tb.trigger_active and tb.status is CredentialStatus.SUSPENDED
@@ -572,39 +572,63 @@ def test_tokens_are_read_for_search_hits_and_tracked_people_only(tracked):
         a.list_credentials("c")
 
 
-def test_failed_search_reads_everyones_tokens(tracked):
-    tracked()
+def test_failed_search_reads_tracked_people_only(tracked):
+    tracked("b")
     fake = _search_fake()
     fake.search_fails = True
     a = _adapter(fake)
-    list(a.list_people())
-    assert [c.id for c in a.list_credentials("c")] == ["tc"]
+    assert {p.id for p in a.list_people()} == {"b"}
+    assert [c.id for c in a.list_credentials("b")] == ["tb"]
 
 
-def test_unreadable_tracking_reads_everyones_tokens_without_searching(monkeypatch):
-    def broken():
-        raise RuntimeError("db locked")
-    monkeypatch.setattr(tracking, "all_tracked", broken)
+def test_roster_is_never_read_whole(tracked):
+    tracked("b")
     fake = _search_fake()
-    a = _adapter(fake)
-    list(a.list_people())
-    assert [c.id for c in a.list_credentials("c")] == ["tc"]
-    assert not any(q.get("adv_search_field_0") for q in fake.xml_params)
+    list(_adapter(fake).list_people())
+    # Besides the search, only sign-in's one-row check touches the list.
+    assert all(q.get("adv_search_field_0") == "plasecEmbossednumber" or q["perpage"] == "1"
+               for q in fake.xml_params)
+    assert fake.gets.count("/identities.json") <= 1
 
 
-def test_tracked_person_skipped_by_one_read_is_kept(tracked):
-    tracked("a")
-    fake = _search_fake()
-    fake.json_off, fake.hide_once = True, {"a"}
-    a = _adapter(fake)
-    assert "a" in {p.id for p in a.list_people()}
-    assert [c.id for c in a.list_credentials("a")] == ["ta"]
-
-
-def test_tracked_person_missing_from_both_reads_is_gone(tracked):
+def test_tracked_identity_unity_404s_is_gone(tracked):
     tracked("gone")
     a = _adapter(_search_fake())
     assert "gone" not in {p.id for p in a.list_people()}
+
+
+def test_404_with_no_detail_read_working_is_unread_not_gone(tracked):
+    tracked("b")
+    fake = _search_fake()
+    fake.detail_404 = True
+    a = _adapter(fake)
+    people = {p.id: p for p in a.list_people()}
+    assert people["b"].full_name == "Tracked b"
+    with pytest.raises(PacsRecordUnavailable):
+        a.list_credentials("b")
+
+
+def test_tracked_identity_whose_detail_fails_stands_in_unread(tracked):
+    tracked("b")
+    fake = _search_fake()
+    fake.fail["/identities/b.json"] = 500
+    a = _adapter(fake)
+    people = {p.id: p for p in a.list_people()}
+    assert (people["b"].full_name, people["b"].email) == ("Tracked b", "b@x")
+    assert not any("/b/tokens" in g for g in fake.gets)
+    with pytest.raises(PacsRecordUnavailable):
+        a.list_credentials("b")
+
+
+def test_phase3_judges_a_tracked_only_read_by_tracked_people(tracked):
+    from agsync.sync.phases import phase3_deletions
+
+    tracked("a", "b", "c", "d")
+    snap = Snapshot()
+    snap.people = {"a": object()}  # 1 of 4 back: under 30%
+    assert not phase3_deletions._tracked_complete(snap)
+    snap.people["b"] = object()
+    assert phase3_deletions._tracked_complete(snap)
 
 
 # --- creating and deleting tokens (Seos) -------------------------------------------

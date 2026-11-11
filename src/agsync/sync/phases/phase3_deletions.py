@@ -12,7 +12,9 @@ Safety: if the snapshot has zero people, abort the phase. That's almost
 certainly a transient PACS error and we don't want to nuke every card. And
 if it has under MIN_COMPLETE_FRACTION of the people the last complete read
 had, nobody is revoked for being missing this cycle: a read that short is
-far likelier to be partial than a real mass departure.
+far likelier to be partial than a real mass departure. A PACS that reads
+only the people we track (`reads_whole_roster = False`) is judged instead by
+the share of tracked cardholders that came back.
 
 The phase then runs a second pass in the opposite direction. Where the
 first treats the PACS as the truth and removes what it no longer holds,
@@ -72,18 +74,10 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
         logger.warning("Phase 3: PACS returned 0 people — skipping deletions for safety")
         return 0
 
-    from ...settings_store import get_json, set_json
-
-    previous = get_json(_LAST_COMPLETE_KEY) or 0
-    complete = len(snapshot.people) >= previous * MIN_COMPLETE_FRACTION
-    if complete:
-        set_json(_LAST_COMPLETE_KEY, len(snapshot.people))
-    else:
-        logger.error(
-            "Phase 3: the PACS returned %d people against %d in the last complete "
-            "read — under %d%%, so nobody is revoked for being missing this cycle",
-            len(snapshot.people), previous, int(MIN_COMPLETE_FRACTION * 100),
-        )
+    complete = (
+        _whole_roster_complete(snapshot) if getattr(pacs, "reads_whole_roster", True)
+        else _tracked_complete(snapshot)
+    )
 
     deleted = 0
     expired_this_cycle = 0
@@ -186,6 +180,42 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
 
     logger.info("Phase 3 done: %d deletion(s)", deleted)
     return deleted
+
+
+def _whole_roster_complete(snapshot: Snapshot) -> bool:
+    from ...settings_store import get_json, set_json
+
+    previous = get_json(_LAST_COMPLETE_KEY) or 0
+    complete = len(snapshot.people) >= previous * MIN_COMPLETE_FRACTION
+    if complete:
+        set_json(_LAST_COMPLETE_KEY, len(snapshot.people))
+    else:
+        logger.error(
+            "Phase 3: the PACS returned %d people against %d in the last complete "
+            "read — under %d%%, so nobody is revoked for being missing this cycle",
+            len(snapshot.people), previous, int(MIN_COMPLETE_FRACTION * 100),
+        )
+    return complete
+
+
+def _tracked_complete(snapshot: Snapshot) -> bool:
+    """For a PACS read by who we track rather than whole: did enough of them come back?
+
+    Its people are only ever a slice of the roster, so their count says
+    nothing against the last read's. What would show a misread is the
+    tracked cardholders going missing together.
+    """
+    held = {t.pacs_person_id for t in tracking.all_tracked()
+            if t.ag_card_id and t.status not in ("deleted", "deduped")}
+    present = len(held & snapshot.people.keys())
+    if present >= len(held) * MIN_COMPLETE_FRACTION:
+        return True
+    logger.error(
+        "Phase 3: only %d of %d tracked cardholders came back from the PACS — under "
+        "%d%%, so nobody is revoked for being missing this cycle",
+        present, len(held), int(MIN_COMPLETE_FRACTION * 100),
+    )
+    return False
 
 
 def _retire_deleted_credentials(
