@@ -255,3 +255,15 @@ def test_a_legacy_pair_resolves_to_both_halves_without_a_reference():
     assert [(i.site_code, i.card_number) for i in identities_from_cards(found)] == [
         ("2", "1216"), ("2", "1217"),
     ]
+
+
+def test_a_deleted_half_listed_first_does_not_stand_for_the_pass():
+    # The half nobody installed is deleted but still listed; read first, its
+    # "deleted" hid the live half's state from phases 2 and 4.
+    snap = Snapshot()
+    dead = SimpleNamespace(id="g", state="deleted")
+    live = SimpleNamespace(id="a", state="suspended")
+    snap.ag_cards_by_sync_ref["ref"] = [dead, live]
+    assert snap.resolve_ag_card(None, sync_ref="ref") is live
+    snap.ag_cards_by_sync_ref["ref"] = [dead]
+    assert snap.resolve_ag_card(None, sync_ref="ref") is dead  # all that is left

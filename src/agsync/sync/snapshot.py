@@ -124,9 +124,16 @@ class Snapshot:
         credential_id: str = "",
         sync_ref: str = "",
     ) -> Any | None:
-        """One card for a tracked issue, for callers that need a single state."""
+        """One card for a tracked issue, for callers that need a single state.
+
+        A live one if there is one. AccessGrid deletes the half of a pair
+        nobody installed and keeps listing it; read first, its "deleted"
+        hid the live half's state, and suspends stopped syncing both ways.
+        """
+        from .phases.writeback import is_dead
+
         cards = self.resolve_ag_cards(ag_card_id, person_id, credential_id, sync_ref)
-        return cards[0] if cards else None
+        return next((c for c in cards if not is_dead(c)), cards[0] if cards else None)
 
     @property
     def total_credentials(self) -> int:
