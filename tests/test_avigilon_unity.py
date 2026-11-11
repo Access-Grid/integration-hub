@@ -899,3 +899,25 @@ def test_unity_pass_with_no_end_date_lasts_3650_days_others_365(monkeypatch):
         phase1_provision.run(snap, ag, "tpl", **kwargs)
         lasts = datetime.fromisoformat(sent[0]["expiration_date"]) - datetime.now(UTC)
         assert timedelta(days=days - 1) < lasts <= timedelta(days=days)
+
+
+def test_seos_end_date_set_on_a_hub_token_moves_the_pass(seos):
+    fake, a = seos([_token("t1", deactivate="2030-01-31T00:00:00Z")])
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])
+    [cred] = _cycle(a)
+    assert cred.deactivate_date == datetime(2030, 1, 31, tzinfo=UTC)  # undated tokens: the enrollment's
+    phone, watch = fake.tokens["a"]
+    phone["attributes"]["extended_attributes"]["formatted_deactivate_date"] = "2031-06-30T00:00:00Z"
+    watch["attributes"]["extended_attributes"]["formatted_deactivate_date"] = "2029-03-01T00:00:00Z"
+    [cred] = _cycle(a)
+    assert cred.deactivate_date == datetime(2029, 3, 1, tzinfo=UTC)  # the earliest end wins
+
+
+def test_seos_unreadable_hub_token_date_holds_the_pass(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001")])
+    fake.tokens["a"][0]["attributes"]["extended_attributes"]["formatted_deactivate_date"] = "next tuesday"
+    [cred] = _cycle(a)
+    assert cred.hold

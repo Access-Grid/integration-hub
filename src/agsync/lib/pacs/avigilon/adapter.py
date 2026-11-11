@@ -299,6 +299,15 @@ class AvigilonAdapter:
             return None
         else:
             dates, hold = {n: parse_date(ours[0][n] or "") for n in ("activate_date", "deactivate_date")}, False
+        # Dates an operator sets on our tokens win over those kept from the
+        # enrollment; they are created undated, so until then the
+        # enrollment's stand. Tokens that disagree give the narrowest window:
+        # the pass must not outlast the card that ends first.
+        own = [self._dates(tokens[e["token_id"]]) for e in ours if e["token_id"] and not gone(e)]
+        hold = hold or any(unreadable for _, unreadable in own)
+        for name, pick in (("activate_date", max), ("deactivate_date", min)):
+            if stated := [d[name] for d, _ in own if d[name]]:
+                dates[name] = pick(stated)
         if not ours:
             status = _TOKEN_STATUS.get(enrollment["status"], CredentialStatus.UNKNOWN)
         else:
