@@ -72,6 +72,9 @@ XML_IDENTITY_SEARCH = {
 # Unity's advanced search on a token's Embossed Number, as its own search
 # page sends it. The value goes in adv_search_val_0.
 EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
+# The same search on a token's Internal Number. Not yet seen on a live box:
+# the probe's search mode (`internal_search`) checks Unity takes it.
+INTERNAL_SEARCH = {"adv_search_field_0": "plasecInternalnumber", "adv_search_udf_0": "Token Internal #"}
 
 # The CSRF token as Unity's pages carry it. A live box (Nov 2026) set no
 # XSRF-TOKEN cookie at all, so the cookie is only the fallback; our first
@@ -402,6 +405,13 @@ class UnityClient:
         rows = self._identities_xml({**EMBOSSED_SEARCH, "adv_search_val_0": value})
         logger.info("Unity: %d identities hold a token embossed %r", len(rows), value)
         return rows
+
+    def search_internal(self, number: str) -> list[dict[str, str]]:
+        """Identities holding a token whose Internal Number matches `number`.
+
+        Like search_embossed, only a lead: the tokens themselves decide.
+        """
+        return self._identities_xml({**INTERNAL_SEARCH, "adv_search_val_0": number})
 
     def _identities_xml(self, search: dict[str, str] | None = None) -> list[dict[str, str]]:
         """Page through the XML list, a thousand at a time.

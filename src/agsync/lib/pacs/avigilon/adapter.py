@@ -47,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 TRIGGER_VALUE = "accessgrid"
 
+# More identities than this for one card number means Unity ignored the
+# number and listed everyone: no answer about who holds it.
+MAX_NUMBER_HITS = 25
+
 _TOKEN_STATUS: dict[str, CredentialStatus] = {
     "1": CredentialStatus.ACTIVE,
     "2": CredentialStatus.SUSPENDED,  # inactive
@@ -469,6 +473,11 @@ class AvigilonAdapter:
                 return False
             if not fresh:
                 tokens, fresh = self._client.list_tokens(pid), True
+            adopt = next((t for t in tokens if t["internal_number"] == card[1] and _is_trigger(t)
+                          and t["id"] not in known and t["id"] != credential_id), None)
+            # Checked before anything is recorded: a refused card leaves no row.
+            if not adopt and not self._number_is_free(pid, credential_id, card):
+                return False
             if card in mine:
                 row = mine[card]["row"]
             else:
@@ -477,8 +486,6 @@ class AvigilonAdapter:
                 row = written.add(pid, credential_id, *card,
                                   *(d.isoformat() if (d := dates.get(n)) else None
                                     for n in ("activate_date", "deactivate_date")))
-            adopt = next((t for t in tokens if t["internal_number"] == card[1] and _is_trigger(t)
-                          and t["id"] not in known and t["id"] != credential_id), None)
             if adopt:
                 logger.info("Unity: adopting token %s of %s, created for card %s/%s but not recorded",
                             adopt["id"], pid, *card)
@@ -497,6 +504,31 @@ class AvigilonAdapter:
                         credential_id, pid)
             # This cycle's read too, or the next offer deletes it again.
             self._tokens[pid] = [t for t in tokens if t["id"] != credential_id]
+        return True
+
+    def _number_is_free(self, pid: str, credential_id: str, card: tuple[str, str]) -> bool:
+        """Is no other identity in Unity holding this card number?
+
+        Asked of Unity's search, then each hit's tokens, since the search is
+        loose. A search that fails, or that returns too many to be about this
+        number, writes nothing: retried next cycle rather than risk two
+        people holding the same card.
+        """
+        try:
+            hits = [r["id"] for r in self._client.search_internal(card[1]) if r["id"] != pid]
+            if len(hits) > MAX_NUMBER_HITS:
+                raise UnityError(f"{len(hits)} identities returned — the search ignored the number")
+            holder = next((h for h in hits
+                           if any(t["internal_number"] == card[1] for t in self._client.list_tokens(h))), None)
+        except UnityError as e:
+            logger.error("Unity: could not check whether card %s/%s is free, not writing it for %s (%s): %s",
+                         *card, pid, credential_id, e)
+            return False
+        if holder is not None:
+            _card_problem(pid, card, f"Unity: AccessGrid reports card {card[0]}/{card[1]} on the pass of "
+                                     f"{pid} ({credential_id}), but identity {holder} already holds a token "
+                                     f"with that number — not writing")
+            return False
         return True
 
     def retire_credentials(self, person_id: str, credential_id: str,
@@ -526,6 +558,14 @@ class AvigilonAdapter:
             if e["token_id"]:
                 out.setdefault((e["person_id"], e["credential_id"]), []).append(e["card_number"])
         return out
+
+
+def _card_problem(pid: str, card: tuple[str, str], problem: str) -> None:
+    """A card we will not write: logged here, and mailed to the operator."""
+    from .... import notifications
+
+    logger.error("%s", problem)
+    notifications.notify_card_problem(f"{pid}:{card[0]}/{card[1]}", problem)
 
 
 # Add localized help text. Stored as a flat dict on the package so the

@@ -25,8 +25,9 @@ JSON list and tests whether `/identities.xml` can be read in pieces — page
 and perpage, start and length, the A–Z last-name filter — against the whole
 list, read with a long timeout. `search` checks the embossed-number search
 the adapter sends: whether it answers, filters, ignores case and returns only
-holders of an `accessgrid` token; and reads, without submitting, the form
-Unity uses to add a token. The password is prompted for. The report is
+holders of an `accessgrid` token; checks the Internal Number search the
+adapter uses to see whether a card number is already held, counts only; and
+reads, without submitting, the form Unity uses to add a token. The password is prompted for. The report is
 printed and saved as JSON.
 """
 
@@ -78,6 +79,7 @@ _PIECE_TIMEOUT = 120.0
 # The adapter's embossed-number search and XML page size (client.py
 # EMBOSSED_SEARCH and XML_PAGE_SIZE), and how many hits get their tokens read.
 _EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
+_INTERNAL_SEARCH = {"adv_search_field_0": "plasecInternalnumber", "adv_search_udf_0": "Token Internal #"}
 _XML_PAGE = 1000
 _SEARCH_CHECKED = 25
 # What the client's create_token posts (client.py), besides the CSRF token.
@@ -371,6 +373,7 @@ class Probe:
             return self.report
         self.dashboard()
         self.search()
+        self.internal_search()
         self.new_token_form()
         return self.report
 
@@ -418,6 +421,44 @@ class Probe:
             return None
         self.note(step, rows=len(rows))
         return {r.get("cn", "") for r in rows} - {"", "0"}
+
+    def internal_search(self) -> None:
+        """Does the Internal Number search find the identity holding a number?
+
+        Run with one token's number from the roster's first page. Reports
+        counts and yes/no only: the number itself is never written down.
+        """
+        roster = self.read_xml("identity_search", "internal_search_roster", "/identities.xml", "identities",
+                               "identity", params={**_XML_SEARCH, "page": 1, "perpage": 50}) or []
+        owner = number = None
+        for cn in [r.get("cn") for r in roster if r.get("cn") not in (None, "", "0")]:
+            tokens = self.read_xml("search_hit_tokens", "internal_search_tokens",
+                                   f"/identities/{cn}/tokens.xml", "tokens", "token") or []
+            number = next((v for t in tokens for p in _PREFIXES if (v := str(t.get(f"{p}Internalnumber") or ""))),
+                          None)
+            if number:
+                owner = cn
+                break
+        if owner is None:
+            self.report["internal_search"] = {"error": "no token with an Internal Number on the first 50 identities"}
+            return
+
+        def ids(step: str, value: str) -> set[str] | None:
+            rows = self.read_xml("identity_search", step, "/identities.xml", "identities", "identity",
+                                 params={**_XML_SEARCH, **_INTERNAL_SEARCH, "adv_search_val_0": value,
+                                         "page": 1, "perpage": _XML_PAGE}, timeout=_WHOLE_LIST_TIMEOUT)
+            return None if rows is None else {r.get("cn", "") for r in rows} - {"", "0"}
+
+        hits = ids("internal_search_known", number)
+        nothing = ids("internal_search_no_such_number", "99999999999")
+        self.report["internal_search"] = {
+            "hits": None if hits is None else len(hits),
+            "holder_found": None if hits is None else owner in hits,
+            "no_such_number_rows": None if nothing is None else len(nothing),
+            "verdict": ("works" if hits and owner in hits and len(hits) <= 25 and nothing == set()
+                        else "check the steps: the adapter refuses to write Seos cards "
+                        "while this search cannot say who holds a number"),
+        }
 
     def search(self) -> None:
         """Does /identities.xml take the adapter's embossed-number search, and

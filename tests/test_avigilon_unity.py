@@ -72,6 +72,7 @@ class FakeUnity:
         self.search_fails = False
         self.hide_once = set()  # left out of the next roster read only: a row skipped mid-read
         self.detail_404 = False  # a box answering 404 for every identity's detail
+        self.internal_search_ignored = False  # a box that lists everyone for an Internal Number search
 
     @staticmethod
     def _xml(root, row, rows):
@@ -121,6 +122,13 @@ class FakeUnity:
                     t["attributes"]["plasecEmbossednumber"].lower() == q["adv_search_val_0"].lower()
                     and t["attributes"]["extended_attributes"]["token_status"] == "Active"
                     for t in self.tokens.get(r["cn"], []))]
+            elif q.get("adv_search_field_0") == "plasecInternalnumber":
+                if self.search_fails:
+                    return httpx.Response(500)
+                if not self.internal_search_ignored:  # loose: a prefix matches too
+                    rows = [r for r in rows if any(
+                        t["attributes"]["plasecInternalnumber"].startswith(q["adv_search_val_0"])
+                        for t in self.tokens.get(r["cn"], []))]
             elif q.get("perpage") != "1" and self.hide_once:
                 rows, self.hide_once = [r for r in rows if r["cn"] not in self.hide_once], set()
             if "page" in q and self.xml_paging != "ignore":  # the live box honours page/perpage
@@ -921,3 +929,54 @@ def test_seos_unreadable_hub_token_date_holds_the_pass(seos):
     fake.tokens["a"][0]["attributes"]["extended_attributes"]["formatted_deactivate_date"] = "next tuesday"
     [cred] = _cycle(a)
     assert cred.hold
+
+
+# --- Seos: a card number already held in Unity ------------------------------------
+
+
+def _number_fake(**others):
+    """a enrolls; others are identities holding tokens of their own."""
+    fake, a = _seos()
+    for cn, tokens in others.items():
+        fake.identities.append(_identity(cn))
+        fake.tokens[cn] = tokens
+    return fake, a
+
+
+@pytest.fixture
+def mailed(monkeypatch):
+    from agsync import notifications
+
+    sent = []
+    monkeypatch.setattr(notifications, "notify_card_problem", lambda key, problem: sent.append(problem))
+    return sent
+
+
+def test_seos_number_held_by_another_identity_is_refused_and_mailed(tracked, mailed):
+    tracked("a")
+    fake, a = _number_fake(b=[_token("tb", internal="9001", embossed="", status="Inactive")])
+    _cycle(a)
+    assert not a.write_back_credentials("a", "t1", [_card("9001")])
+    assert fake.posts == [] and written.all_tokens() == []
+    assert "identity b already holds" in mailed[0]
+
+
+def test_seos_loose_search_hit_without_the_number_does_not_block(tracked, mailed):
+    tracked("a")
+    fake, a = _number_fake(b=[_token("tb", internal="90012")])
+    _cycle(a)
+    assert a.write_back_credentials("a", "t1", [_card("9001")])
+    assert mailed == []
+
+
+@pytest.mark.parametrize("broken", ["fails", "ignored"])
+def test_seos_number_check_that_cannot_answer_writes_nothing(tracked, broken):
+    tracked("a")
+    fake, a = _number_fake(**{f"p{i}": [] for i in range(30)})
+    _cycle(a)
+    if broken == "fails":
+        fake.search_fails = True
+    else:
+        fake.internal_search_ignored = True
+    assert not a.write_back_credentials("a", "t1", [_card("9001")])
+    assert fake.posts == []
