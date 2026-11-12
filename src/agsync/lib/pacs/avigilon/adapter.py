@@ -170,6 +170,7 @@ class AvigilonAdapter:
     # it is switched back on if the pass is. Deleting its token left the pass
     # with no card, and the next cycle deleted the pass.
     retires_unlinked_cards = False
+    keeps_deleted_pass_tokens = True
 
     def descriptor(self) -> PacsDescriptor:
         return self._descriptor
@@ -230,6 +231,13 @@ class AvigilonAdapter:
                     self._tokens[pid] = self._client.list_tokens(pid)
                 except UnityError as e:
                     logger.warning("Unity: tokens for %s (%s) unread this cycle: %s", pid, row["full_name"], e)
+            if detailed and self._search_ok and any(
+                _is_trigger(t) and t["status"] == "1" and (pid, t["id"]) in self._issued
+                for t in self._tokens.get(pid, [])
+            ):
+                _problem(f"roster-mismatch:{pid}",
+                         f"Unity: identity {pid} ({row['full_name']}) was absent from the enrollment search, "
+                         "but its detail still holds a tracked active accessgrid token. Pass retained; review the search.")
             if not detailed and not row["email"] and any(_is_trigger(t) for t in self._tokens.get(pid, [])):
                 try:
                     detail = self._client.get_identity(pid)
@@ -353,6 +361,7 @@ class AvigilonAdapter:
         # Sign in first, so a Unity that is down stops the cycle here rather
         # than reading as a failed search and every tracked person unread.
         self._client.ensure_signed_in()
+        self._search_ok = True
         try:
             hits = self._client.search_embossed(TRIGGER_VALUE)
         except UnityAuthError:
@@ -360,6 +369,7 @@ class AvigilonAdapter:
         except UnityError as e:
             logger.warning("Unity: embossed-number search failed — reading tracked people only, "
                            "new enrollments wait for the next cycle: %s", e)
+            self._search_ok = False
             hits = []
         rows = {r["id"]: (r, False) for r in hits}
         unread, not_found = [], []
@@ -378,14 +388,12 @@ class AvigilonAdapter:
         for pid in not_found:
             logger.info("Unity: tracked identity %s (%s) is no longer in Unity", pid,
                         tracked[pid].last_synced_full_name)
-            # Its tokens went with it. Forgotten here, because once phase 3
-            # deletes the pass its row holds no pass id, and the retirement
-            # that would otherwise forget them looks only at rows that do.
-            for e in written.for_person(pid):
-                logger.info("Unity: forgetting token %s (card %s/%s) of %s — the identity is gone",
-                            e["token_id"] or "(never created)", e["facility_code"], e["card_number"], pid)
-                written.remove(e["row"])
         return rows, unread
+
+    def forget_credentials(self, person_id: str, credential_id: str) -> None:
+        """Forget Unity writeback rows only after AccessGrid revocation succeeded."""
+        for entry in written.for_credential(person_id, credential_id):
+            written.remove(entry["row"])
 
     def _detail_reads(self, rows: dict[str, tuple[dict[str, str], bool]]) -> bool:
         """Has an identity's detail read this cycle? If none was tried, try a hit's."""
@@ -459,6 +467,13 @@ class AvigilonAdapter:
             return None
         else:
             dates, hold = {n: parse_date(ours[0][n] or "") for n in ("activate_date", "deactivate_date")}, False
+        for entry in ours:
+            token = tokens.get(entry["token_id"])
+            if token and token["internal_number"] != entry["card_number"]:
+                _problem(f"seos-number:{pid}:{cid}",
+                         f"Unity: identity {pid}, pass {cid}: Seos token {entry['token_id']} now has "
+                         f"card {token['internal_number']}, issued as {entry['facility_code']}/"
+                         f"{entry['card_number']}. AccessGrid credentials are unchanged; review the edit.")
         # Dates an operator sets on our tokens win over those kept from the
         # enrollment; they are created undated, so until then the
         # enrollment's stand. Tokens that disagree give the narrowest window:
@@ -531,7 +546,8 @@ class AvigilonAdapter:
         status = _TOKEN_STATUS.get(token["status"], CredentialStatus.UNKNOWN)
         hold = hold or (trigger and self._not_yet_issuable(pid, token["id"], status))
         file_data = ""
-        if trigger and not hold and (pid, token["id"]) not in self._issued:
+        encoding_available = not self.card_format or (self._layout is not None and wiegand.standard(self._layout))
+        if trigger and not hold and ((pid, token["id"]) not in self._issued or encoding_available):
             file_data, hold = self._encoding(pid, token)
         return Credential(
             id=token["id"],
@@ -546,7 +562,7 @@ class AvigilonAdapter:
             deactivate_date=dates["deactivate_date"],
             trigger_active=trigger,
             hold=hold,
-            raw=token,
+            raw={**token, "encoding_unavailable": not encoding_available},
         )
 
     def update_credential_status(
@@ -602,28 +618,22 @@ class AvigilonAdapter:
         return self.seos
 
     def _set_written_status(self, pid: str, credential_id: str, status: CredentialStatus) -> bool:
-        """Switch the pass's tokens on (installed) or off (suspended, or not
-        installed yet). A token we switched on that is now off was switched
-        off by an operator, and is not switched back on."""
+        """Apply the pass-level decision made by the sync engine to every token."""
         ours = [e for e in written.for_credential(pid, credential_id) if e["token_id"]]
         if not ours:
             return False
         want = status is CredentialStatus.ACTIVE
         code = "1" if want else "2"
+        complete = True
         try:
             tokens = {t["id"]: t for t in self._client.list_tokens(pid)}
-            if want and any(e["active"] and e["token_id"] in tokens and tokens[e["token_id"]]["status"] != "1"
-                            for e in ours):
-                _problem(f"{pid}:{credential_id}:off",
-                         f"Unity: AccessGrid has the pass of identity {pid} ({credential_id}) active, but one of "
-                         f"its tokens was switched off in Unity after we switched it on — leaving it off")
-                return False
             for e in ours:
                 token = tokens.get(e["token_id"])
                 if token is None:
                     _problem(f"{pid}:{e['token_id']}",
                              f"Unity: AccessGrid wants the pass of identity {pid} ({credential_id}) {status.value}, "
                              f"but its token {e['token_id']} is no longer in Unity — status not written to it")
+                    complete = False
                     continue
                 if token["status"] != code:
                     self._client.set_token_status(token, code)
@@ -631,7 +641,7 @@ class AvigilonAdapter:
         except UnityError as e:
             self._status_unwritable(pid, credential_id, status, e)
             return False
-        return True
+        return complete
 
     def write_back_credentials(self, person_id: str, credential_id: str,
                                identities: list[CredentialIdentity]) -> bool:

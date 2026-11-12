@@ -49,6 +49,43 @@ Credentials are therefore tracked by their physical identity (site + card
 number), not the mutable slot id, so a deleted-and-recreated card doesn't
 churn its AccessGrid pass.
 
+### Avigilon Unity
+
+Enrollment is per identity and token: set the token's Embossed Number to
+`accessgrid` and keep its card number in Internal Number. Setup chooses the
+Unity card format and an optional synthetic-email domain. Leave the domain
+blank to hold Seos enrollments without email; supplying a domain enables
+`first.last.<identity id>@domain`. Configure the notification recipient and
+SMTP in Settings so held enrollments and discrepancies can be emailed.
+
+A template pair is one enrollment for an unknown phone platform. Its issued
+pair ID is stored unchanged and used for every AccessGrid mutation. The
+individual Apple and Android cards are read to determine installation and
+credential numbers; AccessGrid deletes the unused platform after installation.
+
+- Seos issues omit site code and card number. Allocated numbers are written
+  as inactive Unity tokens, recorded with their facility codes in the encrypted
+  tracking database, and only then is the enrollment token deleted. Unity
+  exposes facility codes on card formats rather than on individual tokens.
+- Seos tokens activate only when an active pass is installed on a phone or
+  watch. Issued but uninstalled passes stay inactive. Suspended, unlinked,
+  and wholly deleted passes deactivate their Unity tokens; only an abandoned
+  platform's token is retired while its sibling survives.
+- Other templates send site code and card number for H10301 (26-bit), or the
+  parity-inclusive, 64-character hex payload for H10302/H10304. Unknown
+  layouts are held and reported. An email or phone is needed for delivery.
+- Names, phone, title, and department follow Unity. Non-Seos email and
+  credential edits update the same pass; credential edits refresh its payload.
+  Seos email and credential-number edits generate alerts without changing
+  the issued Seos identity.
+- Revocation requires at least 30% of distinct tracked identities to return.
+  Missing tracked identities are read directly, and unread records are held.
+  Writeback records are forgotten only after AccessGrid revocation succeeds.
+
+First attempts and retries share the same issuance payload and tracking code.
+Each cycle reconciles status once per tracked pass and leaves rejected writes
+pending for another cycle.
+
 ### Millennium Ultra (MGI)
 
 Millennium Ultra has no API, so this adapter drives the same web screens an

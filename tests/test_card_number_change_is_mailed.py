@@ -1,11 +1,4 @@
-"""A card number edited in the PACS after its pass was issued is mailed, not ignored.
-
-The pass carries the number it was issued with (card metadata). Edited
-afterwards — a DESFire token's Internal Number in Unity — the pass and the
-card no longer match, and nothing said so. The pass is left as it is; the
-operator decides (removing and re-adding the trigger issues a new one).
-Seos passes are left out: AccessGrid allocated their numbers.
-"""
+"""Non-Seos credential edits update the existing pass and preserve its metadata."""
 
 from __future__ import annotations
 
@@ -58,16 +51,18 @@ def _phase6(pacs_number, issued_number, allocate=False, listed=True, name="Pat D
     return ag
 
 
-def test_an_edited_card_number_is_mailed_once_per_pass(mailed):
-    _phase6("5002", "5001")
-    [(key, problem)] = mailed
-    assert key == "card-number:p:t"
-    assert "5001" in problem and "5002" in problem and "Pat Doe" in problem
+def test_an_edited_card_number_updates_the_existing_pass(mailed):
+    ag = _phase6("5002", "5001")
+    assert ag.updates[0]["card_number"] == "5002"
+    assert ag.updates[0]["metadata"] == {"card_number": "5002", "site_code": "239"}
+    assert mailed == []
 
 
-def test_the_pass_is_left_as_it_is_and_other_changes_still_go(mailed):
+def test_credential_and_person_changes_share_one_update(mailed):
     ag = _phase6("5002", "5001", name="Pat Doe-Smith")
-    assert ag.updates == [{"full_name": "Pat Doe-Smith"}]
+    assert len(ag.updates) == 1
+    assert ag.updates[0]["full_name"] == "Pat Doe-Smith"
+    assert ag.updates[0]["card_number"] == "5002"
 
 
 def test_an_unchanged_card_number_mails_nothing(mailed):

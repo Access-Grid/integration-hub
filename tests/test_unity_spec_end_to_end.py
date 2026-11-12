@@ -335,12 +335,14 @@ def test_desfire_revoke(world, pair, how):
     assert _row("z").status == "active"
 
 
-def test_desfire_card_number_edited_after_issue_is_mailed_and_left(world, mailed):
+def test_desfire_card_number_edited_after_issue_updates_the_same_pass(world, mailed):
     unity, ag, cycle = _desfire(world, True)
     cycle()
     unity.tokens["a"][0]["attributes"]["plasecInternalnumber"] = "5002"
     cycle()
-    assert any(key == "card-number:a:t1" for key, _ in mailed)
+    updates = [params for verb, _, params in ag.calls if verb == "update"]
+    assert len(updates) == 1 and updates[0]["card_number"] == "5002"
+    assert mailed == []
     assert ag.verbs("delete", "provision") == [("provision", None)]
 
 
@@ -489,3 +491,189 @@ def test_seos_revoke_when_every_hub_token_is_deleted_in_unity(world):
     unity.tokens["a"] = []
     cycle()
     assert ag.verbs("delete") == [("delete", pass_id)]
+
+
+@PAIRS
+def test_seos_email_change_alerts_and_metadata_still_updates(world, mailed, pair):
+    unity, ag, cycle = _seos(world, pair)
+    cycle()
+    unity.identities[0].update(plasecidentityEmailaddress="new@example.com", plasecidentityTitle="Lead")
+    cycle()
+    assert any(key == "email-change:a:t1" for key, _ in mailed)
+    updates = [(cid, params) for verb, cid, params in ag.calls if verb == "update"]
+    assert updates == [(ag.only_pass(), {"title": "Lead"})]
+
+
+@PAIRS
+def test_seos_card_number_edit_alerts_without_changing_accessgrid(world, mailed, pair):
+    unity, ag, cycle = _seos(world, pair)
+    cycle()
+    token = unity.tokens["a"][0]
+    token["attributes"]["plasecInternalnumber"] = "123456"
+    cycle()
+    assert any(key == "seos-number:a:t1" for key, _ in mailed)
+    assert not ag.verbs("update", "provision")[1:]
+
+
+@PAIRS
+def test_seos_entire_pass_deleted_deactivates_tokens_and_keeps_tracking(world, pair):
+    unity, ag, cycle = _seos(world, pair)
+    cycle()
+    pass_id = ag.only_pass()
+    ag.install(pass_id)
+    cycle()
+    ag.set_state(pass_id, "deleted")
+    cycle()
+    cycle()
+    assert set(_tokens_by_number(unity).values()) == {"Inactive"}
+    assert (_row().status, _row().ag_card_id) == ("suspended", pass_id)
+    assert ag.verbs("delete", "suspend", "resume") == []
+
+
+def test_seos_active_but_uninstalled_stays_inactive(world):
+    unity, ag, cycle = _seos(world)
+    cycle()
+    ag.set_state(ag.only_pass(), "active")
+    cycle()
+    cycle()
+    assert set(_tokens_by_number(unity).values()) == {"Inactive"}
+    assert ag.verbs("suspend", "resume") == []
+
+
+def test_seos_active_installed_member_wins_over_suspended_member(world):
+    unity, ag, cycle = _seos(world)
+    cycle()
+    cards = ag.passes[ag.only_pass()]
+    cards[0].update(state="active", devices=[{"status": "installed", "device_type": "apple_watch"}])
+    cards[1]["state"] = "suspended"
+    cycle()
+    assert set(_tokens_by_number(unity).values()) == {"Active"}
+    assert ag.verbs("suspend", "resume") == []
+
+
+@PAIRS
+def test_desfire_identity_change_updates_payload_by_pass_id(world, pair):
+    unity, ag, cycle = _desfire(world, pair)
+    cycle()
+    unity.tokens["a"][0]["attributes"]["plasecInternalnumber"] = "5002"
+    cycle()
+    updates = [(cid, params) for verb, cid, params in ag.calls if verb == "update"]
+    assert len(updates) == 1
+    assert updates[0][0] == ag.only_pass()
+    assert updates[0][1]["card_number"] == "5002"
+    assert updates[0][1]["metadata"]["card_number"] == "5002"
+    cycle()
+    assert len([v for v, _, _ in ag.calls if v == "update"]) == 1
+
+
+def test_seos_failed_revoke_keeps_writeback_records_until_success(world, monkeypatch):
+    from agsync.ag import AccessGridError
+
+    unity, ag, cycle = _seos(world)
+    cycle()
+    pass_id = ag.only_pass()
+    unity.identities.append(_person("z", first="Zed", email="zed@example.com"))
+    unity.tokens["z"] = [_token("tz", internal="")]
+    cycle()
+    records = [e for e in written.all_tokens() if e["person_id"] == "a"]
+    _identity_deleted(unity)
+    delete = ag.delete
+
+    def fail(card_id):
+        raise AccessGridError("temporary outage")
+
+    monkeypatch.setattr(ag, "delete", fail)
+    cycle()
+    assert [e for e in written.all_tokens() if e["person_id"] == "a"] == records
+    assert _row("a").ag_card_id == pass_id
+    monkeypatch.setattr(ag, "delete", delete)
+    cycle()
+    assert [e for e in written.all_tokens() if e["person_id"] == "a"] == []
+    assert _row("a").status == "deleted"
+
+
+@PAIRS
+def test_desfire_37_bit_edits_send_encoded_payload(world, pair):
+    from agsync.lib.pacs.avigilon import wiegand
+
+    unity = FakeUnity([_person("a")], tokens={"a": [_token("t1", internal="5001")]})
+    ag, cycle = world("desfire", pair, unity, card_format="2", facility_code="239",
+                      card_format_layout=wiegand.STANDARDS["H10304"].as_params())
+    cycle()
+    issued = next(p for verb, _, p in ag.calls if verb == "provision")
+    assert issued["file_data"] == wiegand.encode(wiegand.STANDARDS["H10304"], "239", "5001")
+    unity.tokens["a"][0]["attributes"]["plasecInternalnumber"] = "5002"
+    cycle()
+    updates = [(cid, p) for verb, cid, p in ag.calls if verb == "update"]
+    assert updates == [(ag.only_pass(), {
+        "metadata": {**issued["metadata"], "card_number": "5002"},
+        "file_data": wiegand.encode(wiegand.STANDARDS["H10304"], "239", "5002"),
+    })]
+
+
+def test_unity_tracking_rejects_duplicate_site_and_number():
+    row = written.add("a", "t1", "239", "9001", None, None)
+    assert written.add("a", "t1", "239", "9001", None, None) == row
+    with pytest.raises(ValueError, match="already tracked"):
+        written.add("b", "t2", "239", "9001", None, None)
+    assert len(written.all_tokens()) == 1
+    written.add("b", "t2", "240", "9001", None, None)
+    assert len(written.all_tokens()) == 2
+
+
+def test_two_non_seos_edits_cannot_claim_the_same_credential_in_one_cycle(world, mailed):
+    unity, ag, cycle = _desfire(world, True)
+    unity.identities.append(_person("z", first="Zed", email="zed@example.com"))
+    unity.tokens["z"] = [_token("tz", internal="5009")]
+    cycle()
+    for pid in ("a", "z"):
+        unity.tokens[pid][0]["attributes"]["plasecInternalnumber"] = "6000"
+    cycle()
+    assert len([v for v, _, _ in ag.calls if v == "update"]) == 1
+    assert any(key.startswith("duplicate:") for key, _ in mailed)
+
+
+def test_ag_resume_after_unity_suspension_reactivates_tokens(world):
+    unity, ag, cycle, pass_id, _ = _installed_seos(world)
+    _status(unity.tokens["a"][0], "Inactive")
+    cycle()
+    ag.set_state(pass_id, "active")
+    cycle()
+    assert set(_tokens_by_number(unity).values()) == {"Active"}
+    assert ag.verbs("suspend", "resume") == [("suspend", pass_id)]
+
+
+def test_failed_suspend_does_not_turn_the_unity_token_back_on(world, monkeypatch):
+    from agsync.ag import AccessGridError
+
+    unity, ag, cycle, pass_id, _ = _installed_seos(world)
+    _status(unity.tokens["a"][0], "Inactive")
+
+    def fail(card_id):
+        assert card_id == pass_id
+        raise AccessGridError("temporary outage")
+
+    monkeypatch.setattr(ag, "suspend", fail)
+    cycle()
+    cycle()
+    assert set(_tokens_by_number(unity).values()) == {"Inactive"}
+    assert _row().last_known_ag_state == "active", "failed suspend remains pending"
+
+
+def test_revoke_of_already_absent_ag_pass_releases_writeback_records(world, monkeypatch):
+    from agsync.ag import AccessGridError
+
+    unity, ag, cycle = _seos(world)
+    cycle()
+    unity.identities.append(_person("z", first="Zed", email="zed@example.com"))
+    unity.tokens["z"] = [_token("tz", internal="")]
+    cycle()
+    _identity_deleted(unity)
+
+    def gone(card_id):
+        raise AccessGridError("404 not found")
+
+    monkeypatch.setattr(ag, "delete", gone)
+    cycle()
+    assert not [e for e in written.all_tokens() if e["person_id"] == "a"]
+    assert not [t for t in tracking.all_tracked() if t.pacs_person_id == "a"]

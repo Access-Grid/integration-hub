@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from ... import dryrun
+from ... import dryrun, notifications
 from ...ag import AccessGrid, AccessGridError
 from .. import tracking
 from ..snapshot import Snapshot
@@ -37,12 +37,11 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
         if cred is not None and cred.hold:
             continue
-        if cred is not None:
-            _check_card_number(snapshot, tracked, person, cred)
+        identity_changes = _credential_changes(snapshot, tracked, person, cred) if cred is not None else {}
         expires = getattr(cred, "deactivate_date", None)
         expiration = expires.isoformat() if expires else ""
 
-        changes: dict[str, str] = {}
+        changes = dict(identity_changes)
         if person.full_name and person.full_name != tracked.last_synced_full_name:
             changes["full_name"] = person.full_name
         # A phone emptied in the PACS is emptied on the pass, as title is.
@@ -68,7 +67,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         ):
             changes["expiration_date"] = expiration
 
-        email_changed = bool(person.email) and person.email != tracked.last_synced_email
+        email_changed = person.email != tracked.last_synced_email
         first_expiry = tracked.last_synced_expiration is None and bool(expiration)
         # Recorded, so a pass issued before departments were sent is judged
         # against "" from now on rather than looked at again every cycle.
@@ -80,12 +79,14 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         # address on a Seos pass, whose card it allocated.
         push_email = email_changed and cred is not None and not cred.allocate_identity
         if email_changed and not push_email:
-            logger.warning(
-                "  %s (%s): address is now %s but the pass was issued to %s — "
-                "AccessGrid does not accept an email change on an issued pass, "
-                "so it keeps the old one; re-issue the pass if that matters",
-                person.full_name, tracked.pacs_person_id,
-                person.email, tracked.last_synced_email or "(none)",
+            problem = (
+                f"{person.full_name} ({tracked.pacs_person_id}): address is now {person.email or '(none)'} "
+                f"but the pass was issued to {tracked.last_synced_email or '(none)'}. "
+                "The Seos email is unchanged; review whether the pass needs reissuing."
+            )
+            logger.warning("  %s", problem)
+            notifications.notify_card_problem(
+                f"email-change:{tracked.pacs_person_id}:{tracked.pacs_credential_id}", problem,
             )
 
         if changes:
@@ -100,12 +101,17 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                         tracked.ag_card_id, ", ".join(changes.keys()),
                     )
                     continue
-                # A metadata update: the pass's details change, its
-                # credential does not.
+                # Credential edits must refresh the wallet payload as well.
                 ag.access_cards.update(
-                    card_id=tracked.ag_card_id, update_type="metadata", **changes,
+                    card_id=tracked.ag_card_id,
+                    update_type="metadata+payload" if identity_changes else "metadata", **changes,
                 )
                 updated += 1
+                if identity_changes:
+                    metadata = identity_changes["metadata"]
+                    snapshot.ag_cards_by_site_card[(metadata["site_code"], metadata["card_number"])] = snapshot.resolve_ag_card(
+                        tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id, tracked.sync_ref,
+                    )
             except AccessGridError as e:
                 logger.error("  Field update failed for %s: %s", tracked.ag_card_id, e)
                 # Leave the tracking row alone so the change is retried, and
@@ -138,34 +144,40 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
     return updated
 
 
-def _check_card_number(snapshot: Snapshot, tracked, person, cred) -> None:
-    """Mail a card number edited in the PACS after its pass was issued.
-
-    The pass keeps the number it was issued with, in its metadata; once the
-    PACS holds another, the pass no longer matches the card. Left as it is:
-    the operator decides. Only for cards the PACS supplies — AccessGrid
-    allocated a Seos pass's number — and only for a pass in the listing.
-    """
-    from ... import notifications
-
-    if cred.allocate_identity or not cred.card_number:
-        return
-    issued = {
-        str(n) for c in snapshot.resolve_ag_cards(
-            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id, tracked.sync_ref,
-        )
-        if (n := (getattr(c, "metadata", None) or {}).get("card_number"))
-    }
-    if not issued or str(cred.card_number) in issued:
-        return
-    problem = (
-        f"{person.full_name} ({tracked.pacs_person_id}): card {tracked.pacs_credential_id} now has number "
-        f"{cred.card_number} in the PACS, but its AccessGrid pass {tracked.ag_card_id} was issued with "
-        f"{', '.join(sorted(issued))}. The pass is left as it is. To issue one with the new number, take "
-        f"the card's trigger away and set it again."
+def _credential_changes(snapshot, tracked, person, cred) -> dict:
+    """Non-Seos credentials may change; preserve metadata used for duplicate checks."""
+    if cred.allocate_identity or not cred.trigger_active or not cred.card_number:
+        return {}
+    cards = snapshot.resolve_ag_cards(
+        tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id, tracked.sync_ref,
     )
-    logger.warning("  %s", problem)
-    notifications.notify_card_problem(f"card-number:{tracked.pacs_person_id}:{tracked.pacs_credential_id}", problem)
+    metadata = next(((getattr(c, "metadata", None) or {}) for c in cards
+                     if (getattr(c, "metadata", None) or {}).get("card_number")), None)
+    if metadata is None:
+        return {}
+    site = str(cred.site_code or metadata.get("site_code") or "")
+    number = str(cred.card_number)
+    if (str(metadata.get("site_code") or ""), str(metadata["card_number"])) == (site, number):
+        return {}
+    if cred.raw.get("encoding_unavailable"):
+        problem = f"Unity: pass {tracked.ag_card_id} needs card {site}/{number}, but its format cannot be encoded. Credential unchanged."
+        logger.error("%s", problem)
+        notifications.notify_card_problem(f"card-format:{person.id}:{cred.id}", problem)
+        return {}
+    from .phase1_provision import refuse_duplicate
+
+    if refuse_duplicate(snapshot, person.id, person.full_name, cred, site):
+        return {}
+    logger.info("  Updating credential for pass %s: %s/%s → %s/%s", tracked.ag_card_id,
+                metadata.get("site_code", ""), metadata["card_number"], site, number)
+    changes = {"metadata": {**metadata, "site_code": site, "card_number": number}}
+    if cred.file_data and cred.send_file_data:
+        changes["file_data"] = cred.file_data
+    else:
+        changes["card_number"] = number
+        if site:
+            changes["site_code"] = int(site)
+    return changes
 
 
 def _push_email(ag: AccessGrid, tracked, email: str) -> bool:

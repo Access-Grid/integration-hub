@@ -14,14 +14,20 @@ back to the adapter to write into the PACS.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
 
 from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import CredentialStatus, PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
-from .phase1_provision import note_issued_card, refuse_duplicate, unrecorded_pass
+from .phase1_provision import (
+    note_issued_card,
+    provision_params,
+    record_issue,
+    refuse_duplicate,
+    unrecorded_pass,
+)
+from .phase3_deletions import expired
 from .writeback import push_allocated_identities
 
 logger = logging.getLogger(__name__)
@@ -78,6 +84,10 @@ def run(
             tracking.remove(tracked.pacs_person_id, tracked.pacs_credential_id)
             continue
 
+        if not person.active or not person.full_name or expired(cred):
+            logger.info("  %s: inactive, unnamed or expired; retry held", tracking.label(tracked))
+            continue
+
         if not person.email and not person.phone:
             tracking.record_error(
                 tracked.pacs_person_id, tracked.pacs_credential_id,
@@ -120,53 +130,9 @@ def run(
                                   "AccessGrid holds a pass for this card the sync has no record of")
             continue
 
-        now = datetime.now(UTC)
-        metadata: dict = dict(extra_metadata or {})
-        # Our own handle on this issue, echoed back on every card the
-        # call produces — including both halves of a template pair, which
-        # is what makes them findable in a later listing.
-        sync_ref = tracking.new_sync_ref()
-        metadata["sync_ref"] = sync_ref
-        metadata["pacs_credential_id"] = cred.id
-        if not cred.allocate_identity:
-            if eff_site_code:
-                metadata["site_code"] = eff_site_code
-            if cred.card_number:
-                metadata["card_number"] = str(cred.card_number)
-
-        params: dict = {
-            "card_template_id": template_id,
-            "employee_id": tracked.pacs_person_id,
-            "full_name": person.full_name,
-            "start_date": (cred.activate_date or now).isoformat(),
-            "expiration_date": (cred.deactivate_date or (now + timedelta(days=default_pass_days))).isoformat(),
-            "metadata": metadata,
-        }
-        # Same wire-format choice as phase 1: verbatim file_data (opt-in) or
-        # decoded site_code + card_number (default); site/card stay metadata.
-        if cred.allocate_identity:
-            # AccessGrid allocates when the identity is omitted.
-            pass
-        elif cred.file_data and (use_file_data or cred.send_file_data):
-            params["file_data"] = cred.file_data
-        else:
-            if eff_site_code and eff_site_code.isdigit():
-                params["site_code"] = int(eff_site_code)
-            if cred.card_number:
-                params["card_number"] = cred.card_number
-        if person.email:
-            params["email"] = person.email
-        if person.phone:
-            params["phone_number"] = person.phone
-        # A per-person title from the PACS wins; the configured one fills in
-        # for systems that have no such field, which is most of them.
-        title = person.title or card_title
-        if title:
-            params["title"] = title
-        if person.department:
-            params["department"] = person.department
-        if card_classification:
-            params["classification"] = card_classification
+        params = provision_params(person, cred, template_id, eff_site_code, extra_metadata,
+                                  use_file_data, card_title, card_classification, default_pass_days)
+        sync_ref = params["metadata"]["sync_ref"]
 
         try:
             logger.info(
@@ -184,21 +150,7 @@ def run(
             card = ag.access_cards.provision(**params)
             ag_card_id = getattr(card, "id", None)
             ag_state = (getattr(card, "state", "active") or "active").lower()
-            tracking.upsert(
-                pacs_person_id=tracked.pacs_person_id,
-                pacs_credential_id=tracked.pacs_credential_id,
-                ag_card_id=ag_card_id,
-                full_name=person.full_name,
-                employee_id=tracked.pacs_person_id,
-                status="active" if ag_state in ("active", "created") else ag_state,
-                last_synced_email=person.email,
-                last_synced_phone=person.phone,
-                last_synced_full_name=person.full_name,
-                last_synced_title=person.title,
-                last_synced_department=person.department,
-                last_known_ag_state=ag_state,
-                sync_ref=sync_ref,
-            )
+            record_issue(person, cred, ag_card_id, ag_state, sync_ref)
             succeeded += 1
             logger.info("  Retry succeeded for %s", person.full_name)
             note_issued_card(snapshot, cred, eff_site_code, card)

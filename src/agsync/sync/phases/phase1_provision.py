@@ -235,61 +235,9 @@ def run(
                 # cycle, by which time an operator has had a chance to look.
                 continue
 
-            now = datetime.now(UTC)
-            start_date = (cred.activate_date or now).isoformat()
-            expiration_date = (cred.deactivate_date or (now + timedelta(days=default_pass_days))).isoformat()
-
-            # Start from the user-configured extras, then layer the
-            # sync-managed keys on top so they always win the merge.
-            metadata: dict = dict(extra_metadata or {})
-            # Our own handle on this issue, echoed back on every card the
-            # call produces — including both halves of a template pair, which
-            # is what makes them findable in a later listing.
-            sync_ref = tracking.new_sync_ref()
-            metadata["sync_ref"] = sync_ref
-            metadata["pacs_credential_id"] = cred.id
-            if not cred.allocate_identity:
-                if eff_site_code:
-                    metadata["site_code"] = eff_site_code
-                if cred.card_number:
-                    metadata["card_number"] = str(cred.card_number)
-
-            params: dict = {
-                "card_template_id": template_id,
-                "employee_id": pid,
-                "full_name": person.full_name,
-                "start_date": start_date,
-                "expiration_date": expiration_date,
-                "metadata": metadata,
-            }
-            # Wire format: either the pre-encoded file_data blob (opt-in, when
-            # the adapter supplies one) or the decoded site_code + card_number
-            # (default). site_code/card_number stay in metadata either way so
-            # dedupe and debugging still work.
-            if cred.allocate_identity:
-                # Send no identity at all: AccessGrid allocates the facility
-                # code and card number, and the adapter writes them back.
-                pass
-            elif cred.file_data and (use_file_data or cred.send_file_data):
-                params["file_data"] = cred.file_data
-            else:
-                if eff_site_code and eff_site_code.isdigit():
-                    params["site_code"] = int(eff_site_code)
-                if cred.card_number:
-                    params["card_number"] = cred.card_number
-            if person.email:
-                params["email"] = person.email
-            if person.phone:
-                params["phone_number"] = person.phone
-            # A per-person title from the PACS wins; the configured one
-            # fills in for systems that have no such field, which is most.
-            title = person.title or card_title
-            if title:
-                params["title"] = title
-            if person.department:
-                params["department"] = person.department
-            if card_classification:
-                params["classification"] = card_classification
+            params = provision_params(person, cred, template_id, eff_site_code, extra_metadata,
+                                      use_file_data, card_title, card_classification, default_pass_days)
+            sync_ref = params["metadata"]["sync_ref"]
 
             if dryrun.active():
                 # Checked before the pending row is written, not just before
@@ -324,21 +272,7 @@ def run(
                 card = ag.access_cards.provision(**params)
                 ag_card_id = getattr(card, "id", None)
                 ag_state = (getattr(card, "state", "active") or "active").lower()
-                tracking.upsert(
-                    pacs_person_id=pid,
-                    pacs_credential_id=cred.id,
-                    ag_card_id=ag_card_id,
-                    full_name=person.full_name,
-                    employee_id=pid,
-                    status="active" if ag_state in ("active", "created") else ag_state,
-                    last_synced_email=person.email,
-                    last_synced_phone=person.phone,
-                    last_synced_full_name=person.full_name,
-                    last_synced_title=person.title,
-                    last_synced_department=person.department,
-                    last_known_ag_state=ag_state,
-                    sync_ref=sync_ref,
-                )
+                record_issue(person, cred, ag_card_id, ag_state, sync_ref)
                 provisioned += 1
                 logger.info("  Provisioned AG card %s for %s", ag_card_id, person.full_name)
                 note_issued_card(snapshot, cred, eff_site_code, card)
@@ -365,3 +299,68 @@ def run(
         provisioned, skipped, deduped,
     )
     return provisioned
+
+
+def provision_params(person, cred, template_id, eff_site_code, extra_metadata=None,
+                     use_file_data=False, card_title="", card_classification="", default_pass_days=365):
+    """The single payload builder for first issues and retries, pairs and singles."""
+    now = datetime.now(UTC)
+    metadata: dict = dict(extra_metadata or {})
+    # Our own handle on this issue, echoed back on every card the
+    # call produces — including both halves of a template pair, which
+    # is what makes them findable in a later listing.
+    sync_ref = tracking.new_sync_ref()
+    metadata["sync_ref"] = sync_ref
+    metadata["pacs_credential_id"] = cred.id
+    if not cred.allocate_identity:
+        if eff_site_code:
+            metadata["site_code"] = eff_site_code
+        if cred.card_number:
+            metadata["card_number"] = str(cred.card_number)
+
+    params: dict = {
+        "card_template_id": template_id,
+        "employee_id": person.id,
+        "full_name": person.full_name,
+        "start_date": (cred.activate_date or now).isoformat(),
+        "expiration_date": (cred.deactivate_date or (now + timedelta(days=default_pass_days))).isoformat(),
+        "metadata": metadata,
+    }
+    # Same wire-format choice as phase 1: verbatim file_data (opt-in) or
+    # decoded site_code + card_number (default); site/card stay metadata.
+    if cred.allocate_identity:
+        # AccessGrid allocates when the identity is omitted.
+        pass
+    elif cred.file_data and (use_file_data or cred.send_file_data):
+        params["file_data"] = cred.file_data
+    else:
+        if eff_site_code and eff_site_code.isdigit():
+            params["site_code"] = int(eff_site_code)
+        if cred.card_number:
+            params["card_number"] = cred.card_number
+    if person.email:
+        params["email"] = person.email
+    if person.phone:
+        params["phone_number"] = person.phone
+    # A per-person title from the PACS wins; the configured one fills in
+    # for systems that have no such field, which is most of them.
+    title = person.title or card_title
+    if title:
+        params["title"] = title
+    if person.department:
+        params["department"] = person.department
+    if card_classification:
+        params["classification"] = card_classification
+    return params
+
+
+def record_issue(person, cred, card_id, state, sync_ref):
+    """Keep the returned pair ID intact: mutations must never target a half."""
+    tracking.upsert(
+        pacs_person_id=person.id, pacs_credential_id=cred.id, ag_card_id=card_id,
+        full_name=person.full_name, employee_id=person.id,
+        status="active" if state in ("active", "created") else state,
+        last_synced_email=person.email, last_synced_phone=person.phone,
+        last_synced_full_name=person.full_name, last_synced_title=person.title,
+        last_synced_department=person.department, last_known_ag_state=state, sync_ref=sync_ref,
+    )

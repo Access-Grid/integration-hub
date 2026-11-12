@@ -43,8 +43,9 @@ class Snapshot:
     # A listed card answers `devices: []`, so for these "no device" means
     # "unknown", never "not installed".
     ag_card_detail_failed: set[str] = field(default_factory=set)
-    # (person, credential) whose pass phase 2 suspended or resumed this
-    # cycle, to match the PACS. The listing above predates that call, so
+    # (person, credential) whose pass phase 2 tried to suspend or resume
+    # this cycle. Even a rejected write must not reactivate the PACS card.
+    # The listing above predates that call, so
     # phase 4 reading it would take the old state for an AccessGrid change
     # and write it back over the PACS change that caused it.
     pushed_to_ag: set[tuple[str, str]] = field(default_factory=set)

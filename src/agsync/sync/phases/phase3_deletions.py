@@ -36,7 +36,7 @@ from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
-from .writeback import deleted_identities_from_cards, identities_from_cards
+from .writeback import deleted_identities_from_cards, identities_from_cards, state_of
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,8 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
                 tracked.pacs_person_id, tracked.pacs_credential_id,
             )
             deleted += 1
+            if pacs is not None and hasattr(pacs, "forget_credentials"):
+                pacs.forget_credentials(tracked.pacs_person_id, tracked.pacs_credential_id)
             if expired_cards:
                 pacs.retire_credentials(
                     tracked.pacs_person_id, tracked.pacs_credential_id,
@@ -172,6 +174,8 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
             if "not found" in msg or "404" in msg:
                 # Already gone — clean up.
                 logger.debug("  AG card %s already gone — removing tracking row", tracked.ag_card_id)
+                if pacs is not None and hasattr(pacs, "forget_credentials"):
+                    pacs.forget_credentials(tracked.pacs_person_id, tracked.pacs_credential_id)
                 tracking.remove(tracked.pacs_person_id, tracked.pacs_credential_id)
             else:
                 logger.error("  Failed to delete AG card %s: %s", tracked.ag_card_id, e)
@@ -277,6 +281,11 @@ def _retire_deleted_credentials(
         )
         if not cards:
             continue
+
+        if (getattr(pacs, "keeps_deleted_pass_tokens", False) and tracked.status != "deleted") and all(
+            state_of(card) == "deleted" for card in cards
+        ):
+            continue  # A deleted pair is deactivated; only its abandoned half is retired.
 
         gone = deleted_identities_from_cards(
             cards, include_unlinked=getattr(pacs, "retires_unlinked_cards", True),

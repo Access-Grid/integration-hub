@@ -805,7 +805,7 @@ def test_seos_install_switches_tokens_on_and_suspend_off(seos):
     assert made["attributes"]["extended_attributes"]["token_status"] == "Inactive"
 
 
-def test_seos_token_switched_off_by_an_operator_suspends_and_stays_off(seos, mailed):
+def test_seos_operator_suspension_can_be_reversed_by_a_pass_level_resume(seos, mailed):
     fake, a = seos()
     _cycle(a)
     a.write_back_credentials("a", "t1", [_card("9001")])
@@ -814,10 +814,9 @@ def test_seos_token_switched_off_by_an_operator_suspends_and_stays_off(seos, mai
     made["attributes"]["extended_attributes"]["token_status"] = "Inactive"  # operator
     [cred] = _cycle(a)
     assert cred.status is CredentialStatus.SUSPENDED
-    posts = len(fake.posts)
-    assert not a.update_credential_status("a", "t1", CredentialStatus.ACTIVE)
-    assert len(fake.posts) == posts
-    assert "switched off in Unity after we switched it on" in mailed[0]
+    assert a.update_credential_status("a", "t1", CredentialStatus.ACTIVE)
+    assert _hub_tokens(fake)[0]["attributes"]["extended_attributes"]["token_status"] == "Active"
+    assert mailed == []
 
 
 def test_seos_one_hub_token_deleted_suspends_the_pass(seos):
@@ -965,13 +964,13 @@ def test_desfire_pass_unlinked_in_accessgrid_switches_the_token_off(monkeypatch,
 @pytest.mark.parametrize("halves", [["deleted"], ["deleted", "deleted"]])
 def test_desfire_pass_deleted_whole_in_accessgrid_switches_the_token_off(monkeypatch, halves):
     """Every card deleted: the spec's 'suspended, unlinked or deleted'. The
-    row is released, so switching the token on again issues a new pass."""
+    tracking remains attached to the same pass, which is recorded inactive."""
     monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
     released = []
     monkeypatch.setattr(tracking, "mark_deleted", lambda p, c: released.append((p, c)))
     fake, recorded = _desfire_tracked_pass(monkeypatch, halves)
     assert _t1_status(fake) == "Inactive"
-    assert released == [("a", "t1")] and recorded == []
+    assert released == [] and recorded == ["deleted"]
 
 
 @pytest.mark.parametrize("halves", [["unlink", "active"], ["deleted", "active"]])
@@ -1306,7 +1305,7 @@ def test_seos_status_for_a_hub_token_no_longer_in_unity_is_mailed(seos, mailed):
     _cycle(a)
     a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])
     fake.tokens["a"] = fake.tokens["a"][1:]
-    assert a.update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
+    assert not a.update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
     assert "is no longer in Unity" in mailed[0]
 
 

@@ -1,18 +1,4 @@
-"""Phase 4 — AccessGrid → PACS status sync.
-
-Direction-of-change check: an AG card whose state changed since
-last_known_ag_state means an operator (or a card-holder unlinking from
-their phone) acted on the AG side. Push the change back to PACS.
-
-Phase 2 has already pushed PACS-side changes outward, so any remaining
-divergence is AG-initiated.
-
-This phase also carries the other AG → PACS traffic: for adapters whose
-PACS *receives* credentials (the Seos direction), it re-offers each tracked
-card's AccessGrid-allocated identities. Provisioning wrote the first one;
-this is what catches the second, which only exists once the holder installs
-the pass on a second device.
-"""
+"""Reconcile one tracked pass at a time; only Seos activation requires an install."""
 
 from __future__ import annotations
 
@@ -22,304 +8,122 @@ from ...ag import AccessGrid
 from ...lib.pacs import CredentialStatus, PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
-from .writeback import is_dead, is_installed, push_allocated_identities, state_of
+from .writeback import is_installed, push_allocated_identities, state_of
 
 logger = logging.getLogger(__name__)
 
-def _devices(card) -> list[str]:
-    """One card's per-device credentials, for diagnostics.
-
-    The watch's own card number lives here and nowhere else, so this is the
-    line that says whether AccessGrid has issued one yet.
-    """
-    out = []
-    for d in getattr(card, "devices", None) or []:
-        get = d.get if isinstance(d, dict) else lambda k, _d=d: getattr(_d, k, None)
-        out.append(
-            f"{get('device_type') or '?'} {get('site_code') or '?'}/"
-            f"{get('card_number') or '?'} {get('status') or '?'}"
-        )
-    return out
+_ACTIVE = {"active", "created"}
+_OFF = {"suspended", "unlink", "unlinked", "deleted"}
 
 
-# "deleted" reaches here only when every card of the pass is deleted: a
-# deleted half of a pair, the side nobody installed, never hides a live one
-# (Snapshot.resolve_ag_card). A pass the hub deleted itself is marked
-# deleted in tracking and not looked at again, so this is a pass deleted in
-# AccessGrid by someone else, and its card goes off like a suspended one.
-_AG_TO_CRED_STATUS: dict[str, CredentialStatus] = {
-    "active": CredentialStatus.ACTIVE,
-    "created": CredentialStatus.ACTIVE,
-    "suspended": CredentialStatus.SUSPENDED,
-    "deleted": CredentialStatus.SUSPENDED,
-    # The holder took the pass off their device. The SDK documents
-    # "unlink"; "unlinked" is accepted too.
-    "unlink": CredentialStatus.SUSPENDED,
-    "unlinked": CredentialStatus.SUSPENDED,
-}
-
-
-# Temporary, and the other half of [SUSPEND-DEBUG] in phase 2. This gate
-# judges a credential by re-reading the pair's halves, while phase 2 acts
-# on the unified pass id recorded against it. When the two disagree, this
-# runs second and wins — writing an operator's unticked box back on.
-SUSPEND_DEBUG = "[SUSPEND-DEBUG]"
-
-
-def _gate_debug(tracked, cards: list, desired, cred) -> None:
-    """What the install gate saw, decided, and is about to do about it."""
-    try:
-        seen = "; ".join(
-            f"{getattr(c, 'id', '?')} state={(getattr(c, 'state', '') or '?').lower()} "
-            f"devices={_devices(c) or '[]'}"
-            for c in cards
-        ) or "none"
-        already = (
-            cred.status is CredentialStatus.ACTIVE
-            if desired is CredentialStatus.ACTIVE
-            else cred.status is not CredentialStatus.ACTIVE
-        )
-        logger.info(
-            "%s %s: install gate read %d card(s) via tracked id %s: %s "
-            "| pacs=%r -> wants %s -> %s",
-            SUSPEND_DEBUG, tracking.label(tracked),
-            len(cards), tracked.ag_card_id, seen, cred.status.value,
-            desired.value,
-            "leaving it alone" if already
-            else f"WRITING {desired.value} to the PACS card",
-        )
-    except Exception as e:  # noqa: BLE001 — diagnostics must never break a cycle
-        logger.info("%s could not describe the install gate: %s", SUSPEND_DEBUG, e)
-
-
-def _desired_card_status(cards: list) -> CredentialStatus:
-    """What a PACS card should be, given the pass behind it.
-
-    Three outcomes, and the order matters. A suspended pass is still an
-    installed one — a holder who loses their phone still has it installed —
-    so asking "is it installed" first would read a revocation as a working
-    credential and turn the card back on.
-    """
-    live = [c for c in cards if not is_dead(c)]
-    if not live:
-        # Every card of this issue is gone. Whatever the PACS still holds is
-        # not backed by anything; phase 3 releases the slots, this stops the
-        # card working in the meantime.
+def _desired_card_status(cards: list) -> CredentialStatus | None:
+    """An active, installed member activates the pair; unknown states hold it."""
+    active = [c for c in cards if state_of(c) in _ACTIVE]
+    if active:
+        return (CredentialStatus.ACTIVE if is_installed([c for c in active if state_of(c) == "active"])
+                else CredentialStatus.AWAITING_INSTALL)
+    if cards and all(state_of(c) in _OFF for c in cards):
         return CredentialStatus.SUSPENDED
-    if any(state_of(c) == "suspended" for c in live):
-        return CredentialStatus.SUSPENDED
-    if is_installed(live):
-        return CredentialStatus.ACTIVE
-    return CredentialStatus.AWAITING_INSTALL
-
-
-_STATUS_REASON = {
-    CredentialStatus.ACTIVE: ("Activating", "installed"),
-    CredentialStatus.SUSPENDED: ("Deactivating", "suspended in AccessGrid"),
-    CredentialStatus.AWAITING_INSTALL: ("Deactivating", "not installed yet"),
-}
+    return None
 
 
 def _pushed_this_cycle(snapshot: Snapshot, tracked) -> bool:
-    """Did phase 2 just suspend or resume this pass to match the PACS?
+    return (tracked.pacs_person_id, tracked.pacs_credential_id) in snapshot.pushed_to_ag
 
-    Then the PACS already says what the pass now says, and the AccessGrid
-    state read at the start of the cycle is the one phase 2 replaced:
-    acting on it would undo the operator's change. The next cycle reads
-    the pass afresh.
-    """
-    if (tracked.pacs_person_id, tracked.pacs_credential_id) not in snapshot.pushed_to_ag:
-        return False
-    logger.info(
-        "  %s: pass just set from the PACS this cycle — leaving its PACS card as it is",
-        tracking.label(tracked),
-    )
-    return True
+
+def _cards(snapshot, tracked, ag=None):
+    resolve = snapshot.detailed_cards if ag is not None else snapshot.resolve_ag_cards
+    args = (tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id, tracked.sync_ref)
+    return resolve(ag, *args) if ag is not None else resolve(*args)
+
+
+def _set_status(snapshot, pacs, tracked, cred, cards, desired) -> int | None:
+    if desired is None:
+        logger.warning("  %s: unknown AccessGrid state; leaving Unity unchanged", tracking.label(tracked))
+        return None
+    if desired is CredentialStatus.AWAITING_INSTALL and any(
+        getattr(c, "id", None) in snapshot.ag_card_detail_failed for c in cards
+    ):
+        logger.warning("  %s: AG card could not be re-read; installation unknown", tracking.label(tracked))
+        return None
+    person = snapshot.people.get(tracked.pacs_person_id)
+    if desired is CredentialStatus.ACTIVE and person is not None and not person.active:
+        return None
+    already = (cred.status is CredentialStatus.ACTIVE) == (desired is CredentialStatus.ACTIVE)
+    if already:
+        return 0
+    logger.info("  Pass %s for %s: %s → %s; members=%s", tracked.ag_card_id,
+                tracking.label(tracked), cred.status.value, desired.value,
+                [(getattr(c, "id", "?"), state_of(c)) for c in cards])
+    return 1 if pacs.update_credential_status(
+        tracked.pacs_person_id, tracked.pacs_credential_id, desired,
+    ) else None
 
 
 def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int:
-    """Make each PACS card say what its pass says.
-
-    Only for adapters we write credentials into: elsewhere the card is the
-    customer's own and its Active box is none of our business.
-
-    Deliberately level-triggered, unlike the status loop below. The question
-    is not "did anything change" but "does the card match the pass right
-    now" — an operator can tick Active at any time, and a pass can be
-    suspended and resumed without its state ever differing from what we last
-    recorded.
-    """
+    """Apply the install gate without provisioning or recording AG state."""
     if not getattr(pacs, "supports_credential_writeback", False):
         return 0
-
-    changed = 0
-    for tracked in tracking.all_tracked():
-        if tracked.status in ("deleted", "deduped", "pending") or not tracked.ag_card_id:
-            continue
-        creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
-        cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
-        if cred is None or cred.hold or not cred.allocate_identity:
-            # The "no such credential" case is already named once per cycle
-            # by _push_new_credentials, which walks the same rows.
-            continue
-        if _pushed_this_cycle(snapshot, tracked):
-            continue
-
-        cards = snapshot.detailed_cards(
-            ag, tracked.ag_card_id, tracked.pacs_person_id,
-            tracked.pacs_credential_id, tracked.sync_ref,
-        )
-        if not cards:
-            logger.warning(
-                "  Not setting the card state for %s — AG card %s did not "
-                "resolve to any card",
-                tracking.label(tracked),
-                tracked.ag_card_id,
-            )
-            continue
-
-        desired = _desired_card_status(cards)
-        unread = [
-            getattr(c, "id", "?") for c in cards
-            if getattr(c, "id", None) in snapshot.ag_card_detail_failed
-        ]
-        if desired is CredentialStatus.AWAITING_INSTALL and unread:
-            # Only a card fetch lists devices. With one failed, "no device
-            # installed" is a guess, and acting on it switches off the card
-            # of a holder whose pass works.
-            logger.warning(
-                "  Leaving the card of %s as it is — AG card(s) %s could not be "
-                "re-read, so whether the pass is installed is unknown this cycle",
-                tracking.label(tracked), ", ".join(unread),
-            )
-            continue
-        person = snapshot.people.get(tracked.pacs_person_id)
-        if desired is CredentialStatus.ACTIVE and person is not None and not person.active:
-            # The identity is deactivated in the PACS: its pass is on its way
-            # to suspended (phase 2), and an install must not switch it on.
-            logger.warning(
-                "  Not switching on the card of %s — the pass is installed, but "
-                "the cardholder is deactivated in the PACS",
-                tracking.label(tracked),
-            )
-            continue
-        _gate_debug(tracked, cards, desired, cred)
-        # The adapter reads its own state off the card, where "off" has no
-        # reason attached, so an awaited install and a suspension look the
-        # same coming back.
-        already = (
-            cred.status is CredentialStatus.ACTIVE
-            if desired is CredentialStatus.ACTIVE
-            else cred.status is not CredentialStatus.ACTIVE
-        )
-        if already:
-            continue
-
-        try:
-            verb, why = _STATUS_REASON[desired]
-            logger.info(
-                "  %s card for %s — the pass is %s",
-                verb, tracking.label(tracked), why,
-            )
-            if pacs.update_credential_status(
-                tracked.pacs_person_id, tracked.pacs_credential_id, desired,
-            ):
-                changed += 1
-        except Exception as e:  # noqa: BLE001 — one cardholder must not stop the cycle
-            logger.error(
-                "  Could not set the card state for %s: %s",
-                tracking.label(tracked), e,
-            )
-    if changed:
-        logger.info("Phase 4: %d card(s) brought in line with their pass", changed)
-    return changed
+    return _reconcile(snapshot, pacs, ag, gate_only=True)
 
 
 def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> int:
-    _log_tracked_summary()
-    updated = _push_new_credentials(snapshot, pacs, ag)
-    if ag is not None:
-        updated += _hold_uninstalled_inactive(snapshot, pacs, ag)
+    return _reconcile(snapshot, pacs, ag)
 
-    if not pacs.supports_status_writeback:
-        logger.debug("Phase 4: PACS does not support status writeback — skipping")
-        return updated
 
-    logger.info("Phase 4: Checking AG → PACS status changes")
-
+def _reconcile(snapshot, pacs, ag, gate_only=False) -> int:
+    updated = 0
+    logger.info("Phase 4: Reconciling AccessGrid passes with PACS credentials")
     for tracked in tracking.all_tracked():
-        if tracked.status in ("deleted", "deduped") or not tracked.ag_card_id:
+        if tracked.status in ("deleted", "deduped", "pending") or not tracked.ag_card_id:
             continue
-
         if _pushed_this_cycle(snapshot, tracked):
             continue
-        ag_card = snapshot.resolve_ag_card(
-            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
-            tracked.sync_ref,
-        )
-        if ag_card is None:
-            continue
-
-        ag_state = (getattr(ag_card, "state", "") or "").lower()
-        if not ag_state or ag_state == tracked.last_known_ag_state:
-            continue
-
-        # AG-side change detected. Translate to a credential status.
-        desired = _AG_TO_CRED_STATUS.get(ag_state)
-        if desired is None:
-            logger.info(
-                "  AG pass for %s is now '%s' — not a state the PACS follows, "
-                "leaving its card as it is",
-                tracking.label(tracked), ag_state,
-            )
-            tracking.update_last_known_ag_state(
-                tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
-            )
-            continue
-
-        # Not read this cycle: leave the change pending rather than record it
-        # as seen, or it never reaches the PACS. No entry means unread; an
-        # empty list means read and holding nothing, as phase 3 tells them.
-        if tracked.pacs_person_id not in snapshot.credentials_by_person:
-            continue
-        creds = snapshot.credentials_by_person[tracked.pacs_person_id]
+        creds = snapshot.credentials_by_person.get(tracked.pacs_person_id)
+        if creds is None:
+            continue  # unread is never evidence of absence
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
         if cred is not None and cred.hold:
             continue
-        # A credential we minted has its card driven by the install gate
-        # above — one owner per checkbox. Here the card is the customer's
-        # own, where an issued pass rightly leaves it active.
-        if cred is not None and cred.allocate_identity:
-            # Never mark_deleted here: phase 3 retires the hub's PACS cards
-            # for a deleted pass by the row's pass id.
-            _record_state(tracked, ag_state)
+        allocated = cred is not None and cred.allocate_identity
+        if gate_only and not allocated:
             continue
-        if cred is None or cred.status == desired:
-            _record_ag_state(tracked, ag_state)
+        cards = _cards(snapshot, tracked, ag)
+        if not cards:
+            logger.warning("  %s: pass %s could not be resolved", tracking.label(tracked), tracked.ag_card_id)
             continue
-
+        card = snapshot.resolve_ag_card(tracked.ag_card_id, tracked.pacs_person_id,
+                                        tracked.pacs_credential_id, tracked.sync_ref)
+        state = state_of(card)
+        if not allocated and state == tracked.last_known_ag_state:
+            continue
         try:
-            logger.info(
-                "  Pushing AG state '%s' to PACS for %s",
-                ag_state, tracking.label(tracked),
-            )
-            ok = pacs.update_credential_status(
-                tracked.pacs_person_id, tracked.pacs_credential_id, desired,
-            )
-            if ok:
-                updated += 1
-                _record_ag_state(tracked, ag_state)
+            if allocated and not gate_only:
+                updated += int(push_allocated_identities(
+                    pacs, tracked.pacs_person_id, tracked.pacs_credential_id, cards,
+                ))
+            gate = allocated and ag is not None and getattr(pacs, "supports_credential_writeback", False)
+            if gate:
+                desired = _desired_card_status(cards)
             else:
-                logger.warning(
-                    "  PACS rejected status update for %s",
-                    tracking.label(tracked),
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                "  Failed to update PACS for %s: %s",
-                tracking.label(tracked), e,
-            )
-
+                desired = (CredentialStatus.ACTIVE if any(state_of(c) in _ACTIVE for c in cards)
+                           else CredentialStatus.SUSPENDED if all(state_of(c) in _OFF for c in cards)
+                           else None)
+            if gate or (not allocated and state != tracked.last_known_ag_state):
+                if cred is not None and (gate_only or pacs.supports_status_writeback):
+                    changed = _set_status(snapshot, pacs, tracked, cred, cards, desired)
+                    if changed is None:
+                        continue
+                    updated += changed
+            if not gate_only:
+                if getattr(pacs, "keeps_deleted_pass_tokens", False) and state == "deleted":
+                    tracking.update_status(tracked.pacs_person_id, tracked.pacs_credential_id,
+                                           "suspended", last_known_ag_state=state)
+                else:
+                    (_record_state if allocated else _record_ag_state)(tracked, state)
+        except Exception as e:  # one failing pass must not stop everyone else
+            logger.error("  Pass %s for %s could not be reconciled: %s",
+                         tracked.ag_card_id, tracking.label(tracked), e)
     logger.info("Phase 4 done: %d PACS update(s)", updated)
     return updated
 
@@ -368,90 +172,4 @@ def _record_state(tracked, ag_state: str) -> None:
     tracking.update_status(
         tracked.pacs_person_id, tracked.pacs_credential_id, status,
         last_known_ag_state=ag_state,
-    )
-
-
-def _push_new_credentials(
-    snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None
-) -> int:
-    """Write any AG-allocated identities the PACS has not received yet.
-
-    Only meaningful for adapters that receive credentials; everyone else
-    returns immediately. Adapters skip identities already present, so the
-    cost of re-offering is one read of the cardholder we would fetch anyway.
-    """
-    if not getattr(pacs, "supports_credential_writeback", False):
-        return 0
-
-    pushed = 0
-    for tracked in tracking.all_tracked():
-        if tracked.status in ("deleted", "deduped", "pending") or not tracked.ag_card_id:
-            continue
-        creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
-        cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
-        if cred is not None and cred.hold:
-            continue
-        if cred is None:
-            # The exit that hides a missing watch credential: nothing is
-            # offered to the PACS, nothing is written, and nothing is said.
-            logger.warning(
-                "  Not writing credentials for %s — the PACS reported no such "
-                "credential this cycle",
-                tracking.label(tracked),
-            )
-            continue
-        if not cred.allocate_identity:
-            continue
-        # All of them, each re-read: one issue can span several cards, and a
-        # second device's card number lives on the pass's `devices`, which
-        # the listing does not carry.
-        cards = (
-            snapshot.detailed_cards(
-                ag, tracked.ag_card_id, tracked.pacs_person_id,
-                tracked.pacs_credential_id, tracked.sync_ref,
-            )
-            if ag is not None
-            else snapshot.resolve_ag_cards(
-                tracked.ag_card_id, tracked.pacs_person_id,
-                tracked.pacs_credential_id, tracked.sync_ref,
-            )
-        )
-        if not cards:
-            logger.warning(
-                "  Not writing credentials for %s — AG card %s did not resolve "
-                "to any card (sync_ref %s)",
-                tracking.label(tracked),
-                tracked.ag_card_id, tracked.sync_ref or "none",
-            )
-            continue
-        logger.info(
-            "  %s resolved to %d AG card(s): %s",
-            tracking.label(tracked), len(cards),
-            ", ".join(
-                f"{getattr(c, 'id', '?')} {getattr(c, 'site_code', '?')}/"
-                f"{getattr(c, 'card_number', '?')} {state_of(c) or '?'}"
-                f" [{', '.join(_devices(c)) or 'no devices'}]"
-                for c in cards
-            ),
-        )
-        if push_allocated_identities(
-            pacs, tracked.pacs_person_id, tracked.pacs_credential_id, cards,
-        ):
-            pushed += 1
-    if pushed:
-        logger.info("Phase 4: wrote credentials back for %d cardholder(s)", pushed)
-    return pushed
-
-
-def _log_tracked_summary() -> None:
-    """One line naming every row phase 4 will consider, and its state."""
-    rows = tracking.all_tracked()
-    logger.info(
-        "Phase 4: %d tracked row(s): %s",
-        len(rows),
-        "; ".join(
-            f"{t.pacs_person_id}/{t.pacs_credential_id} status={t.status} "
-            f"ag={t.ag_card_id or 'none'} last_known={t.last_known_ag_state or '-'}"
-            for t in rows
-        ) or "none",
     )

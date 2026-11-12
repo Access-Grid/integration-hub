@@ -53,14 +53,31 @@ def add(person_id: str, credential_id: str, facility_code: str, card_number: str
     from ....crypto import encrypt
     from ....db.connection import get_db
 
-    cur = get_db().execute(
-        "INSERT INTO unity_tokens (pacs_person_id, pacs_credential_id, facility_code, card_number, "
-        "active, activate_date, deactivate_date) VALUES (?, ?, ?, ?, 0, ?, ?)",
-        (person_id, credential_id, encrypt(facility_code), encrypt(card_number), activate_date, deactivate_date),
-    )
-    logger.info("Unity tokens: %s %s — about to create a token for card %s/%s",
-                person_id, credential_id, facility_code, card_number)
-    return cur.lastrowid
+    db = get_db()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        # Encryption uses random nonces, so a SQL uniqueness index over the
+        # ciphertext cannot protect this identity. Compare inside the lock.
+        existing = next((e for e in all_tokens()
+                         if (e["facility_code"], e["card_number"]) == (facility_code, card_number)), None)
+        if existing:
+            if (existing["person_id"], existing["credential_id"]) != (person_id, credential_id):
+                raise ValueError(f"Unity card {facility_code}/{card_number} is already tracked for {existing['person_id']}")
+            row = existing["row"]
+        else:
+            cur = db.execute(
+                "INSERT INTO unity_tokens (pacs_person_id, pacs_credential_id, facility_code, card_number, "
+                "active, activate_date, deactivate_date) VALUES (?, ?, ?, ?, 0, ?, ?)",
+                (person_id, credential_id, encrypt(facility_code), encrypt(card_number), activate_date, deactivate_date),
+            )
+            row = cur.lastrowid
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+    logger.info("Unity tokens: %s %s — tracking card %s/%s as row %s",
+                person_id, credential_id, facility_code, card_number, row)
+    return row
 
 
 def set_token(row: int, token_id: str) -> None:
