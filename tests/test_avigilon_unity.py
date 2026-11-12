@@ -70,6 +70,7 @@ class FakeUnity:
         self.timeouts = {}  # path -> read timeout of the last request for it
         self.xml_paging = "honour"  # or "ignore" (send everything) or "repeat" (always page 1)
         self.search_fails = False
+        self.search_misses: set[str] = set()  # identities the embossed search leaves out
         self.hide_once = set()  # left out of the next roster read only: a row skipped mid-read
         self.detail_404 = False  # a box answering 404 for every identity's detail
         self.internal_search_ignored = False  # a box that lists everyone for an Internal Number search
@@ -123,7 +124,7 @@ class FakeUnity:
                 if self.search_fails:
                     return httpx.Response(500)
                 # Like the live search: any case, and only active tokens.
-                rows = [r for r in rows if any(
+                rows = [r for r in rows if r["cn"] not in self.search_misses and any(
                     t["attributes"]["plasecEmbossednumber"].lower() == q["adv_search_val_0"].lower()
                     and t["attributes"]["extended_attributes"]["token_status"] == "Active"
                     for t in self.tokens.get(r["cn"], []))]

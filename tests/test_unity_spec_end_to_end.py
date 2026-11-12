@@ -335,6 +335,43 @@ def test_desfire_revoke(world, pair, how):
     assert _row("z").status == "active"
 
 
+@pytest.mark.parametrize("protocol", ["desfire", "seos"])
+@PAIRS
+def test_revoke_keeps_and_reports_a_tracked_accessgrid_token_missing_from_the_list(world, mailed, protocol, pair):
+    """Spec, revoke: an identity missing from Unity's list that still exists and
+    still holds its tracked accessgrid token — do nothing, alert someone."""
+    unity = FakeUnity([_person("a")], tokens={"a": [_token("t1", internal="" if protocol == "seos" else "5001")]})
+    ag, cycle = world(protocol, pair, unity)
+    cycle()
+    pass_id = ag.only_pass()
+    ag.install(pass_id)
+    cycle()
+    cycle()
+    assert set(_tokens_by_number(unity).values()) == {"Active"}
+    calls = [c for c in ag.calls if c[0] != "get"]
+
+    unity.search_misses.add("a")
+    cycle()
+    cycle()
+    assert [c for c in ag.calls if c[0] != "get"] == calls, "nothing revoked, suspended or changed"
+    assert _row().ag_card_id == pass_id and _row().status == "active"
+    assert set(_tokens_by_number(unity).values()) == {"Active"}
+    assert [key for key, _ in mailed] == ["roster-mismatch:a"] * 2
+
+
+def test_revoke_says_nothing_of_a_switched_off_token_missing_from_the_list(world, mailed):
+    """The live search lists only identities with an Active accessgrid token, so a
+    suspended holder is always missing from it: that is no anomaly."""
+    unity, ag, cycle = _desfire(world, False)
+    cycle()
+    _status(unity.tokens["a"][0], "Inactive")
+    cycle()
+    cycle()
+    assert ag.verbs("suspend") == [("suspend", ag.only_pass())]
+    assert ag.verbs("delete") == []
+    assert mailed == []
+
+
 def test_desfire_card_number_edited_after_issue_updates_the_same_pass(world, mailed):
     unity, ag, cycle = _desfire(world, True)
     cycle()

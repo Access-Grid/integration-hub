@@ -231,8 +231,13 @@ class AvigilonAdapter:
                     self._tokens[pid] = self._client.list_tokens(pid)
                 except UnityError as e:
                     logger.warning("Unity: tokens for %s (%s) unread this cycle: %s", pid, row["full_name"], e)
+            # Spec, revoke: missing from the list but still holding a tracked
+            # accessgrid token — kept, and reported. Tracked means the token a
+            # pass was issued for or, Seos, one the hub wrote for such a pass.
+            # Only an Active one: the search lists no switched-off token, so a
+            # suspended holder is always missing from it.
             if detailed and self._search_ok and any(
-                _is_trigger(t) and t["status"] == "1" and (pid, t["id"]) in self._issued
+                _is_trigger(t) and t["status"] == "1" and t["id"] in self._tracked_token_ids(pid)
                 for t in self._tokens.get(pid, [])
             ):
                 _problem(f"roster-mismatch:{pid}",
@@ -272,6 +277,12 @@ class AvigilonAdapter:
                 active=active,
                 raw=row,
             )
+
+    def _tracked_token_ids(self, pid: str) -> set[str]:
+        """Ids of this identity's tokens that back a pass: its enrollments, and the hub's own tokens."""
+        issued = {cid for p, cid in self._issued if p == pid}
+        return issued | {e["token_id"] for e in written.for_person(pid)
+                         if e["token_id"] and e["credential_id"] in issued}
 
     def _read_layout(self) -> None:
         """The chosen format's layout, for a setup made before it was stored.
