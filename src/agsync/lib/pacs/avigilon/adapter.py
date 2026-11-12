@@ -40,6 +40,7 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
+from ..emails import first_valid_email, synthesize_email
 from . import wiegand, written
 from .client import UnityAuthError, UnityClient, UnityError, UnityNotFound
 
@@ -123,7 +124,8 @@ class AvigilonAdapter:
     def __init__(self, host: str, username: str, password: str, verify_ssl: bool = False,
                  mode: str = "desfire", pair: bool = False, card_format: str = "",
                  card_format_label: str = "", facility_code: str = "", card_format_bits: str = "",
-                 card_format_layout: dict[str, Any] | None = None):
+                 card_format_layout: dict[str, Any] | None = None, email_domain: str = "",
+                 notify_email: str = ""):
         self._client = UnityClient(host=host, username=username, password=password, verify_ssl=verify_ssl)
         # From the AccessGrid template (descriptor.derives_mode_from_template).
         self.seos = mode == "seos"
@@ -132,6 +134,11 @@ class AvigilonAdapter:
         # its layout how a card is sent — 26-bit as site code + card number,
         # longer as file_data.
         self.card_format = card_format
+        # Seos passes need an email. A holder with none gets
+        # first.last.<identity id>@ this domain; with no domain, their
+        # enrollment is held and the operator mailed. (notify_email is read
+        # by notifications from the stored params, not here.)
+        self.email_domain = (email_domain or "").strip().lstrip("@")
         self.card_format_label = card_format_label or card_format
         self.facility_code = str(facility_code or "")
         self._layout: wiegand.Layout | None = None
@@ -151,6 +158,7 @@ class AvigilonAdapter:
         self._held: set[str] = set()
         self._inactive: set[str] = set()
         self._issued: set[tuple[str, str]] = set()  # (person, credential) holding a pass
+        self._no_email: dict[str, str] = {}  # Seos: id -> name of each person read with no usable email
 
     # A deactivated identity's passes are suspended, not deleted: the snapshot
     # asks list_credentials for the inactive people it holds passes for.
@@ -196,7 +204,7 @@ class AvigilonAdapter:
         rows, unread = self._identities(tracked)
         if self.card_format and not self.seos and self._layout is None:
             self._read_layout()
-        self._tokens, self._held, self._inactive = {}, set(), set()
+        self._tokens, self._held, self._inactive, self._no_email = {}, set(), set(), {}
         self._issued = {(t.pacs_person_id, t.pacs_credential_id) for t in passes}
         for pid in unread:
             # Its last synced fields, so nothing reads as changed, and no
@@ -225,6 +233,9 @@ class AvigilonAdapter:
                     # leave them alone until the next cycle reads them.
                     logger.warning("Unity: details for %s unread, holding their tokens: %s", pid, e)
                     self._held.add(pid)
+            email = row.get("email", "")
+            if self.seos and pid not in self._held:
+                email = self._seos_email(pid, row)
             # An unrecognised identity status is read as active on purpose:
             # inactive empties the person's credentials, which revokes passes.
             yield Person(
@@ -232,7 +243,7 @@ class AvigilonAdapter:
                 full_name=row["full_name"],
                 first_name=row["first_name"],
                 last_name=row["last_name"],
-                email=row.get("email", ""),
+                email=email,
                 phone=row.get("phone") or row.get("work_phone", ""),
                 title=row.get("title", ""),
                 department=row.get("department", ""),
@@ -285,6 +296,37 @@ class AvigilonAdapter:
         logger.info("Unity token %s of %s: card %s/%s goes as %s file_data", token["id"], pid,
                     self.facility_code, number, wiegand.standard(self._layout))
         return file_data, False
+
+    def _seos_email(self, pid: str, row: dict[str, str]) -> str:
+        """The address a Seos pass is issued to: Unity's, if it is one.
+
+        Otherwise a synthetic one, if setup gave a domain for them, or none,
+        which holds the person's enrollments (_missing_email).
+        """
+        email = first_valid_email(row.get("email", ""))
+        if email:
+            return email
+        if row.get("email"):
+            logger.warning("Unity: identity %s (%s) has %r as their email, which is not an address",
+                           pid, row["full_name"], row["email"])
+        if self.email_domain:
+            made = synthesize_email(row["first_name"], row["last_name"], pid, self.email_domain)
+            if made:
+                logger.info("Unity: identity %s (%s) has no email — using %s for their Seos pass",
+                            pid, row["full_name"], made)
+                return made
+        self._no_email[pid] = row["full_name"]
+        return ""
+
+    def _missing_email(self, pid: str, cid: str) -> bool:
+        """An enrollment with no pass yet, for someone with no address: held, and mailed."""
+        if (pid, cid) in self._issued or pid not in self._no_email:
+            return False
+        _problem(f"{pid}:{cid}:email",
+                 f"Unity: identity {pid} ({self._no_email[pid]}) has token {cid} marked accessgrid, but no "
+                 f"email address, and AccessGrid needs one for a Seos pass — not issuing it. Add an email to "
+                 f"the identity in Unity, or set a domain for synthetic addresses in Settings.")
+        return True
 
     def _identities(self, tracked: dict[str, Any]) -> tuple[dict[str, tuple[dict[str, str], bool]], list[str]]:
         """The search's hits and everyone tracked: ({id: (row, from detail)}, unread ids).
@@ -407,7 +449,7 @@ class AvigilonAdapter:
                 dates[name] = pick(stated)
         if not ours:
             status = _TOKEN_STATUS.get(enrollment["status"], CredentialStatus.UNKNOWN)
-            hold = hold or self._not_yet_issuable(pid, cid, status)
+            hold = hold or self._not_yet_issuable(pid, cid, status) or self._missing_email(pid, cid)
         else:
             status, waiting = CredentialStatus.ACTIVE, False
             for e in ours:
@@ -752,6 +794,14 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "pacs.avigilon.host": "Host (IP or hostname)",
         "pacs.avigilon.username": "Username",
         "pacs.avigilon.password": "Password",
+        "pacs.avigilon.email_domain": (
+            "Domain for synthetic emails (optional). A Seos pass needs an email: a holder with none "
+            "gets first.last.<identity id>@ this domain. Left blank, their pass is not issued and "
+            "the notification email below is told."
+        ),
+        "pacs.avigilon.notify_email": (
+            "Notification email (optional): told about cards the sync will not act on"
+        ),
         "pacs.avigilon.trigger_help": (
             "To enroll an identity, set the token's Embossed Number field to "
             "the literal text 'accessgrid'. Put the actual card number in "
@@ -764,6 +814,15 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "pacs.avigilon.host": "Host (IP o nombre)",
         "pacs.avigilon.username": "Usuario",
         "pacs.avigilon.password": "Contraseña",
+        "pacs.avigilon.email_domain": (
+            "Dominio para correos sintéticos (opcional). Un pase Seos necesita un correo: un titular "
+            "sin él recibe nombre.apellido.<id de identidad>@ este dominio. Si se deja en blanco, su "
+            "pase no se emite y se avisa al correo de notificación de abajo."
+        ),
+        "pacs.avigilon.notify_email": (
+            "Correo de notificación (opcional): recibe avisos de las tarjetas sobre las que la "
+            "sincronización no actúa"
+        ),
         "pacs.avigilon.trigger_help": (
             "Para inscribir una identidad, configure el campo 'Número en "
             "relieve' (Embossed Number) del token con el texto literal "

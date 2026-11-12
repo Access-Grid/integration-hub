@@ -12,6 +12,10 @@ DESCRIPTOR = PacsDescriptor(
         ConnectionField("host", "pacs.avigilon.host", placeholder="10.0.0.1"),
         ConnectionField("username", "pacs.avigilon.username"),
         ConnectionField("password", "pacs.avigilon.password", kind="password"),
+        ConnectionField("email_domain", "pacs.avigilon.email_domain", required=False,
+                        placeholder="cards.example.com"),
+        ConnectionField("notify_email", "pacs.avigilon.notify_email", required=False,
+                        placeholder="security@example.com"),
     ],
     # DESFire/SmartTap or Seos, from the AccessGrid template: Seos has the
     # hub create a token holding the card number AccessGrid allocated.

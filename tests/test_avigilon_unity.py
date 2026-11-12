@@ -692,7 +692,7 @@ def test_delete_that_does_not_stick_raises():
 def _seos(tokens=None):
     """a holds enrollment token t1; tracked, so their tokens are always read."""
     fake = FakeUnity([_identity("a")], tokens={"a": tokens if tokens is not None else [_token("t1")]},
-                     details={"a": {"id": "a", "attributes": {}}})
+                     details={"a": {"id": "a", "attributes": {"plasecidentityEmailaddress": "jim@x.test"}}})
     a = _adapter(fake)
     a.seos = True
     return fake, a
