@@ -23,10 +23,12 @@ def first_valid_email(*candidates: str) -> str:
     """
     for candidate in candidates:
         value = (candidate or "").strip()
-        if not value or " " in value:
+        # One address only: a field may hold two joined by a comma.
+        if not value or value.count("@") != 1 or any(c in value for c in " ,;"):
             continue
         local, _, domain = value.partition("@")
-        if local and "." in domain:
+        if local and "." in domain and not domain.startswith(".") and not domain.endswith(".") \
+                and ".." not in domain:
             return value
     return ""
 

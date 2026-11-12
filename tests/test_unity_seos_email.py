@@ -151,3 +151,18 @@ def test_unity_alerts_go_to_the_notify_email(store, monkeypatch):
     monkeypatch.setattr(notifications, "send_mail", lambda to, subject, body: sent.append(to) or True)
     assert notifications.notify_card_problem("a:t1:email", "no email")
     assert sent == ["security@example.com"]
+
+
+@pytest.mark.parametrize("junk", ["a@b@c.com", "jim@x.com,ann@y.com", "jim@x.com;ann@y.com",
+                                  "a@.com", "a@b.", "a@b..com"])
+def test_a_value_accessgrid_would_reject_is_not_an_address(junk):
+    from agsync.lib.pacs.emails import first_valid_email
+
+    assert first_valid_email(junk) == ""
+    assert first_valid_email(junk, "jim@x.com") == "jim@x.com"
+
+
+def test_an_ordinary_address_still_passes():
+    from agsync.lib.pacs.emails import first_valid_email
+
+    assert first_valid_email(" Jim.Cooper+pass@mail.example.co.uk ") == "Jim.Cooper+pass@mail.example.co.uk"
