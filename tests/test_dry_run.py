@@ -259,6 +259,8 @@ def test_no_pass_is_suspended(dry, db, caplog):
     snapshot = Snapshot(
         people={PID: _person()},
         credentials_by_person={PID: [_cred(status=CredentialStatus.SUSPENDED)]},
+        # Phase 2 pushes a status only to a pass whose state it has read.
+        ag_card_by_id={"card-1": SimpleNamespace(id="card-1", state="active")},
     )
 
     with caplog.at_level(logging.INFO):

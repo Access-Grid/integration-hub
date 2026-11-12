@@ -140,6 +140,16 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             tracked.sync_ref,
         )
         ag_state = (getattr(ag_card, "state", "") or "").lower() if ag_card else ""
+        if not ag_state:
+            # Nothing to compare against: the pass list was not read, or this
+            # pass is not in it. Acting anyway suspended every card that was
+            # off, unlinked and suspended passes included.
+            logger.warning(
+                "  Not pushing %s's PACS status (%s) to AG card %s — its "
+                "AccessGrid state was not read this cycle",
+                tracking.label(tracked), cred.status.value, tracked.ag_card_id,
+            )
+            continue
 
         # If AG state diverged from what we last knew, leave it for phase 4.
         if ag_state and ag_state != tracked.last_known_ag_state and tracked.last_known_ag_state:
@@ -183,7 +193,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             continue
 
         try:
-            if desired == "suspended" and ag_state in ("active", "created", ""):
+            if desired == "suspended" and ag_state in ("active", "created"):
                 logger.info(
                     "  Suspending AG card %s (PACS credential %s is %s)",
                     tracked.ag_card_id, tracking.label(tracked),
