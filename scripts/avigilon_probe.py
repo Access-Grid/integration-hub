@@ -19,7 +19,11 @@ Three rules, because the output is meant to be pasted into a chat or ticket:
     there. Dates, statuses and flags are kept: their format is the point.
 
 Usage:
-    python scripts/avigilon_probe.py [all|xml|search|detail] <host> <username> [--samples 3]
+    python scripts/avigilon_probe.py [all|xml|search|detail|full] <host> <username> [--samples 3]
+`full` is the one to send a site: every read below except `xml`'s unpaged
+roster tests, then up to 50 identities' token lists (the embossed search's
+hits first) read with the hub's own requests and judged by a copy of the
+hub's rules, so the report says whether any holder would go unread.
 `all` (the default) reads everything as JSON and as XML. `xml` skips the
 JSON list and tests whether `/identities.xml` can be read in pieces — page
 and perpage, start and length, the A–Z last-name filter — against the whole
@@ -85,11 +89,15 @@ _PIECE_TIMEOUT = 120.0
 _EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
 _INTERNAL_SEARCH = {"adv_search_field_0": "plasecInternalnumber", "adv_search_udf_0": "Token Internal #"}
 _XML_PAGE = 500
+# The page size the client asks token lists for (client.TOKENS_PER_PAGE), and
+# how many identities `full` reads token lists for the way the hub does.
+TOKENS_PER_PAGE = 500
+_TOKEN_READS_CHECKED = 50
 _SEARCH_CHECKED = 25
 # What the client's create_token posts (client.py), besides the CSRF token.
 _CREATE_SENDS = ["utf8", "enrollVirdiAfter", "token[plasecInternalnumber]",
                  "token[plasecEmbossednumber]", "token[plasecTokenstatus]"]
-MODES = ("all", "xml", "search", "detail")
+MODES = ("all", "xml", "search", "detail", "full")
 # The identity fields a pass carries, compared between the list and the detail
 # by `detail` mode: present or not, and equal or not — never the values.
 CONTACT_FIELDS = ("identityEmailaddress", "identityPhone", "identityWorkphone", "identityTitle",
@@ -223,6 +231,124 @@ def flat(element: ET.Element) -> dict[str, str]:
     return row
 
 
+# -- Would the hub accept this token list? -----------------------------------
+# A copy of the client's rules (client.token_row, xml_rows(strict=True),
+# _tokens_json, _whole_token_list). The client rejects a whole list over one
+# bad entry, and a rejected list leaves its holder unread: no phase acts on
+# them until a read is accepted. tests/test_avigilon_probe.py runs every case
+# the client rejects through these and fails if the two disagree.
+
+def _status_known(raw: Any) -> bool:
+    text = str(raw if raw is not None else "").strip()
+    return text in ("1", "2", "3", "4") or text.lower() in STATUS_CODES
+
+
+def _first_field(attrs: dict[str, Any], suffix: str) -> str:
+    for prefix in _PREFIXES:
+        value = attrs.get(f"{prefix}{suffix}")
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def token_entry_problem(raw: Any) -> tuple[str | None, str, str]:
+    """(why the client rejects this token entry or None, its id, its raw status)."""
+    if not isinstance(raw, dict) or ("attributes" in raw and not isinstance(raw["attributes"], dict)):
+        return "malformed token entry", "", ""
+    if isinstance(raw.get("attributes"), dict):
+        attrs = raw["attributes"]
+        token_id = str(raw.get("id") or attrs.get("cn") or "")
+    else:
+        attrs = raw
+        token_id = str(raw.get("cn") or raw.get("id") or "")
+    source_id = raw.get("id") or attrs.get("cn") or raw.get("cn")
+    if (not isinstance(source_id, str | int) or isinstance(source_id, bool)
+            or not token_id.strip() or token_id != token_id.strip()):
+        return "token entry has no usable ID", "", ""
+    ext = attrs.get("extended_attributes")
+    if ext is None:
+        ext = {}
+    if not isinstance(ext, dict):
+        return "malformed extended attributes", token_id, ""
+    status = ext.get("token_status") or _first_field(attrs, "Tokenstatus")
+    if not isinstance(status, str | int) or isinstance(status, bool) or not str(status).strip():
+        return "token entry has no usable status", token_id, ""
+    if not _status_known(status):
+        return "unrecognised status", token_id, str(status)
+    return None, token_id, str(status)
+
+
+def _whole_list_problem(ids: list[str]) -> str | None:
+    if len(ids) >= TOKENS_PER_PAGE:
+        return "a full page — may be partial"
+    if len(set(ids)) != len(ids):
+        return "duplicate token IDs"
+    return None
+
+
+def json_token_read_problem(body: Any) -> tuple[str | None, list[str]]:
+    """(why the client rejects this tokens.json body or None, the raw statuses read)."""
+    items = body.get("tokens", body.get("data")) if isinstance(body, dict) else body
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return "unexpected response shape", []
+    ids, statuses = [], []
+    for item in items:
+        problem, token_id, status = token_entry_problem(item)
+        if status:
+            statuses.append(status)
+        if problem:
+            return problem, statuses
+        ids.append(token_id)
+    meta = body.get("meta") if isinstance(body, dict) else None
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        return "malformed count metadata", statuses
+    counts = {}
+    for key in ("recordsFiltered", "recordsTotal"):
+        if key not in meta:
+            continue
+        value = meta[key]
+        if isinstance(value, bool) or not isinstance(value, str | int) or not str(value).isdigit():
+            return f"invalid {key}", statuses
+        counts[key] = int(value)
+    if len(counts) == 2 and counts["recordsFiltered"] != counts["recordsTotal"]:
+        return "contradictory counts", statuses
+    total = counts.get("recordsFiltered", counts.get("recordsTotal"))
+    if total is not None and len(ids) != total:
+        return "row count differs from the count Unity states", statuses
+    return _whole_list_problem(ids), statuses
+
+
+def xml_token_read_problem(text: str) -> tuple[str | None, list[str]]:
+    """(why the client rejects this tokens.xml body or None, the raw statuses read)."""
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return "not XML", []
+    if root.tag == "token":
+        elements = [root]
+    elif root.tag == "nil-classes" and len(root) == 0:
+        elements = []
+    elif root.tag == "tokens":
+        elements = root.findall("token")
+        if len(elements) != len(root) or (root.text or "").strip():
+            return "<tokens> contains malformed token entries", []
+    else:
+        return f"expected <tokens>, got <{root.tag}>", []
+    ids, statuses = [], []
+    for element in elements:
+        problem, token_id, status = token_entry_problem(flat(element))
+        if status:
+            statuses.append(status)
+        if problem:
+            return problem, statuses
+        ids.append(token_id)
+    return _whole_list_problem(ids), statuses
+
+
 class Probe:
     def __init__(self, host: str, username: str, password: str, mode: str = "all"):
         self.base = f"https://{host}"
@@ -237,7 +363,10 @@ class Probe:
         # Rows as read, per source ("token xml", "identity list json", ...), for
         # comparing their field names and values against what the adapter expects.
         self.rows: dict[str, list[dict[str, Any]]] = {}
-        head = {"xml": "xml_paging", "search": "search", "detail": "detail_vs_list"}.get(mode)
+        # The embossed search's hits, kept for `full`: the people the hub reads every cycle.
+        self.search_hits: list[str] = []
+        head = {"xml": "xml_paging", "search": "search", "detail": "detail_vs_list",
+                "full": "hub_token_reads"}.get(mode)
         if head:
             self.report = {**dict(list(self.report.items())[:4]), head: {}, **self.report}
 
@@ -394,6 +523,92 @@ class Probe:
         self.dashboard()
         self.detail_vs_list(samples)
         return self.report
+
+    def run_full(self, samples: int) -> dict[str, Any]:
+        """Every read the other modes make, bar `xml`'s unpaged roster tests, and
+        then each enrolled holder's token list judged as the hub judges it."""
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        json_ids = self.identities(samples)
+        xml_ids = self.identities_xml(samples)
+        self.per_identity(json_ids or xml_ids, samples)
+        self.card_formats()
+        self.search()
+        self.internal_search()
+        self.new_token_form()
+        self.detail_vs_list(samples)
+        self.hub_token_reads(list(dict.fromkeys(self.search_hits + json_ids + xml_ids)))
+        self.compare_fields()
+        return self.report
+
+    def hub_token_reads(self, ids: list[str]) -> None:
+        """Would the hub accept each holder's token list, as JSON or as XML?
+
+        Read with the client's own requests, judged by a copy of its rules.
+        The hub tries one format and then the other; a holder neither
+        format reads for is skipped by every phase, every cycle — no issue,
+        no status change, no revoke. Counts, reasons and status words only.
+        """
+        checked = ids[:_TOKEN_READS_CHECKED]
+        summary: dict[str, Any] = {
+            "identities_checked": len(checked), "enrolled_holders_among_them": 0,
+            "hub_reads": 0, "hub_cannot_read": 0, "json": {}, "xml": {},
+            "count_keys_in_json": {}, "statuses_seen": {},
+        }
+
+        def tally(fmt: str, outcome: str) -> None:
+            summary[fmt][outcome] = summary[fmt].get(outcome, 0) + 1
+
+        params = {"page": 1, "perpage": TOKENS_PER_PAGE}
+        for cn in checked:
+            enrolled = cn in self.search_hits
+            summary["enrolled_holders_among_them"] += enrolled
+            verdicts = {}
+            resp = self.get(f"hub_tokens_json:{cn}", f"/identities/{cn}/tokens.json",
+                            headers={"Accept": "application/json"}, params=params)
+            outcome = self.outcome(resp)
+            if outcome == "ok":
+                body = self.json_body(f"hub_tokens_json:{cn}", resp)
+                if body is None:
+                    outcome = "200 but not JSON"
+                else:
+                    problem, statuses = json_token_read_problem(body)
+                    outcome = problem or "accepted"
+                    meta = body.get("meta") if isinstance(body, dict) else None
+                    keys = ",".join(k for k in ("recordsFiltered", "recordsTotal")
+                                    if isinstance(meta, dict) and k in meta) or "none"
+                    summary["count_keys_in_json"][keys] = summary["count_keys_in_json"].get(keys, 0) + 1
+                    for s in statuses:
+                        summary["statuses_seen"][s] = summary["statuses_seen"].get(s, 0) + 1
+            verdicts["json"] = outcome
+            resp = self.get(f"hub_tokens_xml:{cn}", f"/identities/{cn}/tokens.xml",
+                            headers={"Accept": "*/*"}, params=params)
+            outcome = self.outcome(resp)
+            if outcome == "ok":
+                problem, _ = xml_token_read_problem(resp.text)
+                outcome = problem or "accepted"
+            verdicts["xml"] = outcome
+            for fmt, outcome in verdicts.items():
+                tally(fmt, outcome)
+            if "accepted" in verdicts.values():
+                summary["hub_reads"] += 1
+                # A read the hub accepts says nothing new; keep the report to the failures.
+                self.report["steps"].pop(f"hub_tokens_json:{cn}", None)
+                self.report["steps"].pop(f"hub_tokens_xml:{cn}", None)
+            else:
+                summary["hub_cannot_read"] += 1
+                self.note(f"hub_tokens_json:{cn}", enrolled=enrolled, verdict=verdicts["json"])
+                self.note(f"hub_tokens_xml:{cn}", enrolled=enrolled, verdict=verdicts["xml"])
+        summary["verdict"] = (
+            "no identities to check" if not checked
+            else "every holder checked is readable" if not summary["hub_cannot_read"]
+            else f"{summary['hub_cannot_read']} of {len(checked)} holders checked would be skipped by the hub "
+                 f"every cycle — see json/xml for why"
+        )
+        self.report["hub_token_reads"] = summary
 
     def detail_vs_list(self, samples: int) -> None:
         """Does an identity's detail carry the contact fields its list row does?
@@ -577,7 +792,8 @@ class Probe:
                 break
         upper = self._xml_ids("search_upper_case", "ACCESSGRID")
         nothing = self._xml_ids("search_no_such_value", "zz-no-such-embossed-zz")
-        checked = sorted(hits or [])[:_SEARCH_CHECKED]
+        self.search_hits = sorted(hits or [])
+        checked = self.search_hits[:_SEARCH_CHECKED]
         confirmed, statuses = 0, {}
         for cn in checked:
             tokens = self.read_xml("search_hit_tokens", "search_hit_tokens", f"/identities/{cn}/tokens.xml",
@@ -899,7 +1115,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("mode", choices=MODES, help="all: JSON and XML; xml: test paging the XML identity list; "
                                                "search: test the embossed-number search; "
-                                               "detail: compare a cardholder's detail with their list row")
+                                               "detail: compare a cardholder's detail with their list row; "
+                                               "full: all of these but xml, plus whether the hub accepts "
+                                               "each enrolled holder's token list")
     ap.add_argument("host", help="appliance address, e.g. 10.0.0.5 (no https://)")
     ap.add_argument("username")
     ap.add_argument("--samples", type=int, default=3, help="identities with tokens to sample")
@@ -907,7 +1125,9 @@ def main() -> int:
     password = getpass.getpass("Unity password: ")
 
     probe = Probe(args.host, args.username, password, args.mode)
-    if args.mode == "search":
+    if args.mode == "full":
+        report = probe.run_full(args.samples)
+    elif args.mode == "search":
         report = probe.run_search()
     elif args.mode == "detail":
         report = probe.run_detail(args.samples)
