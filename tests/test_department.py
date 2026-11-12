@@ -88,7 +88,7 @@ def test_a_changed_department_is_pushed_and_recorded(monkeypatch, recorded, allo
     snap = Snapshot()
     snap.people[snap_person.id] = snap_person
     snap.credentials_by_person[snap_person.id] = [Credential(id="seos", person_id=snap_person.id,
-                                                             allocate_identity=allocate)]
+                                                             allocate_identity=allocate, trigger_active=True)]
     assert phase6_field_changes.run(snap, ag) == 1
     assert ag.access_cards.calls[0]["department"] == "Substitute Services - 741"
     assert recorded[0]["department"] == "Substitute Services - 741"

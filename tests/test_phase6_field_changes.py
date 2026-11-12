@@ -8,6 +8,7 @@ never reached it either.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -75,16 +76,48 @@ def _person(**kw):
 
 def _run(monkeypatch, ag, person, tracked):
     monkeypatch.setattr(phase6_field_changes.tracking, "all_tracked", lambda: [tracked])
-    return phase6_field_changes.run(_snapshot(person), ag)
+    return phase6_field_changes.run(_with_cred(person, allocate=True), ag)
 
 
 # --- what is sent --------------------------------------------------------
 
 def test_email_is_not_sent_for_a_credential_not_read(monkeypatch, recorded):
     ag = FakeAG()
-    _run(monkeypatch, ag, _person(email="new.address@new.test"), _tracked())
-    # Not knowing whether the pass is Seos, where sending it fails the call.
+    monkeypatch.setattr(phase6_field_changes.tracking, "all_tracked", lambda: [_tracked()])
+    phase6_field_changes.run(_snapshot(_person(email="new.address@new.test")), ag)
     assert ag.access_cards.calls == []
+    assert recorded == []
+
+
+@pytest.mark.parametrize("condition", ["unread", "empty", "other-token", "trigger-removed", "held"])
+def test_ineligible_credential_preserves_fields_and_tracking(monkeypatch, recorded, condition, caplog):
+    person = _person(full_name="New Name", email="new@new.test")
+    snap = _with_cred(person, allocate=False)
+    cred = snap.credentials_by_person[person.id][0]
+    if condition == "unread":
+        del snap.credentials_by_person[person.id]
+    elif condition == "empty":
+        snap.credentials_by_person[person.id] = []
+    elif condition == "other-token":
+        snap.credentials_by_person[person.id] = [replace(cred, id="untracked-token")]
+    elif condition == "trigger-removed":
+        snap.credentials_by_person[person.id] = [replace(cred, trigger_active=False)]
+    else:
+        snap.credentials_by_person[person.id] = [replace(cred, hold=True)]
+    monkeypatch.setattr(phase6_field_changes.tracking, "all_tracked", lambda: [
+        _tracked(last_synced_phone="+15551234567", last_synced_title="Coach",
+                 last_synced_department="Coaches"),
+    ])
+    notices = []
+    monkeypatch.setattr(phase6_field_changes.notifications, "notify_card_problem",
+                        lambda *args: notices.append(args))
+    ag = FakeAG()
+    with caplog.at_level("INFO"):
+        assert phase6_field_changes.run(snap, ag) == 0
+    assert ag.access_cards.calls == []
+    assert recorded == []
+    assert notices == []
+    assert "11587/seos" in caplog.text and "skipping field updates" in caplog.text
 
 
 def test_a_rename_is_sent_without_the_address(monkeypatch, recorded):

@@ -35,11 +35,17 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         person = snapshot.people.get(tracked.pacs_person_id)
         if person is None:
             continue
-        creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
-        cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
-        if cred is not None and cred.hold:
+        creds = snapshot.credentials_by_person.get(tracked.pacs_person_id)
+        if creds is None:
+            logger.info("  %s: credentials unread — skipping field updates", tracking.label(tracked))
             continue
-        identity_changes = _credential_changes(snapshot, tracked, person, cred) if cred is not None else {}
+        cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
+        if cred is None or cred.hold or not cred.trigger_active:
+            reason = ("tracked credential missing" if cred is None else
+                      "credential held" if cred.hold else "trigger no longer set")
+            logger.info("  %s: %s — skipping field updates", tracking.label(tracked), reason)
+            continue
+        identity_changes = _credential_changes(snapshot, tracked, person, cred)
         expires = getattr(cred, "deactivate_date", None)
         expiration = expires.isoformat() if expires else ""
 
@@ -79,7 +85,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
 
         # Only where the PACS supplies the card: AccessGrid rejects an
         # address on a Seos pass, whose card it allocated.
-        push_email = email_changed and cred is not None and not cred.allocate_identity
+        push_email = email_changed and not cred.allocate_identity
         if email_changed and not push_email:
             problem = (
                 f"{person.full_name} ({tracked.pacs_person_id}): address is now {person.email or '(none)'} "

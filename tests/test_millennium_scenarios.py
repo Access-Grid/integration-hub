@@ -162,6 +162,7 @@ def test_s8_an_inactive_card_suspends_the_pass_through_phase_2(
 
 def test_s9_a_renamed_cardholder_is_pushed_to_accessgrid(monkeypatch):
     """Phase 6, with the name coming from the PACS snapshot."""
+    from agsync.lib.pacs.base import Credential
     from agsync.sync.phases import phase6_field_changes
 
     tracked = SimpleNamespace(
@@ -179,6 +180,9 @@ def test_s9_a_renamed_cardholder_is_pushed_to_accessgrid(monkeypatch):
         id="11587", full_name="Auston Access", email="a@b.test", phone="",
         title="", department="", active=True,
     )
+    snap.credentials_by_person["11587"] = [Credential(
+        id="seos", person_id="11587", trigger_active=True,
+    )]
 
     calls: list[dict] = []
     ag = SimpleNamespace(access_cards=SimpleNamespace(
