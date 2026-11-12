@@ -290,9 +290,9 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
         # above — one owner per checkbox. Here the card is the customer's
         # own, where an issued pass rightly leaves it active.
         if cred is not None and cred.allocate_identity:
-            tracking.update_last_known_ag_state(
-                tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
-            )
+            # Never mark_deleted here: phase 3 retires the hub's PACS cards
+            # for a deleted pass by the row's pass id.
+            _record_state(tracked, ag_state)
             continue
         if cred is None or cred.status == desired:
             _record_ag_state(tracked, ag_state)
@@ -339,8 +339,35 @@ def _record_ag_state(tracked, ag_state: str) -> None:
         )
         tracking.mark_deleted(tracked.pacs_person_id, tracked.pacs_credential_id)
         return
-    tracking.update_last_known_ag_state(
-        tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
+    _record_state(tracked, ag_state)
+
+
+# The row status shown for a pass's AccessGrid state. "deleted" is left
+# out on purpose: the row stays live until the hub itself releases it.
+_ROW_STATUS = {
+    "active": "active",
+    "created": "active",
+    "suspended": "suspended",
+    "unlink": "suspended",
+    "unlinked": "suspended",
+}
+
+
+def _record_state(tracked, ag_state: str) -> None:
+    """Record the pass's AccessGrid state, and the row status that goes with it."""
+    status = _ROW_STATUS.get(ag_state)
+    if status is None or status == tracked.status:
+        tracking.update_last_known_ag_state(
+            tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
+        )
+        return
+    logger.info(
+        "  %s: now %s in AccessGrid — recorded as %s",
+        tracking.label(tracked), ag_state, status,
+    )
+    tracking.update_status(
+        tracked.pacs_person_id, tracked.pacs_credential_id, status,
+        last_known_ag_state=ag_state,
     )
 
 

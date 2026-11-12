@@ -938,6 +938,9 @@ def _desfire_tracked_pass(monkeypatch, halves, last_known="active"):
     monkeypatch.setattr(tracking, "all_tracked", lambda: [row])
     recorded = []
     monkeypatch.setattr(tracking, "update_last_known_ag_state", lambda p, c, s: recorded.append(s))
+    # A state that changes the row's status is recorded with it.
+    monkeypatch.setattr(tracking, "update_status",
+                        lambda p, c, status, last_known_ag_state="": recorded.append(last_known_ag_state))
     fake, a = _seos()
     a.seos = False
     snap = build_snapshot(a, None, "t")
