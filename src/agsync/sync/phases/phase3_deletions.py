@@ -257,7 +257,7 @@ def _retire_deleted_credentials(
     try:
         written = pacs.written_credentials()
     except Exception as e:  # noqa: BLE001
-        logger.warning("Phase 3: could not read what the PACS holds: %s", e)
+        logger.warning("Phase 3: could not read what the PACS holds: %s", e, exc_info=True)
         return 0
     if not written:
         return 0
@@ -300,7 +300,7 @@ def _retire_deleted_credentials(
         except Exception as e:  # noqa: BLE001 — one cardholder must not stop the cycle
             logger.error(
                 "  Failed to retire credentials for %s: %s",
-                tracking.label(tracked), e,
+                tracking.label(tracked), e, exc_info=True,
             )
             continue
         retired += count

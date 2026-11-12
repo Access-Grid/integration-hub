@@ -235,6 +235,6 @@ def push_allocated_identities(
     except Exception as e:  # noqa: BLE001 — one bad cardholder must not stop the cycle
         logger.error(
             "  Failed to write credentials back for %s/%s: %s",
-            person_id, credential_id, e,
+            person_id, credential_id, e, exc_info=True,
         )
         return False

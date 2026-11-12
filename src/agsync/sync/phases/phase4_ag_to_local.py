@@ -118,7 +118,7 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
                 (_record_state if allocated else _record_ag_state)(tracked, state)
         except Exception as e:  # one failing pass must not stop everyone else
             logger.error("  Pass %s for %s could not be reconciled: %s",
-                         tracked.ag_card_id, tracking.label(tracked), e)
+                         tracked.ag_card_id, tracking.label(tracked), e, exc_info=True)
     logger.info("Phase 4 done: %d PACS update(s)", updated)
     return updated
 
@@ -134,7 +134,7 @@ def _reissue_if_switched_on(pacs, tracked) -> int:
         switched_on = pacs.release_deleted_pass(tracked.pacs_person_id, tracked.pacs_credential_id)
     except Exception as e:  # noqa: BLE001 — one failing pass must not stop everyone else
         logger.error("  %s: could not tell whether the card of deleted pass %s is back on: %s",
-                     tracking.label(tracked), tracked.ag_card_id, e)
+                     tracking.label(tracked), tracked.ag_card_id, e, exc_info=True)
         return 0
     if not switched_on:
         logger.debug("  %s: pass %s was deleted in AccessGrid; its card stays off",

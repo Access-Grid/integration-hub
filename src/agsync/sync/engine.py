@@ -328,7 +328,9 @@ class SyncEngine:
                         "Fix the underlying issue then restart the service."
                     )
                 logger.error(
-                    "Sync engine paused after %d consecutive errors", consec
+                    "Sync engine paused after %d consecutive errors; the last: %s. Nothing syncs until "
+                    "the cause is fixed and a sync is started from the web UI or the service restarted.",
+                    consec, self._status.last_error,
                 )
                 # Sleep in 5s chunks so a manual trigger or stop wakes us.
                 while not self._stop.is_set():
@@ -342,13 +344,22 @@ class SyncEngine:
                 continue
 
             logger.info("Sync cycle starting")
-            result = self._run_one_cycle()
+            try:
+                result = self._run_one_cycle()
+            except Exception as e:  # noqa: BLE001 — the loop must outlive any one cycle
+                # Uncaught, this ended the sync thread for good, with the
+                # status page still saying "running" and nothing in the log.
+                logger.exception("Sync cycle crashed: %s: %s — counted as a failed cycle", type(e).__name__, e)
+                result = CycleResult(started_at=datetime.now(UTC).isoformat(timespec="seconds"), duration_ms=0,
+                                     error=f"crashed: {type(e).__name__}: {e}")
             with self._status_lock:
                 self._status.last_cycle = result
                 if result.error and result.counts_as_failure:
                     self._status.consecutive_errors += 1
                     self._status.last_error = result.error
                     sleep_s = ERROR_BACKOFF_S
+                    logger.warning("Sync cycle failed (%d in a row; the engine pauses at %d): %s",
+                                   self._status.consecutive_errors, MAX_CONSECUTIVE_ERRORS, result.error)
                 elif self._status.reconnect_required:
                     # Waiting on a person to sign in. Retrying every few
                     # seconds only hammers the PACS with a full roster sweep
@@ -410,6 +421,8 @@ class SyncEngine:
         try:
             ag = build_ag_client(ag_cfg["account_id"], ag_cfg["api_secret"])
         except Exception as e:  # noqa: BLE001
+            logger.error("Sync cycle stopped: the AccessGrid client could not be built (account %s): %s",
+                         ag_cfg.get("account_id", "?"), e, exc_info=True)
             result.error = f"ag_init: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
             with self._status_lock:
@@ -435,6 +448,9 @@ class SyncEngine:
                     getattr(pacs, "supports_credential_writeback", False)
                 )
         except Exception as e:  # noqa: BLE001
+            logger.error("Sync cycle stopped: the %s adapter could not be built (host %s, mode %s): %s",
+                         pacs_cfg.get("vendor", "?"), (pacs_cfg.get("params") or {}).get("host", "?"),
+                         (pacs_cfg.get("params") or {}).get("mode", "-"), e, exc_info=True)
             result.error = f"pacs_init: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
             with self._status_lock:
@@ -455,6 +471,10 @@ class SyncEngine:
         except PacsAuthExpired as e:
             return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)
         except Exception as e:  # noqa: BLE001
+            # Nothing has been changed yet: the cycle stops before any phase.
+            logger.error("Sync cycle stopped while reading %s and AccessGrid (template %s) — nothing was "
+                         "changed this cycle: %s: %s", pacs_cfg.get("vendor", "the PACS"),
+                         ag_cfg.get("template_id", "?"), type(e).__name__, e, exc_info=True)
             result.error = f"snapshot: {e}"
             result.duration_ms = int((time.time() - start_ms) * 1000)
             with self._status_lock:

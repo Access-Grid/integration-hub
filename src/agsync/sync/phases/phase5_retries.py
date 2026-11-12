@@ -162,7 +162,7 @@ def run(
             logger.warning("  Retry failed for %s: %s", person.full_name, e)
             tracking.record_error(tracked.pacs_person_id, tracked.pacs_credential_id, str(e))
         except Exception as e:  # noqa: BLE001
-            logger.warning("  Retry crashed for %s: %s", person.full_name, e)
+            logger.warning("  Retry crashed for %s: %s", person.full_name, e, exc_info=True)
             tracking.record_error(
                 tracked.pacs_person_id, tracked.pacs_credential_id,
                 f"{type(e).__name__}: {e}",

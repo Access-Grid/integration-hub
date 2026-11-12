@@ -284,7 +284,7 @@ def run(
                 logger.error("  Provision failed for %s: %s", person.full_name, e)
                 tracking.record_error(pid, cred.id, str(e))
             except Exception as e:  # noqa: BLE001
-                logger.error("  Unexpected error provisioning %s: %s", person.full_name, e)
+                logger.error("  Unexpected error provisioning %s: %s", person.full_name, e, exc_info=True)
                 tracking.record_error(pid, cred.id, f"{type(e).__name__}: {e}")
 
     if eligible > max_per_cycle:

@@ -236,7 +236,7 @@ def build_snapshot(
                 )
             continue  # no entry at all — see phase 3
         except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to fetch credentials for %s (%s): %s", pid, person.full_name, e)
+            logger.warning("Failed to fetch credentials for %s (%s): %s", pid, person.full_name, e, exc_info=True)
             continue
         snap.credentials_by_person[pid] = creds
 
@@ -257,7 +257,7 @@ def build_snapshot(
     try:
         cards = list_cards(ag, template_id)
     except Exception as e:  # noqa: BLE001
-        logger.error("Failed to list AG cards — no pass is issued this cycle: %s", e)
+        logger.error("Failed to list AG cards — no pass is issued this cycle: %s", e, exc_info=True)
         cards = []
         snap.ag_cards_read = False
 
