@@ -268,6 +268,22 @@ def test_desfire_update_pushes_every_changed_field_including_email(world, pair):
 
 
 @PAIRS
+def test_desfire_email_that_stops_being_an_address_is_no_change(world, pair):
+    unity, ag, cycle = _desfire(world, pair)
+    cycle()
+    unity.identities[0]["plasecidentityEmailaddress"] = "n/a"
+    cycle()
+    cycle()
+    assert ag.verbs("update") == [], "an invalid address is not sent, and does not empty the pass's"
+    assert _row().last_synced_email == "jim@example.com"
+    unity.identities[0]["plasecidentityEmailaddress"] = "jim@new.example.com"
+    cycle()
+    pass_id = ag.only_pass()
+    assert [c for verb, cid, c in ag.calls if verb == "update" and cid == pass_id] == [
+        {"email": "jim@new.example.com"}]
+
+
+@PAIRS
 def test_desfire_token_switched_off_and_on_in_unity_suspends_and_resumes_the_pass(world, pair):
     unity, ag, cycle = _desfire(world, pair)
     cycle()
