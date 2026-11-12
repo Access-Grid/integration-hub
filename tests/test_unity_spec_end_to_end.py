@@ -473,9 +473,6 @@ def test_seos_revoke_when_the_identity_is_deleted(world):
     assert ag.verbs("delete") == [("delete", pass_id)]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Known, awaiting a decision: deleting the pass releases its tracking row (no pass id), and phase 3 "
-    "retires the hub's Unity tokens only for rows holding a pass id, so their records are never forgotten."))
 def test_seos_revoke_forgets_the_hubs_tokens_of_a_deleted_identity(world):
     unity, ag, cycle, pass_id, _ = _installed_seos(world)
     unity.identities.append(_person("z", first="Zed", email="zed@example.com"))

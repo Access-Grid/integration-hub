@@ -378,6 +378,13 @@ class AvigilonAdapter:
         for pid in not_found:
             logger.info("Unity: tracked identity %s (%s) is no longer in Unity", pid,
                         tracked[pid].last_synced_full_name)
+            # Its tokens went with it. Forgotten here, because once phase 3
+            # deletes the pass its row holds no pass id, and the retirement
+            # that would otherwise forget them looks only at rows that do.
+            for e in written.for_person(pid):
+                logger.info("Unity: forgetting token %s (card %s/%s) of %s — the identity is gone",
+                            e["token_id"] or "(never created)", e["facility_code"], e["card_number"], pid)
+                written.remove(e["row"])
         return rows, unread
 
     def _detail_reads(self, rows: dict[str, tuple[dict[str, str], bool]]) -> bool:
