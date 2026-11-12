@@ -75,6 +75,35 @@ def refuse_duplicate(snapshot: Snapshot, pid: str, name: str, cred, eff_site_cod
     return True
 
 
+def unrecorded_pass(snapshot: Snapshot, pid: str, name: str, cred) -> bool:
+    """Does AccessGrid already hold a live pass for this card that we have no record of?
+
+    Asked just before issuing, when no tracking row holds a pass for it. A
+    live pass carrying this person and credential is then one an earlier
+    issue created whose reply never arrived — the call failed, the pass did
+    not. Issuing again would send the holder a second invite and leave the
+    first pass beyond the sync's reach. It is not adopted: for a template
+    pair the listing shows only the halves, never the pair id we act on. So
+    it is held and mailed, until someone deletes that pass in AccessGrid.
+    """
+    from ... import notifications
+    from .writeback import is_dead
+
+    live = [c for c in snapshot.ag_cards_by_token.get((pid, cred.id), []) if not is_dead(c)]
+    if not live:
+        return False
+    ids = ", ".join(f"{getattr(c, 'id', '?')} ({getattr(c, 'state', '') or '?'})" for c in live)
+    problem = (
+        f"{name} ({pid}) has card {cred.id} marked for a pass, but AccessGrid already holds "
+        f"{'pass' if len(live) == 1 else 'passes'} {ids} for it that the sync has no record of — most "
+        f"likely an earlier issue whose reply never arrived. Not issuing another. Delete "
+        f"{'that pass' if len(live) == 1 else 'those passes'} in AccessGrid to have a new one issued."
+    )
+    logger.error("  %s", problem)
+    notifications.notify_card_problem(f"unrecorded:{pid}:{cred.id}", problem)
+    return True
+
+
 def note_issued_card(snapshot: Snapshot, cred, eff_site_code: str, card) -> None:
     """Index a pass just issued by its number, so a second card with it this cycle is caught too."""
     key = _card_key(cred, eff_site_code)
@@ -106,6 +135,11 @@ def run(
         "Phase 1: Checking for new credentials to provision (dedupe=%s)",
         "on" if dedupe_by_site_card else "off",
     )
+    if not snapshot.ag_cards_read:
+        # Every check below that a card is not issued twice reads the
+        # listing; empty, they would all pass.
+        logger.warning("Phase 1: AccessGrid's pass list was not read — issuing nothing this cycle")
+        return 0
 
     for pid, creds in snapshot.credentials_by_person.items():
         person = snapshot.people.get(pid)
@@ -180,6 +214,9 @@ def run(
                     deduped += 1
                     continue
             if require_unique_card and refuse_duplicate(snapshot, pid, person.full_name, cred, eff_site_code):
+                skipped += 1
+                continue
+            if unrecorded_pass(snapshot, pid, person.full_name, cred):
                 skipped += 1
                 continue
 
@@ -273,6 +310,7 @@ def run(
                 last_synced_department=person.department,
             )
 
+            snapshot.issue_attempted.add((pid, cred.id))
             try:
                 logger.info("  Provisioning: %s (%s)", person.full_name, pid)
                 card = ag.access_cards.provision(**params)

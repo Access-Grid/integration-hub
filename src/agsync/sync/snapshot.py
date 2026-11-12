@@ -44,6 +44,14 @@ class Snapshot:
     # phase 4 reading it would take the old state for an AccessGrid change
     # and write it back over the PACS change that caused it.
     pushed_to_ag: set[tuple[str, str]] = field(default_factory=set)
+    # False when AccessGrid's pass listing could not be read: the indexes
+    # above are then empty, not "no passes", and nothing may be issued on
+    # the strength of them.
+    ag_cards_read: bool = True
+    # (person, credential) phase 1 tried to issue this cycle. A failed call
+    # may still have created the pass, and the listing above predates it,
+    # so phase 5 leaves these for a cycle that can see it.
+    issue_attempted: set[tuple[str, str]] = field(default_factory=set)
 
     def resolve_ag_cards(
         self,
@@ -239,8 +247,9 @@ def build_snapshot(
     try:
         cards = list_cards(ag, template_id)
     except Exception as e:  # noqa: BLE001
-        logger.error("Failed to list AG cards: %s", e)
+        logger.error("Failed to list AG cards — no pass is issued this cycle: %s", e)
         cards = []
+        snap.ag_cards_read = False
 
     from .phases.writeback import is_dead
 

@@ -21,7 +21,7 @@ from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
-from .phase1_provision import note_issued_card, refuse_duplicate
+from .phase1_provision import note_issued_card, refuse_duplicate, unrecorded_pass
 from .writeback import push_allocated_identities
 
 logger = logging.getLogger(__name__)
@@ -48,10 +48,24 @@ def run(
         logger.debug("Phase 5: No failed records to retry")
         return 0
 
+    if not snapshot.ag_cards_read:
+        logger.warning("Phase 5: AccessGrid's pass list was not read — retrying nothing this cycle")
+        return 0
+
     logger.info("Phase 5: Retrying %d failed provision(s)", len(failed))
     succeeded = 0
 
     for tracked in failed:
+        if (tracked.pacs_person_id, tracked.pacs_credential_id) in snapshot.issue_attempted:
+            # Phase 1 tried it moments ago. If that call failed after
+            # AccessGrid created the pass, only the next cycle's listing
+            # shows it — retrying now would issue a second.
+            logger.info(
+                "  %s/%s: phase 1 tried it this cycle — retried next cycle, once the "
+                "listing can show whether that issue went through",
+                tracked.pacs_person_id, tracked.pacs_credential_id,
+            )
+            continue
         person = snapshot.people.get(tracked.pacs_person_id)
         creds = snapshot.credentials_by_person.get(tracked.pacs_person_id, [])
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
@@ -99,6 +113,10 @@ def run(
                                                     cred, eff_site_code):
             tracking.record_error(tracked.pacs_person_id, tracked.pacs_credential_id,
                                   "card number already on another pass")
+            continue
+        if unrecorded_pass(snapshot, tracked.pacs_person_id, person.full_name, cred):
+            tracking.record_error(tracked.pacs_person_id, tracked.pacs_credential_id,
+                                  "AccessGrid holds a pass for this card the sync has no record of")
             continue
 
         now = datetime.now(UTC)
@@ -161,6 +179,7 @@ def run(
                     tracked.pacs_person_id, tracked.pacs_credential_id,
                 )
                 continue
+            snapshot.issue_attempted.add((tracked.pacs_person_id, tracked.pacs_credential_id))
             card = ag.access_cards.provision(**params)
             ag_card_id = getattr(card, "id", None)
             ag_state = (getattr(card, "state", "active") or "active").lower()
