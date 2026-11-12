@@ -37,6 +37,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         cred = next((c for c in creds if c.id == tracked.pacs_credential_id), None)
         if cred is not None and cred.hold:
             continue
+        if cred is not None:
+            _check_card_number(snapshot, tracked, person, cred)
         expires = getattr(cred, "deactivate_date", None)
         expiration = expires.isoformat() if expires else ""
 
@@ -134,6 +136,36 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
 
     logger.info("Phase 6 done: %d field update(s)", updated)
     return updated
+
+
+def _check_card_number(snapshot: Snapshot, tracked, person, cred) -> None:
+    """Mail a card number edited in the PACS after its pass was issued.
+
+    The pass keeps the number it was issued with, in its metadata; once the
+    PACS holds another, the pass no longer matches the card. Left as it is:
+    the operator decides. Only for cards the PACS supplies — AccessGrid
+    allocated a Seos pass's number — and only for a pass in the listing.
+    """
+    from ... import notifications
+
+    if cred.allocate_identity or not cred.card_number:
+        return
+    issued = {
+        str(n) for c in snapshot.resolve_ag_cards(
+            tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id, tracked.sync_ref,
+        )
+        if (n := (getattr(c, "metadata", None) or {}).get("card_number"))
+    }
+    if not issued or str(cred.card_number) in issued:
+        return
+    problem = (
+        f"{person.full_name} ({tracked.pacs_person_id}): card {tracked.pacs_credential_id} now has number "
+        f"{cred.card_number} in the PACS, but its AccessGrid pass {tracked.ag_card_id} was issued with "
+        f"{', '.join(sorted(issued))}. The pass is left as it is. To issue one with the new number, take "
+        f"the card's trigger away and set it again."
+    )
+    logger.warning("  %s", problem)
+    notifications.notify_card_problem(f"card-number:{tracked.pacs_person_id}:{tracked.pacs_credential_id}", problem)
 
 
 def _push_email(ag: AccessGrid, tracked, email: str) -> bool:
