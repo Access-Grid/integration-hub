@@ -34,9 +34,15 @@ HTTP_TIMEOUT = 30.0
 ROSTER_TIMEOUT = 300.0
 HTTP_USER_AGENT = "AGSyncTool/0.1"
 PAGE_SIZE = 100
-# The XML list is read a thousand at a time: thirteen pages for the live
-# box's 12,939 identities rather than one 20 MB response.
-XML_PAGE_SIZE = 1000
+# The XML list is read five hundred at a time rather than in one 20 MB
+# response. A page shorter than asked ends the read, so a box that quietly
+# capped pages below this would cut the search short; 500 leaves room under
+# whatever cap a box might have (the live one honoured 1000).
+XML_PAGE_SIZE = 500
+# Tokens are one identity's, never this many. Asked for explicitly, so a
+# token list that pages by default sends them all; one that comes back
+# full may have more behind it, and is not taken as complete.
+TOKENS_PER_PAGE = 500
 # Ten thousand pages of a hundred is far past any real roster; reaching it
 # means the paging is broken, and stopping is better than spinning forever.
 MAX_PAGES = 10_000
@@ -233,6 +239,17 @@ def token_row(raw: dict[str, Any], identity_id: str) -> dict[str, Any]:
         "fields": attrs,
     }
 
+
+
+def _whole_token_list(identity_id: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`rows`, unless they fill the page asked for: then more may be behind it.
+
+    A short token list reads as tokens deleted, which retires passes, so a
+    list that might be partial is an error, never an answer.
+    """
+    if len(rows) >= TOKENS_PER_PAGE:
+        raise UnityError(f"tokens for {identity_id}: {len(rows)} returned, a full page — may be partial")
+    return rows
 
 class UnityClient:
     """Session-based client. Signs in with a password, so an expired session
@@ -521,21 +538,29 @@ class UnityClient:
 
     def _tokens_xml(self, identity_id: str) -> list[dict[str, Any]]:
         path = f"/identities/{identity_id}/tokens.xml"
-        resp = self._request("GET", path, headers={"Accept": "*/*"})
+        resp = self._request("GET", path, headers={"Accept": "*/*"},
+                             params={"page": 1, "perpage": TOKENS_PER_PAGE})
         if resp.status_code != 200:
             raise UnityError(f"GET {path}: HTTP {resp.status_code}")
         # A person with no tokens may come back as an empty <tokens/>; that
         # parses to no rows, which here is the truth rather than a failure.
-        return [token_row(t, identity_id) for t in xml_rows(resp.text, "tokens", "token")]
+        return _whole_token_list(identity_id, [token_row(t, identity_id)
+                                               for t in xml_rows(resp.text, "tokens", "token")])
 
     def _tokens_json(self, identity_id: str) -> list[dict[str, Any]]:
-        body = self._get_json(f"/identities/{identity_id}/tokens.json")
+        body = self._get_json(f"/identities/{identity_id}/tokens.json",
+                              {"page": 1, "perpage": TOKENS_PER_PAGE})
         items = body.get("tokens", body.get("data")) if isinstance(body, dict) else body
         if isinstance(items, dict):
             items = [items]
         if not isinstance(items, list):
             raise UnityError(f"tokens for {identity_id}: unexpected response shape")
-        return [token_row(t, identity_id) for t in items if isinstance(t, dict)]
+        rows = [token_row(t, identity_id) for t in items if isinstance(t, dict)]
+        meta = (body.get("meta") or {}) if isinstance(body, dict) else {}
+        total = meta.get("recordsFiltered") or meta.get("recordsTotal")
+        if total is not None and len(rows) < int(total):
+            raise UnityError(f"tokens for {identity_id}: read {len(rows)} of {total}")
+        return _whole_token_list(identity_id, rows)
 
     # -- writes ------------------------------------------------------------
 

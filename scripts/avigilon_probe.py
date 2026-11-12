@@ -84,7 +84,7 @@ _PIECE_TIMEOUT = 120.0
 # EMBOSSED_SEARCH and XML_PAGE_SIZE), and how many hits get their tokens read.
 _EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
 _INTERNAL_SEARCH = {"adv_search_field_0": "plasecInternalnumber", "adv_search_udf_0": "Token Internal #"}
-_XML_PAGE = 1000
+_XML_PAGE = 500
 _SEARCH_CHECKED = 25
 # What the client's create_token posts (client.py), besides the CSRF token.
 _CREATE_SENDS = ["utf8", "enrollVirdiAfter", "token[plasecInternalnumber]",

@@ -1349,3 +1349,32 @@ def test_a_token_whose_pass_was_deleted_in_accessgrid_waits_to_be_switched_on(mo
     fake.tokens["a"] = [_token("t1")]
     _, _, (cred,) = _read(fake)
     assert not cred.hold and tracking.get("a", "t1").ag_card_id is None, "phase 1 issues it afresh"
+
+
+def test_identity_search_pages_are_500_at_most():
+    # A box capping pages below what we ask would end the search early.
+    from agsync.lib.pacs.avigilon import client as client_mod
+
+    assert client_mod.XML_PAGE_SIZE <= 500
+
+
+@pytest.mark.parametrize("json_off", [False, True])
+def test_a_full_page_of_tokens_is_not_taken_as_every_token(monkeypatch, json_off):
+    # A short token list reads as tokens deleted, which retires passes.
+    monkeypatch.setattr("agsync.lib.pacs.avigilon.client.TOKENS_PER_PAGE", 2)
+    fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1"), _token("t2")]})
+    fake.json_off = json_off
+    with pytest.raises(UnityError, match="full page"):
+        _client(fake).list_tokens("a")
+    fake.tokens["a"] = [_token("t1")]
+    assert [t["id"] for t in _client(fake).list_tokens("a")] == ["t1"]
+
+
+def test_a_token_list_short_of_its_own_total_is_not_taken_as_complete():
+    import json
+
+    fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1")]})
+    fake.raw["/identities/a/tokens.json"] = json.dumps({"tokens": [_token("t1")], "meta": {"recordsTotal": 3}})
+    fake.fail["/identities/a/tokens.xml"] = 503
+    with pytest.raises(UnityError, match="read 1 of 3"):
+        _client(fake).list_tokens("a")
