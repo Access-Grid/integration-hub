@@ -160,6 +160,8 @@ class AvigilonAdapter:
         self._inactive: set[str] = set()
         self._issued: set[tuple[str, str]] = set()  # (person, credential) holding a pass
         self._no_email: dict[str, str] = {}  # Seos: id -> name of each person read with no usable email
+        # Seos: tokens created since this cycle's read, so absent from it without being deleted.
+        self._created: set[str] = set()
 
     # A deactivated identity's passes are suspended, not deleted: the snapshot
     # asks list_credentials for the inactive people it holds passes for.
@@ -214,6 +216,7 @@ class AvigilonAdapter:
         if self.card_format and not self.seos and self._layout is None:
             self._read_layout()
         self._tokens, self._held, self._inactive, self._no_email = {}, set(), set(), {}
+        self._created = set()
         self._issued = {(t.pacs_person_id, t.pacs_credential_id) for t in passes}
         for pid in unread:
             # Its last synced fields, so nothing reads as changed, and no
@@ -646,8 +649,15 @@ class AvigilonAdapter:
         """
         if not self.seos:
             return True  # non-Seos keeps the engine's aggregate comparison
-        ours = written.for_credential(str(person_id), credential_id)
         tokens = {t["id"]: t for t in self._tokens.get(str(person_id), [])}
+        # A token deleted in Unity has nothing to match or write. Counted,
+        # it failed this check every cycle: a status write each cycle, its
+        # "no longer in Unity" mail every 6 hours, and the pass's state never
+        # recorded. Its record stays, so its card is not written again. One
+        # created this cycle is missing from the read too, but is not gone:
+        # it still has to be switched on.
+        ours = [e for e in written.for_credential(str(person_id), credential_id)
+                if not (e["token_id"] and e["token_id"] not in tokens and e["token_id"] not in self._created)]
         want = status is CredentialStatus.ACTIVE
         return bool(ours) and all(
             e["token_id"] in tokens and e["pending_active"] is None
@@ -750,6 +760,7 @@ class AvigilonAdapter:
                                     for n in ("activate_date", "deactivate_date")))
             token_id = self._client.create_token(pid, card[1], TRIGGER_VALUE, "2")
             written.set_token(row, token_id)
+            self._created.add(token_id)
             known.add(token_id)
         if dryrun.active():
             # Nothing written. With every token already there, the enrollment's delete is what's left.

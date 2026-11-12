@@ -152,6 +152,36 @@ def test_missing_device_does_not_suspend_a_peer_that_is_still_active(world):
     assert set(_tokens_by_number(unity).values()) == {"Active"}
 
 
+@pytest.mark.parametrize("pair", [False, True])
+def test_a_deleted_device_token_is_left_alone_and_the_pass_keeps_syncing(world, mailed, pair):
+    from agsync.sync import tracking
+
+    unity, ag, cycle, pass_id = _devices(world, pair)
+    watch = unity.tokens["a"].pop()  # an operator deletes the watch's token
+    mailed.clear()
+    posts = len(unity.posts)
+    for _ in range(4):
+        cycle()
+    assert len(unity.posts) == posts, "no status write every cycle"
+    assert mailed == [], "no 'no longer in Unity' mail every cycle"
+    assert watch["id"] in {e["token_id"] for e in written.all_tokens()}, "its card is not written again"
+    assert len(unity.tokens["a"]) == 1
+
+    ag.set_state(pass_id, "suspended")
+    cycle()
+    cycle()
+    [row] = [t for t in tracking.all_tracked() if t.pacs_person_id == "a"]
+    assert (row.last_known_ag_state, row.status) == ("suspended", "suspended"), "the pass's state is recorded"
+    assert set(_tokens_by_number(unity).values()) == {"Inactive"}
+    ag.set_state(pass_id, "active")
+    cycle()
+    cycle()
+    [row] = [t for t in tracking.all_tracked() if t.pacs_person_id == "a"]
+    assert (row.last_known_ag_state, row.status) == ("active", "active")
+    assert set(_tokens_by_number(unity).values()) == {"Active"}
+    assert len(unity.tokens["a"]) == 1, "the deleted token is never recreated"
+
+
 @pytest.mark.parametrize("accepted_before_error", [False, True])
 def test_failed_resume_retries_only_the_device_that_was_not_independently_disabled(
     world, monkeypatch, accepted_before_error,
