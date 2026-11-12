@@ -20,6 +20,10 @@ DESCRIPTOR = PacsDescriptor(
     max_provisions_per_cycle=200,
     # A token with no end date is meant to last; a year would lapse unseen.
     default_pass_days=3650,
+    # A cycle reads only the embossed search and the people we track, at
+    # ~0.1 s each on a live box (Nov 2026 probe), so 20 s waits on a small
+    # install; a large one waits 3x its own cycle as everywhere else.
+    min_interval_s=20,
     # A token names no card format, so the site's is chosen once in setup.
     picks_card_format=True,
 )

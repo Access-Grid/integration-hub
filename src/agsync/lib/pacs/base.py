@@ -165,6 +165,10 @@ class PacsDescriptor:
     max_provisions_per_cycle: int | None = None
     # How long a pass lasts when the PACS gives its card no end date.
     default_pass_days: int = 365
+    # Seconds the engine waits at least between cycles; None keeps its
+    # default (engine.MIN_INTERVAL_S). A cycle slower than a third of it
+    # still waits 3x its own time.
+    min_interval_s: int | None = None
     # True if setup asks for one of the PACS's card formats, read live, whose
     # facility code becomes the site code. The adapter provides
     # card_formats() and card_format_params(params, format_id).

@@ -61,9 +61,17 @@ logger = logging.getLogger(__name__)
 # too, so five minutes was five minutes of a pass that opens nothing. The
 # measured cycle on the install this was set for is ~16s, so the dynamic
 # rule asks for ~49s and this is what it gets clamped to.
+#
+# The default only: a PACS whose cycle is cheap sets its own floor in its
+# descriptor (PacsDescriptor.min_interval_s).
 MIN_INTERVAL_S = 60
 MAX_INTERVAL_S = 600
 INTERVAL_MULTIPLIER = 3
+
+
+def next_interval(duration_s: float, floor_s: float = MIN_INTERVAL_S) -> float:
+    """Seconds to wait after a successful cycle: 3x its time, within the floor and the cap."""
+    return max(floor_s, min(MAX_INTERVAL_S, duration_s * INTERVAL_MULTIPLIER))
 ERROR_BACKOFF_S = 30
 # How long to wait between attempts while a human has to sign in again.
 # Each attempt costs a full roster sweep, and nothing changes until someone
@@ -213,6 +221,8 @@ class SyncEngine:
         # between phases and bails out: it is holding an adapter built from
         # the old settings, and finishing the cycle would act on them.
         self._generation = 0
+        # The wait floor for the configured PACS, set by each cycle.
+        self._min_interval_s: float = MIN_INTERVAL_S
 
     # ----- public API --------------------------------------------------
 
@@ -343,10 +353,7 @@ class SyncEngine:
                     self._status.consecutive_errors = 0
                     self._status.last_error = None
                     # Dynamic interval based on cycle wall time.
-                    sleep_s = max(
-                        MIN_INTERVAL_S,
-                        min(MAX_INTERVAL_S, (result.duration_ms / 1000.0) * INTERVAL_MULTIPLIER),
-                    )
+                    sleep_s = next_interval(result.duration_ms / 1000.0, self._min_interval_s)
                 self._status.cached_interval_s = sleep_s
                 next_run = datetime.now(UTC) + timedelta(seconds=sleep_s)
                 self._status.next_run_iso = next_run.isoformat(timespec="seconds")
@@ -406,6 +413,8 @@ class SyncEngine:
 
         pacs_cfg = self._with_derived_mode(ag, ag_cfg, pacs_cfg)
         self._record_pacs_identity(pacs_cfg)
+        floor_descriptor = get_descriptor(pacs_cfg.get("vendor", ""))
+        self._min_interval_s = (floor_descriptor and floor_descriptor.min_interval_s) or MIN_INTERVAL_S
         try:
             pacs = self._pacs_adapter(pacs_cfg)
             with self._status_lock:

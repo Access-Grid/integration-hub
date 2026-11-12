@@ -891,6 +891,42 @@ def test_unity_issues_up_to_200_a_cycle_others_keep_25():
     assert phase1_provision.MAX_PROVISIONS_PER_CYCLE == 25
 
 
+def test_unity_waits_at_least_20s_between_cycles_others_60s():
+    from agsync.lib.pacs import get_descriptor
+    from agsync.sync import engine
+
+    assert get_descriptor("avigilon").min_interval_s == 20
+    assert get_descriptor("millennium_ultra").min_interval_s is None
+    assert engine.MIN_INTERVAL_S == 60
+    assert engine.next_interval(2, 20) == 20
+    assert engine.next_interval(10, 20) == 30, "a slower cycle still waits 3x its time"
+    assert engine.next_interval(400, 20) == engine.MAX_INTERVAL_S
+
+
+@pytest.mark.parametrize(("vendor", "floor"), [("avigilon", 20), ("millennium_ultra", 60)])
+def test_a_cycle_takes_its_wait_floor_from_the_configured_pacs(monkeypatch, vendor, floor):
+    from agsync.sync import engine as engine_mod
+
+    eng = engine_mod.SyncEngine()
+    monkeypatch.setattr(engine_mod.AccessGridConfig, "load", lambda: {"account_id": "a", "api_secret": "s",
+                                                                       "template_id": "t"})
+    monkeypatch.setattr(engine_mod.PacsConfig, "load", lambda: {"vendor": vendor, "params": {}})
+    monkeypatch.setattr(engine_mod, "build_ag_client", lambda *a: object())
+    monkeypatch.setattr(eng, "_with_derived_mode", lambda ag, ag_cfg, pacs_cfg: pacs_cfg)
+
+    def stop_here(cfg):
+        raise RuntimeError("stop after the floor is set")
+
+    monkeypatch.setattr(eng, "_pacs_adapter", stop_here)
+    eng._run_one_cycle_locked()
+    assert eng._min_interval_s == floor
+
+    monkeypatch.setattr(eng, "_run_one_cycle", lambda: engine_mod.CycleResult(started_at="now", duration_ms=2_000))
+    monkeypatch.setattr(eng._trigger, "wait", lambda timeout: eng._stop.set())
+    eng._run_loop()
+    assert eng.get_status()["cached_interval_s"] == floor
+
+
 def test_unity_pass_with_no_end_date_lasts_3650_days_others_365(monkeypatch):
     from datetime import timedelta
 
