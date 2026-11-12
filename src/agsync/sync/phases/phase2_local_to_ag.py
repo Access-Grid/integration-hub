@@ -18,6 +18,7 @@ from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import CredentialStatus
 from .. import tracking
 from ..snapshot import Snapshot
+from .phase3_deletions import expired
 
 logger = logging.getLogger(__name__)
 
@@ -164,10 +165,25 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         # sync's own hold, not anyone revoking it: nothing to push. Seen live
         # when it was pushed: the holder installed the pass, and this phase
         # suspended it before phase 4 could switch the card on.
-        if cred.status == CredentialStatus.AWAITING_INSTALL:
+        #
+        # Where an expired card suspends its pass (snapshot.suspends_expired),
+        # the end date counts as the card being switched off, and a pass it
+        # suspended is resumed once the date moves on — awaiting an install
+        # or not, since the hub switches a Seos card off when its pass is.
+        lapsed = snapshot.suspends_expired and expired(cred)
+        resumed_date = (
+            tracked.status == "expired" and not lapsed and ag_state == "suspended"
+            and cred.status in (CredentialStatus.ACTIVE, CredentialStatus.AWAITING_INSTALL)
+        )
+        if cred.status == CredentialStatus.AWAITING_INSTALL and not lapsed and not resumed_date:
             continue
 
-        desired = "active" if cred.status == CredentialStatus.ACTIVE else "suspended"
+        if lapsed:
+            desired = "suspended"
+        elif resumed_date:
+            desired = "active"
+        else:
+            desired = "active" if cred.status == CredentialStatus.ACTIVE else "suspended"
         if ag_state == desired:
             continue
 
@@ -189,6 +205,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             and ag_state == "created"
             and getattr(cred, "allocate_identity", False)
             and (person is None or person.active)
+            and not lapsed
         ):
             logger.debug(
                 "  Skip %s — the pass is not installed yet, so its card is "
@@ -202,7 +219,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                 logger.info(
                     "  Suspending AG card %s (PACS credential %s is %s)",
                     tracked.ag_card_id, tracking.label(tracked),
-                    cred.status.value,
+                    f"expired on {cred.deactivate_date:%Y-%m-%d}" if lapsed else cred.status.value,
                 )
                 if dryrun.active():
                     dryrun.would(
@@ -216,7 +233,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                 _suspend_debug_after(snapshot, tracked, ag)
                 tracking.update_status(
                     tracked.pacs_person_id, tracked.pacs_credential_id,
-                    "suspended", last_known_ag_state="suspended",
+                    # "expired" is what resumes it when the date moves on.
+                    "expired" if lapsed else "suspended", last_known_ag_state="suspended",
                 )
                 updated += 1
                 snapshot.pushed_to_ag.add((tracked.pacs_person_id, tracked.pacs_credential_id))

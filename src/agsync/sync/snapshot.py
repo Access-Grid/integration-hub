@@ -56,6 +56,9 @@ class Snapshot:
     # may still have created the pass, and the listing above predates it,
     # so phase 5 leaves these for a cycle that can see it.
     issue_attempted: set[tuple[str, str]] = field(default_factory=set)
+    # True for a PACS whose expired card suspends its pass (phase 2) rather
+    # than deletes it (phase 3): the adapter's suspends_expired_cards.
+    suspends_expired: bool = False
 
     def resolve_ag_cards(
         self,
@@ -180,6 +183,7 @@ def build_snapshot(
     template_id: str,
 ) -> Snapshot:
     snap = Snapshot()
+    snap.suspends_expired = bool(getattr(pacs, "suspends_expired_cards", False))
 
     logger.info("Building snapshot — fetching people from PACS")
     for person in pacs.list_people():

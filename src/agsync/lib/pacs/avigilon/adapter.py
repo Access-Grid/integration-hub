@@ -163,6 +163,9 @@ class AvigilonAdapter:
     # A deactivated identity's passes are suspended, not deleted: the snapshot
     # asks list_credentials for the inactive people it holds passes for.
     suspends_inactive_people = True
+    # A token past its end date suspends its pass rather than deleting it:
+    # moving the date on resumes the same pass, with no new invite.
+    suspends_expired_cards = True
 
     def descriptor(self) -> PacsDescriptor:
         return self._descriptor

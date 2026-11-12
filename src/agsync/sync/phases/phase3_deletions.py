@@ -110,8 +110,9 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
             reason = f"person {tracked.pacs_person_id} no longer in PACS"
         elif cred is None:
             reason = f"credential {tracked.pacs_credential_id} no longer on person"
-        elif expired(cred):
-            # Whatever the Active box says. A card past its date is not a
+        elif expired(cred) and not snapshot.suspends_expired:
+            # Whatever the Active box says. (A PACS whose expired cards
+            # suspend their pass instead is handled by phase 2.) A card past its date is not a
             # credential any more, and the pass on the holder's phone is the
             # half the PACS cannot switch off by itself.
             if expired_this_cycle >= MAX_EXPIRIES_PER_CYCLE:

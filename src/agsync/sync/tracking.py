@@ -6,6 +6,8 @@ provisioned. The row's lifecycle:
     pending  → first seen, provision in flight
     active   → AG card exists and AG state is active/created
     suspended → AG card exists, AG state is suspended
+    expired  → suspended because its card passed its end date (a PACS with
+                suspends_expired_cards); resumed when the date moves on
     deleted  → AG card was deleted (we keep the row briefly so phase 3
                 can confirm before forgetting)
     error    → last attempt failed, retry_count tracks attempts
