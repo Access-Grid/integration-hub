@@ -193,6 +193,16 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
                 tracking.label(tracked), ", ".join(unread),
             )
             continue
+        person = snapshot.people.get(tracked.pacs_person_id)
+        if desired is CredentialStatus.ACTIVE and person is not None and not person.active:
+            # The identity is deactivated in the PACS: its pass is on its way
+            # to suspended (phase 2), and an install must not switch it on.
+            logger.warning(
+                "  Not switching on the card of %s — the pass is installed, but "
+                "the cardholder is deactivated in the PACS",
+                tracking.label(tracked),
+            )
+            continue
         _gate_debug(tracked, cards, desired, cred)
         # The adapter reads its own state off the card, where "off" has no
         # reason attached, so an awaited install and a suspension look the

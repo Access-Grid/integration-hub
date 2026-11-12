@@ -180,10 +180,15 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         # Only for credentials we minted. Where the card is the customer's
         # own, an operator switching it off before anyone installed is a
         # real revocation and has to reach AccessGrid.
+        #
+        # And not for a deactivated identity: that is a revocation whatever
+        # its cards say, and left alone the pass could still be installed.
+        person = snapshot.people.get(tracked.pacs_person_id)
         if (
             desired == "suspended"
             and ag_state == "created"
             and getattr(cred, "allocate_identity", False)
+            and (person is None or person.active)
         ):
             logger.debug(
                 "  Skip %s — the pass is not installed yet, so its card is "
