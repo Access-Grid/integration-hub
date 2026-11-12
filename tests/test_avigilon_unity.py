@@ -959,11 +959,21 @@ def test_desfire_pass_unlinked_in_accessgrid_switches_the_token_off(monkeypatch,
     assert recorded[-1] in ("unlink", "unlinked")
 
 
-@pytest.mark.parametrize("halves", [["deleted"], ["deleted", "deleted"], ["unlink", "active"],
-                                    ["deleted", "active"]])
-def test_desfire_token_stays_on_unless_every_undeleted_half_is_unlinked(monkeypatch, halves):
-    """A pass deleted whole is the hub's own delete, never an AG → ACS change;
-    one half still active keeps the token on."""
+@pytest.mark.parametrize("halves", [["deleted"], ["deleted", "deleted"]])
+def test_desfire_pass_deleted_whole_in_accessgrid_switches_the_token_off(monkeypatch, halves):
+    """Every card deleted: the spec's 'suspended, unlinked or deleted'. The
+    row is released, so switching the token on again issues a new pass."""
+    monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
+    released = []
+    monkeypatch.setattr(tracking, "mark_deleted", lambda p, c: released.append((p, c)))
+    fake, recorded = _desfire_tracked_pass(monkeypatch, halves)
+    assert _t1_status(fake) == "Inactive"
+    assert released == [("a", "t1")] and recorded == []
+
+
+@pytest.mark.parametrize("halves", [["unlink", "active"], ["deleted", "active"]])
+def test_desfire_token_stays_on_while_a_half_is_active(monkeypatch, halves):
+    """One half still active keeps the token on, whatever the other half says."""
     monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
     fake, _ = _desfire_tracked_pass(monkeypatch, halves)
     assert _t1_status(fake) == "Active"
@@ -1323,3 +1333,19 @@ def test_retiring_a_never_created_token_just_forgets_its_row(seos):
     assert a.retire_credentials("a", "t1", [_card("9001")]) == 1
     assert written.for_credential("a", "t1") == []
     assert not [p for p in fake.posts if p.get("_method") == "delete"]
+
+
+def test_a_token_whose_pass_was_deleted_in_accessgrid_waits_to_be_switched_on(monkeypatch):
+    # Released by phase 4, switched off: not issued again until an operator
+    # switches it back on, and then issued as a new pass.
+    monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
+    tracking.upsert(pacs_person_id="a", pacs_credential_id="t1", ag_card_id="pass-a", full_name="Jim Cooper",
+                    employee_id="a", status="active", last_known_ag_state="active", sync_ref="ref-a")
+    tracking.mark_deleted("a", "t1")
+    fake = FakeUnity([_xml_identity("a", plasecidentityEmailaddress="j@x.co")],
+                     tokens={"a": [_token("t1", status="Inactive")]})
+    with pytest.raises(PacsRecordUnavailable):  # off and untracked: not even read, so nothing issued
+        _read(fake)
+    fake.tokens["a"] = [_token("t1")]
+    _, _, (cred,) = _read(fake)
+    assert not cred.hold and tracking.get("a", "t1").ag_card_id is None, "phase 1 issues it afresh"

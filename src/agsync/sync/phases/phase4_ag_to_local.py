@@ -42,13 +42,16 @@ def _devices(card) -> list[str]:
     return out
 
 
-# "deleted" is deliberately absent: AccessGrid deletes only the half of a
-# pair nobody installed, and a whole pass only when the hub asks, so a
-# deleted pass is never an AG → ACS change for the PACS to follow.
+# "deleted" reaches here only when every card of the pass is deleted: a
+# deleted half of a pair, the side nobody installed, never hides a live one
+# (Snapshot.resolve_ag_card). A pass the hub deleted itself is marked
+# deleted in tracking and not looked at again, so this is a pass deleted in
+# AccessGrid by someone else, and its card goes off like a suspended one.
 _AG_TO_CRED_STATUS: dict[str, CredentialStatus] = {
     "active": CredentialStatus.ACTIVE,
     "created": CredentialStatus.ACTIVE,
     "suspended": CredentialStatus.SUSPENDED,
+    "deleted": CredentialStatus.SUSPENDED,
     # The holder took the pass off their device. The SDK documents
     # "unlink"; "unlinked" is accepted too.
     "unlink": CredentialStatus.SUSPENDED,
@@ -268,9 +271,7 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
             )
             continue
         if cred is None or cred.status == desired:
-            tracking.update_last_known_ag_state(
-                tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
-            )
+            _record_ag_state(tracked, ag_state)
             continue
 
         try:
@@ -283,9 +284,7 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
             )
             if ok:
                 updated += 1
-                tracking.update_last_known_ag_state(
-                    tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
-                )
+                _record_ag_state(tracked, ag_state)
             else:
                 logger.warning(
                     "  PACS rejected status update for %s",
@@ -299,6 +298,26 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
 
     logger.info("Phase 4 done: %d PACS update(s)", updated)
     return updated
+
+
+def _record_ag_state(tracked, ag_state: str) -> None:
+    """Note the pass's state once the PACS card matches it.
+
+    A pass deleted in AccessGrid is recorded as deleted, its id released,
+    as when the hub deletes one: the card is off, and switching it back on
+    in the PACS issues a new pass rather than resuming one that is gone.
+    """
+    if ag_state == "deleted":
+        logger.info(
+            "  AG pass %s for %s was deleted in AccessGrid — its PACS card is off; "
+            "switching it on again issues a new pass",
+            tracked.ag_card_id, tracking.label(tracked),
+        )
+        tracking.mark_deleted(tracked.pacs_person_id, tracked.pacs_credential_id)
+        return
+    tracking.update_last_known_ag_state(
+        tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
+    )
 
 
 def _push_new_credentials(
