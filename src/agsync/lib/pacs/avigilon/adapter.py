@@ -608,12 +608,40 @@ class AvigilonAdapter:
                 try:
                     self._client.delete_token(pid, e["token_id"])
                 except UnityError as err:
-                    if any(t["id"] == e["token_id"] for t in self._client.list_tokens(pid)):
-                        logger.error("Unity: could not delete token %s of %s: %s", e["token_id"], pid, err)
+                    if not self._token_gone(pid, e["token_id"]):
+                        logger.error("Unity: could not delete token %s of %s, keeping its record to retry "
+                                     "next cycle: %s", e["token_id"], pid, err)
                         continue
             written.remove(e["row"])
             retired += 1
         return retired
+
+    def _token_gone(self, pid: str, token_id: str) -> bool:
+        """Is this token no longer in Unity, on Unity's own word?
+
+        Its identity's token list says so, or, when that list cannot be
+        read, Unity answers 404 for the identity itself: deleting an
+        identity takes its tokens with it. Anything less certain is "not
+        gone" — forgetting a token that is still there would have it read
+        as a new enrollment, and issued a second pass.
+        """
+        try:
+            return all(t["id"] != token_id for t in self._client.list_tokens(pid))
+        except UnityError as err:
+            tokens_err = err
+        try:
+            self._client.get_identity(pid)
+        except UnityNotFound:
+            logger.info("Unity: identity %s is no longer in Unity, so neither is its token %s — "
+                        "forgetting it", pid, token_id)
+            return True
+        except UnityError as err:
+            logger.warning("Unity: could not tell whether token %s of %s is gone: tokens unread (%s), "
+                           "identity unread (%s)", token_id, pid, tokens_err, err)
+            return False
+        logger.warning("Unity: identity %s is there but its tokens could not be read, so token %s "
+                       "may still be there: %s", pid, token_id, tokens_err)
+        return False
 
     def written_credentials(self) -> dict[tuple[str, str], list[str]]:
         """Card numbers written into Unity, per pass, from our own record."""

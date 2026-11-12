@@ -846,6 +846,84 @@ def test_seos_retirement_deletes_the_token_and_forgets_it(seos):
     assert a.written_credentials() == {("a", "t1"): ["9002"]}
 
 
+def _identity_deleted(fake, pid="a"):
+    """Unity deletes the identity, and its tokens with it: every read of it 404s."""
+    fake.identities = [r for r in fake.identities if r["cn"] != pid]
+    fake.details.pop(pid, None)
+    fake.tokens.pop(pid, None)
+    for path in (f"/identities/{pid}/tokens.json", f"/identities/{pid}/tokens.xml"):
+        fake.fail[path] = 404
+    for t in ("new1", "new2", "new3"):
+        fake.fail[f"/identities/{pid}/tokens/{t}"] = 404
+
+
+def test_seos_retirement_forgets_the_tokens_of_an_identity_deleted_from_unity(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])
+    _identity_deleted(fake)
+    assert a.retire_credentials("a", "t1", [_card("9001"), _card("9002")]) == 2
+    assert a.written_credentials() == {}
+    # Forgotten for good: the next offer has nothing left to retry.
+    assert a.retire_credentials("a", "t1", [_card("9001"), _card("9002")]) == 0
+
+
+def test_seos_phase3_stops_retrying_once_the_identity_is_deleted_from_unity(seos, monkeypatch, caplog):
+    """The loop this closes: the pass is deleted because its identity left
+    Unity, AccessGrid keeps listing it as deleted, and phase 3 tried to
+    delete its tokens from the vanished identity every cycle, failing each time."""
+    from agsync.sync.phases import phase3_deletions
+
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])
+    _identity_deleted(fake)
+    row = SimpleNamespace(pacs_person_id="a", pacs_credential_id="t1", ag_card_id="pass-a",
+                          status="deleted", sync_ref="ref-a")
+    monkeypatch.setattr(phase3_deletions.tracking, "all_tracked", lambda: [row])
+    snap = Snapshot()
+    snap.ag_cards_by_sync_ref["ref-a"] = [SimpleNamespace(
+        id="pass-a", state="deleted", details=[
+            SimpleNamespace(site_code="239", card_number="9001", state="created"),
+            SimpleNamespace(site_code="239", card_number="9002", state="created"),
+        ])]
+
+    class Ag:  # the re-read fails, so the listed card stands
+        access_cards = SimpleNamespace(get=lambda card_id: (_ for _ in ()).throw(KeyError(card_id)))
+
+    with caplog.at_level("INFO"):
+        assert phase3_deletions._retire_deleted_credentials(snap, Ag(), a) == 2
+    assert a.written_credentials() == {}
+    assert "no longer in Unity" in caplog.text and "Failed to retire" not in caplog.text
+
+    caplog.clear()
+    requests = len(fake.gets) + len(fake.posts)
+    assert phase3_deletions._retire_deleted_credentials(snap, Ag(), a) == 0
+    assert len(fake.gets) + len(fake.posts) == requests, "nothing left to ask Unity about"
+    assert "Failed to retire" not in caplog.text
+
+
+def test_seos_retirement_keeps_the_record_when_unity_cannot_say_the_identity_is_gone(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001")])
+    for path in ("/identities/a/tokens/new1", "/identities/a/tokens.json", "/identities/a/tokens.xml",
+                 "/identities/a.json"):
+        fake.fail[path] = 500
+    assert a.retire_credentials("a", "t1", [_card("9001")]) == 0
+    assert a.written_credentials() == {("a", "t1"): ["9001"]}
+
+
+def test_seos_retirement_keeps_the_record_when_the_identity_is_there_but_its_tokens_unread(seos):
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001")])
+    for path in ("/identities/a/tokens/new1", "/identities/a/tokens.json", "/identities/a/tokens.xml"):
+        fake.fail[path] = 500
+    assert a.retire_credentials("a", "t1", [_card("9001")]) == 0
+    assert a.written_credentials() == {("a", "t1"): ["9001"]}
+
+
 def test_desfire_template_keeps_reading_internal_numbers(seos):
     _, a = seos()
     a.seos = False
