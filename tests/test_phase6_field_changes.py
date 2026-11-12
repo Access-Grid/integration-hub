@@ -181,3 +181,31 @@ def test_rejected_address_is_retried_and_the_rename_still_recorded(monkeypatch, 
     phase6_field_changes.run(_with_cred(person, allocate=False), ag)
     assert recorded[0]["full_name"] == "Auston Access"
     assert recorded[0]["email"] == "accessg.grid.11587@old.test"
+
+
+def test_a_phone_emptied_in_the_pacs_is_emptied_on_the_pass(monkeypatch, recorded):
+    ag = FakeAG()
+    _run(monkeypatch, ag, _person(phone=""), _tracked(last_synced_phone="+15551234567"))
+    assert ag.access_cards.calls[0]["phone_number"] == ""
+    assert recorded[0]["phone"] == ""
+
+
+def test_an_unread_unity_person_keeps_their_phone_so_none_is_cleared(monkeypatch, recorded):
+    """Unity stands in for a tracked person it could not read with what was
+    last sent, so a failed read never empties anything."""
+    from agsync.sync import tracking as tracking_mod
+    from tests.test_avigilon_unity import FakeUnity, _adapter
+
+    row = SimpleNamespace(pacs_person_id="b", pacs_credential_id="tb", ag_card_id="pass-b", status="active",
+                          last_synced_full_name="Ann Lee", last_synced_email="ann@x.test",
+                          last_synced_phone="+15551234567", last_synced_title="Coach",
+                          last_synced_department="Coaches")
+    monkeypatch.setattr(tracking_mod, "all_tracked", lambda: [row])
+    fake = FakeUnity([])
+    fake.fail["/identities/b.json"] = 500
+    [person] = list(_adapter(fake).list_people())
+    ag = FakeAG()
+    _run(monkeypatch, ag, person, _tracked(pacs_person_id="b", pacs_credential_id="tb", last_synced_full_name="Ann Lee",
+                                           last_synced_email="ann@x.test", last_synced_phone="+15551234567",
+                                           last_synced_title="Coach", last_synced_department="Coaches"))
+    assert ag.access_cards.calls == []

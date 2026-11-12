@@ -43,9 +43,9 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
         changes: dict[str, str] = {}
         if person.full_name and person.full_name != tracked.last_synced_full_name:
             changes["full_name"] = person.full_name
+        # A phone emptied in the PACS is emptied on the pass, as title is.
         if person.phone != tracked.last_synced_phone:
-            if person.phone:
-                changes["phone_number"] = person.phone
+            changes["phone_number"] = person.phone
         if person.title != tracked.last_synced_title:
             changes["title"] = person.title
         # A pass issued before departments were sent (None) gets the
