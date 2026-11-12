@@ -2,7 +2,7 @@
 
 Getting it wrong is asymmetrically bad — Seos writes cards into the PACS —
 so it is derived from the card template's protocol every cycle, and an
-unreadable template falls back to the read-only direction.
+unreadable template stops the cycle rather than guess.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agsync.sync.engine import SyncEngine
+from agsync.sync.engine import SyncEngine, TemplateUnread
 
 
 @pytest.fixture
@@ -47,12 +47,12 @@ def test_desfire_template_selects_the_reading_direction(engine, monkeypatch):
     assert out["params"]["mode"] == "desfire"
 
 
-def test_unreadable_template_falls_back_to_read_only(engine, monkeypatch):
-    # Never let a failed lookup turn a read-only integration into one that
-    # writes cards into the customer's PACS.
+def test_unreadable_template_picks_no_direction(engine, monkeypatch):
+    # Either guess is destructive: Seos writes cards into the customer's PACS,
+    # and not-Seos on a Seos site revokes every pass whose enrollment is gone.
     _with_protocol(monkeypatch, "")
-    out = engine._with_derived_mode(object(), _ag_cfg(), _pacs_cfg())
-    assert out["params"]["mode"] == "desfire"
+    with pytest.raises(TemplateUnread):
+        engine._with_derived_mode(object(), _ag_cfg(), _pacs_cfg())
 
 
 def test_an_unknown_protocol_falls_back_to_read_only(engine, monkeypatch):

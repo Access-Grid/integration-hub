@@ -183,9 +183,9 @@ def world(monkeypatch, mailed):
         monkeypatch.setattr(engine_mod, "build_pacs_adapter", build)
         engine = SyncEngine()
 
-        def cycle():
+        def cycle(may_fail=False):
             result = engine._run_one_cycle_locked()
-            assert result.error is None, result.error
+            assert may_fail or result.error is None, result.error
             return result
 
         return ag, cycle
@@ -491,6 +491,35 @@ def test_seos_revoke_when_every_hub_token_is_deleted_in_unity(world):
     unity.tokens["a"] = []
     cycle()
     assert ag.verbs("delete") == [("delete", pass_id)]
+
+
+@PAIRS
+def test_an_unreadable_template_stops_the_cycle_rather_than_guess_the_direction(world, pair):
+    """Read as not-Seos, the hub's own tokens look like new enrollments and the
+    deleted enrollment like a credential gone: one failed template read deleted
+    every installed Seos pass and issued each holder a new one."""
+    unity, ag, cycle = _seos(world, pair)
+    cycle()
+    pass_id = ag.only_pass()
+    ag.install(pass_id)
+    cycle()
+    cycle()
+    calls = list(ag.calls)
+
+    readable = ag.console.read_template
+
+    def unreadable(template_id):
+        raise RuntimeError("503 Service Unavailable")
+
+    ag.console.read_template = unreadable
+    result = cycle(may_fail=True)
+    assert result.error and "template" in result.error
+    assert ag.calls == calls
+    ag.console.read_template = readable
+    cycle()
+    assert ag.calls == calls
+    row = _row()
+    assert (row.ag_card_id, row.status) == (pass_id, "active")
 
 
 @PAIRS

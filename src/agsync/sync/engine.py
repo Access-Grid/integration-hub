@@ -80,6 +80,10 @@ RECONNECT_RETRY_S = 120
 MAX_CONSECUTIVE_ERRORS = 10
 
 
+class TemplateUnread(RuntimeError):
+    """The card template could not be read, so the PACS direction is unknown."""
+
+
 def derived_pacs_params(ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]) -> dict[str, Any]:
     """Fill in `mode` and `pair` from the AccessGrid template, for adapters that ask.
 
@@ -92,13 +96,14 @@ def derived_pacs_params(ag, ag_cfg: dict[str, Any], pacs_cfg: dict[str, Any]) ->
         return pacs_cfg
 
     protocol, pair = template_shape(ag, ag_cfg["template_id"])
-    # An unreadable template must not silently flip a read-only integration
-    # into one that writes cards into the PACS.
-    mode = "seos" if protocol == PROTOCOL_SEOS else "desfire"
     if not protocol:
-        logger.warning(
-            "Could not read the card template's protocol — assuming %s", mode,
-        )
+        # Neither direction is a safe guess. Read as not-Seos, a Seos site's
+        # own tokens look like new enrollments and its deleted enrollments
+        # like credentials gone: one failed read deleted every installed pass
+        # and issued its holder a new one.
+        raise TemplateUnread(f"the card template {ag_cfg['template_id']}'s protocol could not be read")
+    # A template that reads as something other than Seos is read-only.
+    mode = "seos" if protocol == PROTOCOL_SEOS else "desfire"
     params = dict(pacs_cfg.get("params") or {})
     params["mode"] = mode
     params["pair"] = pair
@@ -411,7 +416,14 @@ class SyncEngine:
                 self._status.ag_reachable = False
             return result
 
-        pacs_cfg = self._with_derived_mode(ag, ag_cfg, pacs_cfg)
+        try:
+            pacs_cfg = self._with_derived_mode(ag, ag_cfg, pacs_cfg)
+        except TemplateUnread as e:
+            logger.error("Sync cycle skipped — %s, so it is not known whether the "
+                         "PACS receives cards (Seos) or supplies them; retrying next cycle", e)
+            result.error = f"template_unread: {e}"
+            result.duration_ms = int((time.time() - start_ms) * 1000)
+            return result
         self._record_pacs_identity(pacs_cfg)
         floor_descriptor = get_descriptor(pacs_cfg.get("vendor", ""))
         self._min_interval_s = (floor_descriptor and floor_descriptor.min_interval_s) or MIN_INTERVAL_S
