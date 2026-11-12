@@ -126,15 +126,13 @@ def run(
 
             existing = tracking.get(pid, cred.id)
             if existing and existing.ag_card_id:
-                # Already provisioned (or already deduped) — keep tracking row fresh.
-                if existing.status == "deduped":
-                    continue
-                ag_card = snapshot.resolve_ag_card(
-                    existing.ag_card_id, pid, cred.id,
-                )
-                ag_state = (getattr(ag_card, "state", "") or "").lower() if ag_card else ""
-                if ag_state and ag_state != existing.last_known_ag_state:
-                    tracking.update_last_known_ag_state(pid, cred.id, ag_state)
+                # Already provisioned (or already deduped). Its AccessGrid
+                # state is not recorded here: phases 2 and 4 tell which side
+                # changed by comparing against the last state recorded, so
+                # recording it first hid every AccessGrid-side suspend,
+                # resume and unlink — phase 4 saw nothing to do and phase 2
+                # pushed the PACS's old state back over it. Phase 4 records
+                # the state once it has acted on it.
                 continue
 
             if expired(cred):
