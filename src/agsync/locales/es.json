@@ -154,6 +154,8 @@
   "wizard.connect.trigger_title": "Elija el disparador de inscripción",
   "wizard.connect.waiting": "Esperando a que complete el inicio de sesión en Millennium Ultra…",
   "wizard.format.none": "Conectado, pero no se pudo leer ningún formato de tarjeta del PACS.",
+  "wizard.format.seos_confirm": "Esta plantilla emite pases HID Seos, y AccessGrid asigna su código de instalación. He comprobado que Unity tiene un formato de tarjeta con ese mismo código de instalación, asignado a los lectores. Sin él, las tarjetas que la sincronización escribe en Unity no abren ninguna puerta.",
+  "wizard.format.seos_confirm_missing": "Confirme el código de instalación Seos para terminar la configuración.",
   "wizard.format.subtitle": "Elige el formato de tarjeta que usan tus lectores. Su código de instalación se envía como código de sitio de cada pase.",
   "wizard.format.title": "Formato de tarjeta",
   "wizard.step1.license_key": "Clave de licencia",

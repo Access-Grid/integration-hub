@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -196,7 +198,20 @@ def store(monkeypatch):
     fake = _fake()
     monkeypatch.setattr(wizard, "build_adapter", lambda vendor, params: _adapter(
         fake, **{k: v for k, v in params.items() if k not in ("host", "username", "password")}))
+    # The AccessGrid card template: not Seos unless a test says so.
+    _TEMPLATE["protocol"] = "desfire"
+    monkeypatch.setattr(wizard.AccessGridConfig, "load", lambda: {
+        "account_id": "acct", "api_secret": "s", "template_id": "tpl"})
+    monkeypatch.setattr(wizard, "build_ag_client", lambda *a: object())
+    monkeypatch.setattr(wizard, "template_shape", lambda client, tid: (_TEMPLATE["protocol"], False))
     return blob, started
+
+
+_TEMPLATE = {"protocol": "desfire"}
+
+
+def _template_is(protocol):
+    _TEMPLATE["protocol"] = protocol
 
 
 class _Form(dict):
@@ -228,3 +243,54 @@ def test_an_unknown_format_goes_back_to_the_picker(store):
     resp = wizard.wizard_card_format_save(None, card_format="99")
     assert resp.headers["location"] == "/wizard/card-format"
     assert "card_format" not in PacsConfig.load()["params"] and started == []
+
+
+# --- the Seos facility code confirmation ---------------------------------------
+
+
+@pytest.mark.parametrize("protocol", ["seos", ""], ids=["seos", "template unreadable"])
+def test_a_seos_setup_is_not_finished_until_the_facility_code_is_confirmed(store, protocol):
+    """AccessGrid assigns a Seos pass's facility code, and the token the sync
+    writes holds only the number: with no Unity card format carrying that
+    code, it opens no door. Nothing readable says which code, so a human does."""
+    blob, started = store
+    _template_is(protocol)
+    PacsConfig.save("avigilon", {"host": "unity", "username": "u", "password": "p"}, {})
+    resp = wizard.wizard_card_format_save(None, card_format="0")
+    assert resp.headers["location"] == "/wizard/card-format?confirm=missing"
+    assert "card_format" not in PacsConfig.load()["params"] and started == []
+
+    resp = wizard.wizard_card_format_save(None, card_format="0", seos_facility_code_confirmed="yes")
+    assert resp.headers["location"] == "/wizard"
+    assert PacsConfig.load()["params"]["card_format"] == "0" and started == [True]
+
+
+def test_a_desfire_setup_asks_no_confirmation(store):
+    _template_is("desfire")
+    assert not wizard._seos_confirmation_needed(wizard.get_descriptor("avigilon"))
+
+
+def test_the_format_page_asks_for_the_confirmation_only_for_seos(store):
+    from jinja2 import Environment, FileSystemLoader
+
+    from agsync.i18n.translator import get_translator
+
+    pages = []
+    request = SimpleNamespace(query_params={"confirm": "missing"}, app=SimpleNamespace(state=SimpleNamespace(
+        template_response=lambda req, name, ctx: pages.append((name, ctx)))))
+    PacsConfig.save("avigilon", {"host": "unity", "username": "u", "password": "p"}, {})
+    env = Environment(loader=FileSystemLoader(Path(wizard.__file__).parent.parent / "templates"))
+
+    def page(protocol):
+        _template_is(protocol)
+        wizard.wizard_card_format(request)
+        name, ctx = pages.pop()
+        return env.get_template(name).render(
+            request=SimpleNamespace(url=SimpleNamespace(path="/wizard/card-format"), cookies={}),
+            t=get_translator("en").t, locale="en", available_locales=["en"], configured=False,
+            admin_exists=True, **ctx)
+
+    seos = page("seos")
+    assert 'name="seos_facility_code_confirmed"' in seos and "required" in seos
+    assert "Confirm the Seos facility code" in seos
+    assert "seos_facility_code_confirmed" not in page("desfire")

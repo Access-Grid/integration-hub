@@ -26,6 +26,8 @@ import logging
 from fastapi import APIRouter, Form, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 
+from ..ag import PROTOCOL_SEOS, template_shape
+from ..ag import build_client as build_ag_client
 from ..auth import SESSION_COOKIE, current_user, sign_session
 from ..auth.store import admin_exists, create_admin
 from ..connect import register as uri_register
@@ -199,6 +201,30 @@ async def wizard_pacs(request: Request):
     return RedirectResponse(url="/wizard", status_code=303)
 
 
+def _seos_confirmation_needed(descriptor) -> bool:
+    """Must the operator confirm the Seos facility code before finishing?
+
+    For a PACS whose direction follows the AccessGrid template, when that
+    template is Seos — or cannot be read, so might be. AccessGrid assigns a
+    Seos pass's facility code, and the token the sync writes holds only the
+    card number: Unity matches the facility code against its own card
+    formats, so without one carrying it the token opens no door, silently.
+    Nothing readable says which code AccessGrid assigns, so a human checks.
+    """
+    if not descriptor.derives_mode_from_template:
+        return False
+    ag_cfg = AccessGridConfig.load()
+    if not ag_cfg:
+        return True
+    try:
+        client = build_ag_client(ag_cfg["account_id"], ag_cfg["api_secret"])
+        protocol, _ = template_shape(client, ag_cfg["template_id"])
+    except Exception as e:  # noqa: BLE001 — unknown is asked about, not guessed
+        logger.warning("wizard: could not read the card template: %s", e)
+        protocol = ""
+    return not protocol or protocol == PROTOCOL_SEOS
+
+
 @router.get("/card-format")
 def wizard_card_format(request: Request):
     """Step 4b — the PACS's card formats, read live, to pick the site's."""
@@ -217,17 +243,24 @@ def wizard_card_format(request: Request):
         error = f"{type(e).__name__}: {e}"
     return request.app.state.template_response(
         request, "wizard/step4_format.html",
-        {"step": 4, "descriptor": descriptor, "formats": formats, "error": error},
+        {"step": 4, "descriptor": descriptor, "formats": formats, "error": error,
+         "seos_confirm": _seos_confirmation_needed(descriptor),
+         "seos_confirm_missing": request.query_params.get("confirm") == "missing"},
     )
 
 
 @router.post("/card-format")
-def wizard_card_format_save(request: Request, card_format: str = Form(...)):
+def wizard_card_format_save(request: Request, card_format: str = Form(...),
+                            seos_facility_code_confirmed: str = Form("")):
     """Record the site's card format, completing setup."""
     _require_admin_if_bootstrapped(request)
     pacs = PacsConfig.load()
     if not pacs:
         return RedirectResponse(url="/wizard", status_code=303)
+    descriptor = get_descriptor(pacs.get("vendor", ""))
+    if descriptor and seos_facility_code_confirmed != "yes" and _seos_confirmation_needed(descriptor):
+        logger.warning("wizard: setup not finished — the Seos facility code was not confirmed")
+        return RedirectResponse(url="/wizard/card-format?confirm=missing", status_code=303)
     try:
         adapter = build_adapter(pacs["vendor"], pacs.get("params") or {})
         params = adapter.card_format_params(dict(pacs.get("params") or {}), card_format)

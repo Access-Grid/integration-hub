@@ -154,6 +154,8 @@
   "wizard.connect.trigger_title": "Choose the enrollment trigger",
   "wizard.connect.waiting": "Waiting for you to complete Millennium Ultra log in…",
   "wizard.format.none": "Connected, but no card formats could be read from the PACS.",
+  "wizard.format.seos_confirm": "This card template issues HID Seos passes, and AccessGrid assigns their facility code. I have checked that Unity has a card format with that same facility code, assigned to the readers. Without one, the cards the sync writes into Unity open no door.",
+  "wizard.format.seos_confirm_missing": "Confirm the Seos facility code to finish setup.",
   "wizard.format.subtitle": "Choose the card format your readers use. Its facility code is sent as the site code of every pass.",
   "wizard.format.title": "Card format",
   "wizard.step1.license_key": "License key",
