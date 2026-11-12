@@ -19,7 +19,7 @@ Three rules, because the output is meant to be pasted into a chat or ticket:
     there. Dates, statuses and flags are kept: their format is the point.
 
 Usage:
-    python scripts/avigilon_probe.py [all|xml|search] <host> <username> [--samples 3]
+    python scripts/avigilon_probe.py [all|xml|search|detail] <host> <username> [--samples 3]
 `all` (the default) reads everything as JSON and as XML. `xml` skips the
 JSON list and tests whether `/identities.xml` can be read in pieces — page
 and perpage, start and length, the A–Z last-name filter — against the whole
@@ -27,8 +27,12 @@ list, read with a long timeout. `search` checks the embossed-number search
 the adapter sends: whether it answers, filters, ignores case and returns only
 holders of an `accessgrid` token; checks the Internal Number search the
 adapter uses to see whether a card number is already held, counts only; and
-reads, without submitting, the form Unity uses to add a token. The password is prompted for. The report is
-printed and saved as JSON.
+reads, without submitting, the form Unity uses to add a token. `detail` finds
+cardholders whose list row has an email, phone, title or department, reads
+each one's detail as JSON and as XML, and reports per field whether each read
+has it and whether they agree — presence and agreement only, never values;
+it also checks whether the list can be searched by one identity's id. The
+password is prompted for. The report is printed and saved as JSON.
 """
 
 from __future__ import annotations
@@ -85,7 +89,12 @@ _SEARCH_CHECKED = 25
 # What the client's create_token posts (client.py), besides the CSRF token.
 _CREATE_SENDS = ["utf8", "enrollVirdiAfter", "token[plasecInternalnumber]",
                  "token[plasecEmbossednumber]", "token[plasecTokenstatus]"]
-MODES = ("all", "xml", "search")
+MODES = ("all", "xml", "search", "detail")
+# The identity fields a pass carries, compared between the list and the detail
+# by `detail` mode: present or not, and equal or not — never the values.
+CONTACT_FIELDS = ("identityEmailaddress", "identityPhone", "identityWorkphone", "identityTitle",
+                  "identityDepartment")
+_DETAIL_PAGES = 5  # list pages read looking for cardholders with contact fields
 
 # What our adapter reads and writes (src/agsync/lib/pacs/avigilon/). Copied
 # rather than imported so the exe stays standalone; tests/test_avigilon_probe.py
@@ -228,8 +237,8 @@ class Probe:
         # Rows as read, per source ("token xml", "identity list json", ...), for
         # comparing their field names and values against what the adapter expects.
         self.rows: dict[str, list[dict[str, Any]]] = {}
-        if mode in ("xml", "search"):
-            head = "xml_paging" if mode == "xml" else "search"
+        head = {"xml": "xml_paging", "search": "search", "detail": "detail_vs_list"}.get(mode)
+        if head:
             self.report = {**dict(list(self.report.items())[:4]), head: {}, **self.report}
 
     def get(self, step: str, path: str, **kw: Any) -> httpx.Response | None:
@@ -376,6 +385,84 @@ class Probe:
         self.internal_search()
         self.new_token_form()
         return self.report
+
+    def run_detail(self, samples: int) -> dict[str, Any]:
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        self.detail_vs_list(samples)
+        return self.report
+
+    def detail_vs_list(self, samples: int) -> None:
+        """Does an identity's detail carry the contact fields its list row does?
+
+        The adapter reads a tracked person from their detail whenever the
+        embossed search does not return them, and a field the detail lacks
+        would read as emptied. Cardholders are taken from the first list pages
+        whose row has at least one contact field.
+        """
+        def value(row: dict[str, Any], suffix: str) -> str:
+            return str(next((row[p + suffix] for p in _PREFIXES if row.get(p + suffix) not in (None, "")), ""))
+
+        picked: list[dict[str, Any]] = []
+        for page in range(1, _DETAIL_PAGES + 1):
+            rows = self.read_xml("identities", f"detail_list_page_{page}", "/identities.xml", "identities",
+                                 "identity", params={**_XML_SEARCH, "page": page, "perpage": _XML_PAGE},
+                                 timeout=_WHOLE_LIST_TIMEOUT)
+            if not rows:
+                break
+            picked += [r for r in rows if r.get("cn") not in (None, "", "0")
+                       and any(value(r, f) for f in CONTACT_FIELDS)][:samples - len(picked)]
+            if len(picked) >= samples or len(rows) < _XML_PAGE:
+                break
+        summary = {f: {"list": 0, "detail_json": 0, "detail_xml": 0, "json_agrees": 0, "xml_agrees": 0}
+                   for f in CONTACT_FIELDS}
+        per_identity = []
+        for row in picked:
+            cn = row["cn"]
+            body = self.read_json("identity_detail", f"detail_json:{cn}", f"/identities/{cn}.json")
+            as_json = attrs_of(body) if body is not None else None
+            xml_rows = self.read_xml("identity_detail", f"detail_xml:{cn}", f"/identities/{cn}.xml",
+                                     "identities", "identity")
+            as_xml = xml_rows[0] if xml_rows else None
+            fields = {}
+            for f in CONTACT_FIELDS:
+                listed = value(row, f)
+                entry = {"list": bool(listed)}
+                for name, detail in (("detail_json", as_json), ("detail_xml", as_xml)):
+                    if detail is None:
+                        entry[name] = "unread"
+                        continue
+                    got = value(detail, f)
+                    entry[name] = bool(got)
+                    agrees = got == listed
+                    entry[f"{name}_agrees"] = agrees
+                    summary[f][name] += bool(got)
+                    summary[f][f"{name.split('_')[1]}_agrees"] += agrees
+                summary[f]["list"] += bool(listed)
+                fields[f] = entry
+            per_identity.append({"id": cn, "fields": fields})
+        self.report["detail_vs_list"] = {
+            "cardholders_compared": len(per_identity),
+            # Per field: how many list rows had it, how many details had it,
+            # and how many details agreed with the list (blank = blank agrees).
+            "summary": summary,
+            "per_identity": per_identity,
+            "list_search_by_id": self._list_by_id(picked[0]["cn"]) if picked else "no cardholder to try",
+        }
+
+    def _list_by_id(self, cn: str) -> dict[str, Any]:
+        """Does the list search take an identity id? It would give tracked
+        people their list row, without reading each detail."""
+        rows = self.read_xml("identity_search", "list_by_id", "/identities.xml", "identities", "identity",
+                             params={**_XML_SEARCH, "id": cn, "page": 1, "perpage": _XML_PAGE},
+                             timeout=_WHOLE_LIST_TIMEOUT)
+        if rows is None:
+            return {"answered": False}
+        ids = [r.get("cn") for r in rows]
+        return {"answered": True, "rows": len(rows), "only_that_identity": ids == [cn]}
 
     def new_token_form(self) -> None:
         """Unity's form for adding a token, read and never submitted.
@@ -811,7 +898,8 @@ def main() -> int:
         argv.insert(0, "all")  # the form before modes existed: <host> <username>
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("mode", choices=MODES, help="all: JSON and XML; xml: test paging the XML identity list; "
-                                               "search: test the embossed-number search")
+                                               "search: test the embossed-number search; "
+                                               "detail: compare a cardholder's detail with their list row")
     ap.add_argument("host", help="appliance address, e.g. 10.0.0.5 (no https://)")
     ap.add_argument("username")
     ap.add_argument("--samples", type=int, default=3, help="identities with tokens to sample")
@@ -821,6 +909,8 @@ def main() -> int:
     probe = Probe(args.host, args.username, password, args.mode)
     if args.mode == "search":
         report = probe.run_search()
+    elif args.mode == "detail":
+        report = probe.run_detail(args.samples)
     else:
         report = probe.run_xml(args.samples) if args.mode == "xml" else probe.run(args.samples)
     report["finished"] = datetime.now().isoformat()
