@@ -190,10 +190,9 @@ def _whole_roster_complete(snapshot: Snapshot) -> bool:
     if complete:
         set_json(_LAST_COMPLETE_KEY, len(snapshot.people))
     else:
-        logger.error(
-            "Phase 3: the PACS returned %d people against %d in the last complete "
-            "read — under %d%%, so nobody is revoked for being missing this cycle",
-            len(snapshot.people), previous, int(MIN_COMPLETE_FRACTION * 100),
+        _held_back(
+            f"the PACS returned {len(snapshot.people)} people against {previous} in the "
+            f"last complete read"
         )
     return complete
 
@@ -210,12 +209,21 @@ def _tracked_complete(snapshot: Snapshot) -> bool:
     present = len(held & snapshot.people.keys())
     if present >= len(held) * MIN_COMPLETE_FRACTION:
         return True
-    logger.error(
-        "Phase 3: only %d of %d tracked cardholders came back from the PACS — under "
-        "%d%%, so nobody is revoked for being missing this cycle",
-        present, len(held), int(MIN_COMPLETE_FRACTION * 100),
-    )
+    _held_back(f"only {present} of {len(held)} tracked cardholders came back from the PACS")
     return False
+
+
+def _held_back(what: str) -> None:
+    """Revokes for missing people are held back this cycle: logged, and mailed."""
+    from ... import notifications
+
+    problem = (
+        f"Phase 3: {what} — under {int(MIN_COMPLETE_FRACTION * 100)}%, so nobody is revoked "
+        f"for being missing this cycle. A read that short is likelier a PACS problem than "
+        f"people leaving; until a fuller read, anyone who did leave keeps a working pass."
+    )
+    logger.error("%s", problem)
+    notifications.notify_card_problem("revoke-guard", problem)
 
 
 def _retire_deleted_credentials(
