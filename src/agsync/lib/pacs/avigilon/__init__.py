@@ -28,6 +28,9 @@ DESCRIPTOR = PacsDescriptor(
     # ~0.1 s each on a live box (Nov 2026 probe), so 20 s waits on a small
     # install; a large one waits 3x its own cycle as everywhere else.
     min_interval_s=20,
+    # Two identities' tokens holding the same Internal Number would put one
+    # card on two phones.
+    unique_card_numbers=True,
     # A token names no card format, so the site's is chosen once in setup.
     picks_card_format=True,
 )

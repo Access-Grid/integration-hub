@@ -237,6 +237,8 @@ def build_snapshot(
         logger.error("Failed to list AG cards: %s", e)
         cards = []
 
+    from .phases.writeback import is_dead
+
     for card in cards:
         snap.ag_card_by_id[card.id] = card
         metadata = getattr(card, "metadata", None) or {}
@@ -252,8 +254,15 @@ def build_snapshot(
 
         site = metadata.get("site_code")
         card_no = metadata.get("card_number")
-        if site is not None and card_no is not None:
-            snap.ag_cards_by_site_card[(str(site), str(card_no))] = card
+        if card_no is not None:
+            # A card with no site code (H10302) under "". A live card is
+            # never displaced by a dead one with the same number: AccessGrid
+            # keeps listing deleted passes, and a re-issued card's deleted
+            # pass must not hide its live one, or the live one hide nothing.
+            key = (str(site) if site is not None else "", str(card_no))
+            current = snap.ag_cards_by_site_card.get(key)
+            if current is None or is_dead(current) or not is_dead(card):
+                snap.ag_cards_by_site_card[key] = card
 
     logger.info(
         "Snapshot complete: %d people, %d credentials, %d AG cards "

@@ -44,6 +44,44 @@ logger = logging.getLogger(__name__)
 MAX_PROVISIONS_PER_CYCLE = 25
 
 
+def _card_key(cred, eff_site_code: str) -> tuple[str, str] | None:
+    """(site code, card number) as card metadata indexes it; None for a card AccessGrid allocates."""
+    if cred.allocate_identity or not cred.card_number:
+        return None
+    return (str(eff_site_code or ""), str(cred.card_number))
+
+
+def refuse_duplicate(snapshot: Snapshot, pid: str, name: str, cred, eff_site_code: str) -> bool:
+    """Is this card's number already on a live pass? If so, say so and mail it.
+
+    For a PACS whose card numbers must be unique (descriptor
+    unique_card_numbers). A deleted or unlinked pass carries the number of
+    nobody's working card, so it does not count.
+    """
+    from ... import notifications
+    from .writeback import is_dead
+
+    key = _card_key(cred, eff_site_code)
+    hit = snapshot.ag_cards_by_site_card.get(key) if key else None
+    if hit is None or is_dead(hit):
+        return False
+    problem = (
+        f"{name} ({pid}) has card {key[0] or '-'}/{key[1]} ({cred.id}) marked for a pass, but AccessGrid pass "
+        f"{getattr(hit, 'id', '?')} (employee {getattr(hit, 'employee_id', '?')}) already carries that number "
+        f"— not issuing a second. Correct the card number in the PACS."
+    )
+    logger.error("  %s", problem)
+    notifications.notify_card_problem(f"duplicate:{pid}:{cred.id}", problem)
+    return True
+
+
+def note_issued_card(snapshot: Snapshot, cred, eff_site_code: str, card) -> None:
+    """Index a pass just issued by its number, so a second card with it this cycle is caught too."""
+    key = _card_key(cred, eff_site_code)
+    if key:
+        snapshot.ag_cards_by_site_card[key] = card
+
+
 def run(
     snapshot: Snapshot,
     ag: AccessGrid,
@@ -58,6 +96,7 @@ def run(
     default_pass_days: int = 365,
     should_stop: Callable[[], bool] | None = None,
     max_per_cycle: int = MAX_PROVISIONS_PER_CYCLE,
+    require_unique_card: bool = False,
 ) -> int:
     provisioned = 0
     skipped = 0
@@ -142,6 +181,9 @@ def run(
                     )
                     deduped += 1
                     continue
+            if require_unique_card and refuse_duplicate(snapshot, pid, person.full_name, cred, eff_site_code):
+                skipped += 1
+                continue
 
             eligible += 1
             if provisioned >= max_per_cycle:
@@ -255,6 +297,7 @@ def run(
                 )
                 provisioned += 1
                 logger.info("  Provisioned AG card %s for %s", ag_card_id, person.full_name)
+                note_issued_card(snapshot, cred, eff_site_code, card)
                 if cred.allocate_identity and pacs is not None:
                     # Hand the freshly-minted identity straight back so the
                     # card exists in the PACS before the next cycle reads it.

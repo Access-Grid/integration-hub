@@ -479,6 +479,7 @@ class SyncEngine:
         descriptor = get_descriptor(pacs_cfg.get("vendor", ""))
         max_per_cycle = (descriptor and descriptor.max_provisions_per_cycle) or phase1_provision.MAX_PROVISIONS_PER_CYCLE
         default_pass_days = descriptor.default_pass_days if descriptor else 365
+        unique_cards = bool(descriptor and descriptor.unique_card_numbers)
         try:
             result.provisioned = phase1_provision.run(
                 snapshot, ag, ag_cfg["template_id"], site_code,
@@ -491,6 +492,7 @@ class SyncEngine:
                 should_stop=superseded,
                 max_per_cycle=max_per_cycle,
                 default_pass_days=default_pass_days,
+                require_unique_card=unique_cards,
             )
             if superseded():
                 return self._abandon(result, start_ms)
@@ -508,6 +510,7 @@ class SyncEngine:
                 card_classification=card_classification,
                 pacs=pacs,
                 default_pass_days=default_pass_days,
+                require_unique_card=unique_cards,
             )
             result.field_updates = phase6_field_changes.run(snapshot, ag)
             # Adapters that batch their PACS writes send them now, once the

@@ -173,6 +173,11 @@ class PacsDescriptor:
     # default (engine.MIN_INTERVAL_S). A cycle slower than a third of it
     # still waits 3x its own time.
     min_interval_s: int | None = None
+    # True if two passes must never carry the same site code + card number,
+    # whatever the operator's dedupe setting: a second token holding a
+    # number already on a pass is refused and mailed, not issued. Checked
+    # against passes issued earlier in the same cycle too.
+    unique_card_numbers: bool = False
     # True if setup asks for one of the PACS's card formats, read live, whose
     # facility code becomes the site code. The adapter provides
     # card_formats() and card_format_params(params, format_id).

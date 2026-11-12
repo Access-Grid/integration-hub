@@ -21,6 +21,7 @@ from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
+from .phase1_provision import note_issued_card, refuse_duplicate
 from .writeback import push_allocated_identities
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ def run(
     card_classification: str = "",
     pacs: PacsAdapter | None = None,
     default_pass_days: int = 365,
+    require_unique_card: bool = False,
 ) -> int:
     failed = tracking.failed_records(MAX_RETRIES)
     if not failed:
@@ -93,6 +95,11 @@ def run(
                     full_name=person.full_name,
                 )
                 continue
+        if require_unique_card and refuse_duplicate(snapshot, tracked.pacs_person_id, person.full_name,
+                                                    cred, eff_site_code):
+            tracking.record_error(tracked.pacs_person_id, tracked.pacs_credential_id,
+                                  "card number already on another pass")
+            continue
 
         now = datetime.now(UTC)
         metadata: dict = dict(extra_metadata or {})
@@ -174,6 +181,7 @@ def run(
             )
             succeeded += 1
             logger.info("  Retry succeeded for %s", person.full_name)
+            note_issued_card(snapshot, cred, eff_site_code, card)
             if cred.allocate_identity and pacs is not None:
                 push_allocated_identities(
                     pacs, tracked.pacs_person_id, tracked.pacs_credential_id, card,
