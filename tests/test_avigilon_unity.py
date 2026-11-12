@@ -1054,6 +1054,47 @@ def test_seos_pair_android_half_auto_deleted_on_ios_install_leaves_unity_in_the_
     assert cred.status is CredentialStatus.ACTIVE
 
 
+def _installed_seos_pass(seos, monkeypatch, re_read):
+    """a's Seos pass, installed and its token on; phase 4's install gate run
+    with `re_read` answering each card fetch. Returns a's token status after."""
+    from agsync.sync.phases import phase4_ag_to_local
+
+    fake, a = seos()
+    _cycle(a)
+    a.write_back_credentials("a", "t1", [_card("9001")])
+    assert a.update_credential_status("a", "t1", CredentialStatus.ACTIVE)
+    row = SimpleNamespace(pacs_person_id="a", pacs_credential_id="t1", ag_card_id="pass-a", status="active",
+                          sync_ref="ref-a", last_known_ag_state="active", full_name="Jim Cooper")
+    monkeypatch.setattr(tracking, "all_tracked", lambda: [row])
+    snap = Snapshot()
+    # The listing never carries devices: only a card fetch says it is installed.
+    snap.ag_cards_by_sync_ref["ref-a"] = [SimpleNamespace(id="ios", state="active", devices=[])]
+    snap.credentials_by_person["a"] = _cycle(a)
+    phase4_ag_to_local._hold_uninstalled_inactive(snap, a, SimpleNamespace(
+        access_cards=SimpleNamespace(get=re_read)))
+    [made] = _hub_tokens(fake)
+    return made["attributes"]["extended_attributes"]["token_status"]
+
+
+def test_seos_card_fetch_that_fails_leaves_an_installed_holders_token_on(seos, monkeypatch, caplog):
+    """A failed fetch leaves only the listing's devices: [], which is not
+    "not installed" but "unknown". Read as not installed, it switched off
+    the token of a holder whose pass works, until the next cycle."""
+    def fails(card_id):
+        raise RuntimeError("429 Too Many Requests")
+
+    with caplog.at_level("WARNING"):
+        assert _installed_seos_pass(seos, monkeypatch, fails) == "Active"
+    assert "could not be re-read" in caplog.text
+
+
+def test_seos_card_fetch_saying_nothing_is_installed_still_switches_the_token_off(seos, monkeypatch):
+    """The other side of the same gate: a fetch that worked and lists no
+    device is a real "not installed", and the token goes off."""
+    assert _installed_seos_pass(seos, monkeypatch,
+                                lambda card_id: SimpleNamespace(id="ios", state="active", devices=[])) == "Inactive"
+
+
 def test_desfire_template_keeps_reading_internal_numbers(seos):
     _, a = seos()
     a.seos = False

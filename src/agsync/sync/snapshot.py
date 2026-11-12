@@ -39,6 +39,10 @@ class Snapshot:
     ag_cards_by_site_card: dict[tuple[str, str], Any] = field(default_factory=dict)
     # Cards re-read individually this cycle, keyed by id. See detailed_cards.
     ag_card_detail: dict[str, Any] = field(default_factory=dict)
+    # Of those, the ids whose re-read failed, so the listed card stands in.
+    # A listed card answers `devices: []`, so for these "no device" means
+    # "unknown", never "not installed".
+    ag_card_detail_failed: set[str] = field(default_factory=set)
     # (person, credential) whose pass phase 2 suspended or resumed this
     # cycle, to match the PACS. The listing above predates that call, so
     # phase 4 reading it would take the old state for an AccessGrid change
@@ -125,8 +129,12 @@ class Snapshot:
                 try:
                     self.ag_card_detail[card_id] = ag.access_cards.get(card_id)
                 except Exception as e:  # noqa: BLE001
-                    logger.debug("Could not re-read AG card %s: %s", card_id, e)
+                    logger.warning(
+                        "Could not re-read AG card %s — its listing stands in, "
+                        "which does not say what it is installed on: %s", card_id, e,
+                    )
                     self.ag_card_detail[card_id] = card
+                    self.ag_card_detail_failed.add(card_id)
             out.append(self.ag_card_detail[card_id])
         return out
 

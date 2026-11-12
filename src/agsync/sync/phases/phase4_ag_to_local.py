@@ -179,6 +179,20 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
             continue
 
         desired = _desired_card_status(cards)
+        unread = [
+            getattr(c, "id", "?") for c in cards
+            if getattr(c, "id", None) in snapshot.ag_card_detail_failed
+        ]
+        if desired is CredentialStatus.AWAITING_INSTALL and unread:
+            # Only a card fetch lists devices. With one failed, "no device
+            # installed" is a guess, and acting on it switches off the card
+            # of a holder whose pass works.
+            logger.warning(
+                "  Leaving the card of %s as it is — AG card(s) %s could not be "
+                "re-read, so whether the pass is installed is unknown this cycle",
+                tracking.label(tracked), ", ".join(unread),
+            )
+            continue
         _gate_debug(tracked, cards, desired, cred)
         # The adapter reads its own state off the card, where "off" has no
         # reason attached, so an awaited install and a suspension look the
