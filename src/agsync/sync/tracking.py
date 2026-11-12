@@ -240,6 +240,21 @@ def failed_records(max_retries: int) -> list[TrackedCredential]:
     return [_row_to_tracked(r) for r in rows]
 
 
+def exhausted_records(max_retries: int) -> list[TrackedCredential]:
+    """Rows whose issue failed max_retries times: retried no more."""
+    rows = execute(
+        """
+        SELECT * FROM ag_credentials
+         WHERE sync_error IS NOT NULL
+           AND retry_count >= ?
+           AND ag_card_id IS NULL
+         ORDER BY updated_at ASC
+        """,
+        (max_retries,),
+    )
+    return [_row_to_tracked(r) for r in rows]
+
+
 def update_field_tracking(
     pacs_person_id: str,
     pacs_credential_id: str,

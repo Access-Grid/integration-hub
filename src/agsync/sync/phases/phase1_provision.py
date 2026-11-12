@@ -168,6 +168,14 @@ def run(
                 # pushed the PACS's old state back over it. Phase 4 records
                 # the state once it has acted on it.
                 continue
+            if existing and existing.sync_error:
+                # An issue that failed. Phase 5 retries it, up to its cap;
+                # issuing it here too did so every cycle, with no cap at all.
+                logger.debug(
+                    "  %s %s: earlier issue failed (%s) — left to phase 5",
+                    pid, cred.id, existing.sync_error,
+                )
+                continue
 
             if expired(cred):
                 # Phase 3 deletes a pass whose card has expired, so issuing

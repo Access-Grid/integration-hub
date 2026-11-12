@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
-from ...lib.pacs import PacsAdapter
+from ...lib.pacs import CredentialStatus, PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
 from .phase1_provision import note_issued_card, refuse_duplicate, unrecorded_pass
@@ -43,6 +43,7 @@ def run(
     default_pass_days: int = 365,
     require_unique_card: bool = False,
 ) -> int:
+    _settle_exhausted(snapshot)
     failed = tracking.failed_records(MAX_RETRIES)
     if not failed:
         logger.debug("Phase 5: No failed records to retry")
@@ -217,3 +218,43 @@ def run(
 
     logger.info("Phase 5 done: %d/%d succeeded", succeeded, len(failed))
     return succeeded
+
+
+def _settle_exhausted(snapshot: Snapshot) -> None:
+    """Cards whose issue failed MAX_RETRIES times: mailed, or forgotten.
+
+    Forgotten once the PACS no longer wants a pass for the card — switched
+    off, its trigger taken away, or gone — so switching it back on is a
+    fresh start with fresh tries. Otherwise the operator is told it will not
+    be tried again (notifications mails each card at most once a while).
+    A cardholder not read this cycle says nothing either way.
+    """
+    from ... import notifications
+
+    for tracked in tracking.exhausted_records(MAX_RETRIES):
+        pid, cid = tracked.pacs_person_id, tracked.pacs_credential_id
+        if pid not in snapshot.credentials_by_person:
+            continue
+        cred = next((c for c in snapshot.credentials_by_person[pid] if c.id == cid), None)
+        person = snapshot.people.get(pid)
+        if (
+            cred is None
+            or not cred.trigger_active
+            or cred.status is not CredentialStatus.ACTIVE
+            or (person is not None and not person.active)
+        ):
+            logger.info(
+                "  %s: no longer marked for an active pass — forgetting its %d failed "
+                "issue(s); marking it again starts over",
+                tracking.label(tracked), tracked.retry_count,
+            )
+            tracking.remove(pid, cid)
+            continue
+        problem = (
+            f"{tracked.full_name or pid} ({pid}) has card {cid} marked for a pass, but AccessGrid "
+            f"refused to issue it {tracked.retry_count} times, most recently: {tracked.sync_error}. "
+            f"It will not be tried again. Fix the cause, then switch the card off and back on "
+            f"in the PACS to try again."
+        )
+        logger.warning("  %s", problem)
+        notifications.notify_card_problem(f"issue-failed:{pid}:{cid}", problem)
