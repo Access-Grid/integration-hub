@@ -42,10 +42,17 @@ def _devices(card) -> list[str]:
     return out
 
 
+# "deleted" is deliberately absent: AccessGrid deletes only the half of a
+# pair nobody installed, and a whole pass only when the hub asks, so a
+# deleted pass is never an AG → ACS change for the PACS to follow.
 _AG_TO_CRED_STATUS: dict[str, CredentialStatus] = {
     "active": CredentialStatus.ACTIVE,
     "created": CredentialStatus.ACTIVE,
     "suspended": CredentialStatus.SUSPENDED,
+    # The holder took the pass off their device. The SDK documents
+    # "unlink"; "unlinked" is accepted too.
+    "unlink": CredentialStatus.SUSPENDED,
+    "unlinked": CredentialStatus.SUSPENDED,
 }
 
 
@@ -212,6 +219,11 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
         # AG-side change detected. Translate to a credential status.
         desired = _AG_TO_CRED_STATUS.get(ag_state)
         if desired is None:
+            logger.info(
+                "  AG pass for %s is now '%s' — not a state the PACS follows, "
+                "leaving its card as it is",
+                tracking.label(tracked), ag_state,
+            )
             tracking.update_last_known_ag_state(
                 tracked.pacs_person_id, tracked.pacs_credential_id, ag_state,
             )

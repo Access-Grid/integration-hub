@@ -924,6 +924,126 @@ def test_seos_retirement_keeps_the_record_when_the_identity_is_there_but_its_tok
     assert a.written_credentials() == {("a", "t1"): ["9001"]}
 
 
+def _desfire_tracked_pass(monkeypatch, halves, last_known="active"):
+    """a holds DESFire token t1, Active, with a tracked pass whose cards are `halves`.
+
+    Runs phase 4 against the real adapter; returns (fake Unity, recorded AG states).
+    """
+    from agsync.sync.phases import phase4_ag_to_local
+
+    row = SimpleNamespace(pacs_person_id="a", pacs_credential_id="t1", ag_card_id="pass-a", status="active",
+                          sync_ref="ref-a", last_known_ag_state=last_known, full_name="Jim Cooper",
+                          last_synced_full_name="Jim Cooper", last_synced_email="a@x",
+                          last_synced_phone="", last_synced_title="")
+    monkeypatch.setattr(tracking, "all_tracked", lambda: [row])
+    recorded = []
+    monkeypatch.setattr(tracking, "update_last_known_ag_state", lambda p, c, s: recorded.append(s))
+    fake, a = _seos()
+    a.seos = False
+    snap = build_snapshot(a, None, "t")
+    snap.ag_cards_by_sync_ref["ref-a"] = [SimpleNamespace(id=f"half-{i}", state=s) for i, s in enumerate(halves)]
+    phase4_ag_to_local.run(snap, a, None)
+    return fake, recorded
+
+
+def _t1_status(fake):
+    return next(t for t in fake.tokens["a"] if t["id"] == "t1")["attributes"]["extended_attributes"]["token_status"]
+
+
+@pytest.mark.parametrize("halves", [["unlink"], ["unlinked"], ["deleted", "unlink"], ["unlink", "deleted"]])
+def test_desfire_pass_unlinked_in_accessgrid_switches_the_token_off(monkeypatch, halves):
+    """Deleted halves are the side of a pair nobody installed: they say nothing."""
+    monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
+    fake, recorded = _desfire_tracked_pass(monkeypatch, halves)
+    assert _t1_status(fake) == "Inactive"
+    assert recorded[-1] in ("unlink", "unlinked")
+
+
+@pytest.mark.parametrize("halves", [["deleted"], ["deleted", "deleted"], ["unlink", "active"],
+                                    ["deleted", "active"]])
+def test_desfire_token_stays_on_unless_every_undeleted_half_is_unlinked(monkeypatch, halves):
+    """A pass deleted whole is the hub's own delete, never an AG → ACS change;
+    one half still active keeps the token on."""
+    monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
+    fake, _ = _desfire_tracked_pass(monkeypatch, halves)
+    assert _t1_status(fake) == "Active"
+    assert not any(p.get("_method") == "put" for p in fake.posts)
+
+
+def test_desfire_unlinked_pass_is_left_alone_the_cycle_after(monkeypatch):
+    """With the token off and the unlink recorded, phase 2 calls nothing on
+    AccessGrid (an unlinked pass is not suspended) and phase 4 writes nothing."""
+    from agsync.sync.phases import phase2_local_to_ag
+
+    monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
+    fake, _ = _desfire_tracked_pass(monkeypatch, ["deleted", "unlink"])
+    assert _t1_status(fake) == "Inactive"
+    writes = len(fake.posts)
+    # Phase 4 again, the unlink now recorded: nothing new, nothing written.
+    fake2, recorded = _desfire_tracked_pass(monkeypatch, ["deleted", "unlink"], last_known="unlink")
+    assert recorded == [] and fake2.posts == []
+
+    class NoAg:
+        @property
+        def access_cards(self):
+            raise AssertionError("phase 2 called AccessGrid")
+
+    _, a = _seos(fake.tokens["a"])
+    a.seos = False
+    snap = build_snapshot(a, None, "t")
+    snap.ag_cards_by_sync_ref["ref-a"] = [SimpleNamespace(id="h0", state="deleted"),
+                                          SimpleNamespace(id="h1", state="unlink")]
+    assert phase2_local_to_ag.run(snap, NoAg()) == 0
+    assert len(fake.posts) == writes
+
+
+@pytest.mark.parametrize(("halves", "state"), [(["deleted", "unlink"], "unlink"), (["unlink", "active"], "active"),
+                                               (["deleted", "deleted"], "deleted"), (["suspended", "deleted"], "suspended")])
+def test_every_phase_reads_a_pair_by_its_undeleted_half(halves, state):
+    """Phases 1, 2 and 4 must agree on the pass's state, or each records
+    its own reading over the last and they act on each other's changes."""
+    snap = Snapshot()
+    snap.ag_cards_by_sync_ref["ref"] = [SimpleNamespace(id=f"h{i}", state=s) for i, s in enumerate(halves)]
+    assert snap.resolve_ag_card("pass", sync_ref="ref").state == state
+
+
+def test_seos_pair_android_half_auto_deleted_on_ios_install_leaves_unity_in_the_same_cycle(seos, monkeypatch):
+    """A pair writes one token per platform. The holder installs on an
+    iPhone and AccessGrid deletes the Android half: phase 3 deletes its token
+    and our record of it, and phase 4 then switches on only the iOS one."""
+    from agsync.sync.phases import phase3_deletions, phase4_ag_to_local
+
+    fake, a = seos()
+    _cycle(a)
+    assert a.write_back_credentials("a", "t1", [_card("9001"), _card("9002")])  # iOS, Android
+    row = SimpleNamespace(pacs_person_id="a", pacs_credential_id="t1", ag_card_id="pass-a", status="active",
+                          sync_ref="ref-a", last_known_ag_state="active", full_name="Jim Cooper")
+    monkeypatch.setattr(tracking, "all_tracked", lambda: [row])
+    snap = Snapshot()
+    snap.ag_cards_by_sync_ref["ref-a"] = [
+        SimpleNamespace(id="ios", state="active", site_code="239", card_number="9001",
+                        devices=[SimpleNamespace(device_type="iphone", status="installed")]),
+        SimpleNamespace(id="android", state="deleted", site_code="239", card_number="9002", devices=[]),
+    ]
+
+    class Ag:  # re-reads fail, so the listed cards stand
+        access_cards = SimpleNamespace(get=lambda card_id: (_ for _ in ()).throw(KeyError(card_id)))
+
+    def tokens():
+        return {t["attributes"]["plasecInternalnumber"]: t["attributes"]["extended_attributes"]["token_status"]
+                for t in fake.tokens["a"]}
+
+    assert phase3_deletions._retire_deleted_credentials(snap, Ag(), a) == 1
+    assert tokens() == {"9001": "Inactive"}
+    assert a.written_credentials() == {("a", "t1"): ["9001"]}
+
+    snap.credentials_by_person["a"] = _cycle(a)
+    assert phase4_ag_to_local._hold_uninstalled_inactive(snap, a, Ag()) == 1
+    assert tokens() == {"9001": "Active"}
+    [cred] = _cycle(a)
+    assert cred.status is CredentialStatus.ACTIVE
+
+
 def test_desfire_template_keeps_reading_internal_numbers(seos):
     _, a = seos()
     a.seos = False
