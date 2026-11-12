@@ -158,13 +158,10 @@ class Snapshot:
         unlinked: the unlink is the pass's state, not the abandoned half's
         delete.
         """
-        from .phases.writeback import is_dead, state_of
+        from .phases.writeback import representative_card
 
         cards = self.resolve_ag_cards(ag_card_id, person_id, credential_id, sync_ref)
-        return next(
-            (c for c in cards if not is_dead(c)),
-            next((c for c in cards if state_of(c) != "deleted"), cards[0] if cards else None),
-        )
+        return representative_card(cards)
 
     @property
     def total_credentials(self) -> int:

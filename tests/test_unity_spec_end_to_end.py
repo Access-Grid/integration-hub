@@ -703,6 +703,32 @@ def test_seos_active_installed_member_wins_over_suspended_member(world):
     assert ag.verbs("suspend", "resume") == []
 
 
+@pytest.mark.parametrize("protocol", ["desfire", "seos"])
+@pytest.mark.parametrize("active_first", [False, True])
+def test_mixed_pair_state_is_stable_across_cycles_and_member_order(world, protocol, active_first):
+    unity, ag, cycle = _seos(world) if protocol == "seos" else _desfire(world, True)
+    cycle()
+    pass_id = ag.only_pass()
+    cards = ag.passes[pass_id]
+    live, off = cards if active_first else reversed(cards)
+    live.update(state="active", devices=[{"status": "installed", "device_type": "iphone"}])
+    off["state"] = "suspended"
+    for _ in range(3):
+        cycle()
+        assert _row().last_known_ag_state == "active"
+        assert _row().status == "active"
+        assert set(_tokens_by_number(unity).values()) == {"Active"}
+    assert ag.verbs("resume", "suspend", "delete") == []
+    # A later real ACS change must still suspend/resume the entire pair.
+    for token in unity.tokens["a"]:
+        _status(token, "Inactive")
+    cycle()
+    for token in unity.tokens["a"]:
+        _status(token, "Active")
+    cycle()
+    assert ag.verbs("suspend", "resume") == [("suspend", pass_id), ("resume", pass_id)]
+
+
 @PAIRS
 def test_desfire_identity_change_updates_payload_by_pass_id(world, pair):
     unity, ag, cycle = _desfire(world, pair)
@@ -852,6 +878,7 @@ def _unity_state(unity):
 
 
 def test_dry_run_does_not_switch_a_desfire_token_off(world, dry, caplog):
+    caplog.set_level("INFO")
     unity, ag, cycle = _desfire(world, True)
     cycle()
     pass_id = ag.only_pass()
@@ -866,6 +893,7 @@ def test_dry_run_does_not_switch_a_desfire_token_off(world, dry, caplog):
 
 
 def test_dry_run_does_not_switch_seos_tokens_on_at_install_or_retire_the_other_half(world, dry, caplog):
+    caplog.set_level("INFO")
     unity, ag, cycle = _seos(world, True)
     cycle()
     before = _unity_state(unity)
@@ -880,6 +908,7 @@ def test_dry_run_does_not_switch_seos_tokens_on_at_install_or_retire_the_other_h
 
 
 def test_dry_run_does_not_write_a_token_for_a_second_device(world, dry, caplog):
+    caplog.set_level("INFO")
     unity, ag, cycle, pass_id, ios = _installed_seos(world)
     before = _unity_state(unity)
     dry()
@@ -893,6 +922,7 @@ def test_dry_run_does_not_write_a_token_for_a_second_device(world, dry, caplog):
 
 
 def test_dry_run_does_not_reissue_a_deleted_pass_or_delete_its_tokens(world, dry, caplog):
+    caplog.set_level("INFO")
     unity, ag, cycle = _seos(world, True)
     cycle()
     old = ag.only_pass()

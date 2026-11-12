@@ -3,9 +3,9 @@
 A created token carries the `accessgrid` embossed number, like an operator's
 enrollment token, so nothing on it says it is ours. This table is what does.
 A row is written before its token is created and gets the token's id after,
-so a crash in between leaves a row to adopt the token by, not a stray token
-that reads as a new enrollment. Card numbers and facility codes are stored
-encrypted.
+so a crash in between leaves a reservation that holds a matching token for
+operator review. A number match alone never establishes token ownership.
+Card numbers and facility codes are stored encrypted.
 """
 
 from __future__ import annotations

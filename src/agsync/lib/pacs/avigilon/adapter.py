@@ -440,7 +440,7 @@ class AvigilonAdapter:
         # One credential per pass: an enrollment not yet written, or the
         # tokens we wrote for one, which go on after the enrollment is
         # deleted. A token holding the number of a row still being created is
-        # ours too, created before a crash; write_back_credentials adopts it.
+        # held too: after a crash their ownership requires operator review.
         ours = written.for_person(pid)
         mine = {e["token_id"] for e in ours if e["token_id"]}
         creating = {e["card_number"] for e in ours if not e["token_id"]}
@@ -673,9 +673,9 @@ class AvigilonAdapter:
         is recorded, then the token created (switched off; the install gate
         switches it on) and its id recorded, and only when every credential
         has its token does the enrollment go. Offered again every cycle, so a
-        credential already written is skipped, a token holding its number
-        that we created but did not record is adopted rather than created
-        twice, and an enrollment whose delete failed is deleted then. A
+        credential already written is skipped, and an enrollment whose
+        delete failed is deleted then. A matching untracked token is held
+        for review: its number and marker cannot prove who created it. A
         number recorded on another pass is never written: two people would
         hold the same card.
         """
@@ -701,10 +701,13 @@ class AvigilonAdapter:
                 continue
             if not fresh:
                 tokens, fresh = self._client.list_tokens(pid), True
-            adopt = next((t for t in tokens if t["internal_number"] == card[1] and _is_trigger(t)
-                          and t["id"] not in known and t["id"] != credential_id), None)
+            untracked = next((t for t in tokens if t["internal_number"] == card[1] and _is_trigger(t)
+                              and t["id"] not in known and t["id"] != credential_id), None)
+            if untracked:
+                self._ambiguous_token(pid, credential_id, card[1], untracked["id"])
+                return False
             # Checked before anything is recorded: a refused card leaves no row.
-            if not adopt and not self._number_is_free(pid, credential_id, card):
+            if not self._number_is_free(pid, credential_id, card):
                 return False
             if card in mine:
                 row = mine[card]["row"]
@@ -714,10 +717,7 @@ class AvigilonAdapter:
                 row = written.add(pid, credential_id, *card,
                                   *(d.isoformat() if (d := dates.get(n)) else None
                                     for n in ("activate_date", "deactivate_date")))
-            if adopt:
-                logger.info("Unity: adopting token %s of %s, created for card %s/%s but not recorded",
-                            adopt["id"], pid, *card)
-            token_id = adopt["id"] if adopt else self._client.create_token(pid, card[1], TRIGGER_VALUE, "2")
+            token_id = self._client.create_token(pid, card[1], TRIGGER_VALUE, "2")
             written.set_token(row, token_id)
             known.add(token_id)
         if dryrun.active():
@@ -782,10 +782,8 @@ class AvigilonAdapter:
             token_id = e["token_id"]
             if not token_id:
                 # Its token may have been created with the id never recorded.
-                # Forgetting the row would leave that token in Unity, read
-                # from then on as an operator's enrollment.
-                read, token_id = self._unrecorded_token(pid, credential_id, e["card_number"])
-                if not read:
+                # Keep ambiguous reservations without adopting or deleting a token.
+                if not self._unrecorded_token_absent(pid, credential_id, e["card_number"]):
                     continue
             if token_id:
                 try:
@@ -831,6 +829,13 @@ class AvigilonAdapter:
         enrollment = next((e for e in ours if on(e["token_id"])), None)
         if enrollment is None:
             return False
+        # Resolve uncertainty before deleting any known tokens or releasing
+        # their records. An untracked match must never become ours by inference.
+        if not dryrun.active() and any(
+            not self._unrecorded_token_absent(pid, credential_id, e["card_number"])
+            for e in ours if not e["token_id"]
+        ):
+            return False
         if dryrun.active():
             dryrun.would("make Unity token %s of %s the enrollment for a new pass, deleting the other "
                          "tokens of deleted pass %s", enrollment["token_id"], pid, credential_id)
@@ -839,10 +844,6 @@ class AvigilonAdapter:
             if e is enrollment:
                 continue
             token_id = e["token_id"]
-            if not token_id:
-                read, token_id = self._unrecorded_token(pid, credential_id, e["card_number"])
-                if not read:
-                    return False
             if token_id and token_id in by_id:
                 try:
                     self._client.delete_token(pid, token_id)
@@ -860,12 +861,13 @@ class AvigilonAdapter:
                     "the enrollment for a new pass", enrollment["token_id"], pid)
         return True
 
-    def _unrecorded_token(self, pid: str, credential_id: str, number: str) -> tuple[bool, str | None]:
-        """(read, token id) of a token we created for this number without recording it.
+    def _unrecorded_token_absent(self, pid: str, credential_id: str, number: str) -> bool:
+        """May a pending reservation be forgotten without touching any token?
 
-        Matched as write_back_credentials adopts one. Not read means keep the
-        row and ask again next cycle — unless the identity itself is gone,
-        which takes every token with it.
+        A matching number is not ownership evidence. Keep ambiguous rows so
+        their tokens cannot turn into new enrollments, and ask for review.
+        An unread list keeps the reservation too; a confirmed missing identity
+        or a complete read without a candidate allows just the row to go.
         """
         try:
             tokens = self._client.list_tokens(pid)
@@ -873,16 +875,26 @@ class AvigilonAdapter:
             try:
                 self._client.get_identity(pid)
             except UnityNotFound:
-                return True, None
+                return True
             except UnityError:
                 pass
             logger.warning("Unity: could not read the tokens of %s to find the unrecorded token for card %s, "
                            "keeping its record to retry next cycle: %s", pid, number, err)
-            return False, None
+            return False
         known = {e["token_id"] for e in written.all_tokens() if e["token_id"]}
         token = next((t for t in tokens if t["internal_number"] == number and _is_trigger(t)
                       and t["id"] not in known and t["id"] != credential_id), None)
-        return True, token["id"] if token else None
+        if token:
+            self._ambiguous_token(pid, credential_id, number, token["id"])
+            return False
+        return True
+
+    def _ambiguous_token(self, pid: str, credential_id: str, number: str, token_id: str) -> None:
+        _problem(f"token-ownership:{pid}:{credential_id}:{token_id}",
+                 f"Unity: token {token_id} of identity {pid} matches card number {number} for pass "
+                 f"{credential_id}, but its token ID was never tracked. Ownership is unknown: "
+                 "not adopting, changing or deleting it. Enrollment and pending records are retained; "
+                 "review the token and writeback records before retrying.")
 
     def _token_gone(self, pid: str, token_id: str) -> bool:
         """Is this token no longer in Unity, on Unity's own word?

@@ -675,6 +675,7 @@ def test_create_without_csrf_is_refused_unsent():
 
 def test_deleted_token_is_gone_on_re_read():
     fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1"), _token("t2")]})
+    written.set_token(written.add("a", "enrollment", "239", "42069", None, None), "t1")
     c = _client(fake)
     c.delete_token("a", "t1")
     assert [t["id"] for t in c.list_tokens("a")] == ["t2"]
@@ -682,6 +683,7 @@ def test_deleted_token_is_gone_on_re_read():
 
 def test_delete_that_does_not_stick_raises():
     fake = FakeUnity([_identity("a")], tokens={"a": [_token("t1")]})
+    written.set_token(written.add("a", "enrollment", "239", "42069", None, None), "t1")
     fake.ignore_writes = True
     with pytest.raises(UnityError, match="still on"):
         _client(fake).delete_token("a", "t1")
@@ -711,6 +713,8 @@ def _card(number, site="239"):
 @pytest.fixture
 def seos(tracked):
     tracked("a")
+    # This fixture actually issues for t1, so authorize that exact enrollment.
+    tracking.all_tracked()[0].pacs_credential_id = "t1"
     return _seos
 
 
@@ -770,16 +774,17 @@ def test_seos_writeback_offered_again_creates_nothing(seos):
     assert len(fake.posts) == posts
 
 
-def test_seos_token_created_but_not_recorded_is_adopted_not_an_enrollment(seos):
-    # The crash between creating a token and recording its id: the row
-    # written first is what keeps the token from reading as an enrollment.
+def test_seos_token_without_a_recorded_id_is_held_for_review(seos, mailed):
+    # A pending reservation holds enrollment, but cannot prove who created lost.
     fake, a = seos([_token("t1"), _token("lost", internal="9001", status="Inactive")])
     written.add("a", "t1", "239", "9001", None, None)
     [cred] = _cycle(a)
     assert cred.id == "t1"
-    assert a.write_back_credentials("a", "t1", [_card("9001")])
-    assert [p.get("_method") for p in fake.posts] == ["delete"]  # the enrollment; nothing created
-    assert [e["token_id"] for e in written.for_credential("a", "t1")] == ["lost"]
+    assert not a.write_back_credentials("a", "t1", [_card("9001")])
+    assert fake.posts == []
+    assert [e["token_id"] for e in written.for_credential("a", "t1")] == [None]
+    assert {t["id"] for t in fake.tokens["a"]} == {"t1", "lost"}
+    assert any("Ownership is unknown" in problem for problem in mailed)
 
 
 def test_seos_number_written_for_another_pass_is_refused(seos):
@@ -1257,6 +1262,7 @@ def test_seos_number_held_by_another_identity_is_refused_and_mailed(tracked, mai
 
 def test_seos_loose_search_hit_without_the_number_does_not_block(tracked, mailed):
     tracked("a")
+    tracking.all_tracked()[0].pacs_credential_id = "t1"
     fake, a = _number_fake(b=[_token("tb", internal="90012")])
     _cycle(a)
     assert a.write_back_credentials("a", "t1", [_card("9001")])
@@ -1348,16 +1354,16 @@ def test_an_email_that_is_not_an_address_is_left_off_a_desfire_pass():
     assert cred.trigger_active and not cred.hold
 
 
-def test_retiring_a_card_deletes_the_token_created_without_its_id_recorded(seos):
-    # Created in Unity, but the hub never recorded the id (a crash, or a
-    # read-back that failed). Forgetting the row used to leave the token in
-    # Unity, read from the next cycle on as an operator's enrollment.
+def test_retiring_a_card_preserves_a_token_whose_id_was_never_recorded(seos, mailed):
+    # The token might be left from a crash or might belong to an operator.
     fake, a = seos([_token("t1"), _token("lost", internal="9001", status="Inactive")])
     written.add("a", "t1", "239", "9001", None, None)
     _cycle(a)
-    assert a.retire_credentials("a", "t1", [_card("9001")]) == 1
-    assert written.for_credential("a", "t1") == []
-    assert all(t["id"] != "lost" for t in fake.tokens["a"])
+    assert a.retire_credentials("a", "t1", [_card("9001")]) == 0
+    assert len(written.for_credential("a", "t1")) == 1
+    assert any(t["id"] == "lost" for t in fake.tokens["a"])
+    assert fake.posts == []
+    assert any("Ownership is unknown" in problem for problem in mailed)
     assert "lost" not in {c.id for c in _cycle(a)}
 
 

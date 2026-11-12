@@ -62,6 +62,14 @@ A template pair is one enrollment for an unknown phone platform. Its issued
 pair ID is stored unchanged and used for every AccessGrid mutation. The
 individual Apple and Android cards are read to determine installation and
 credential numbers; AccessGrid deletes the unused platform after installation.
+An active member determines the pair's active state regardless of listing order;
+Seos still requires an installation before activating its Unity tokens.
+
+Unity token deletion requires the exact identity and token ID in tracking.
+An `accessgrid` marker and matching number do not establish ownership. If a
+crash leaves a created token without its recorded ID, writeback and cleanup
+retain the ambiguous token and reservation and alert the operator for review.
+Creation must confirm a new token ID from Unity's response before recording it.
 
 - Seos issues omit site code and card number. Allocated numbers are written
   as inactive Unity tokens, recorded with their facility codes in the encrypted

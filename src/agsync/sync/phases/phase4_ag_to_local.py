@@ -8,7 +8,7 @@ from ...ag import AccessGrid
 from ...lib.pacs import CredentialStatus, PacsAdapter
 from .. import tracking
 from ..snapshot import Snapshot
-from .writeback import is_installed, push_allocated_identities, state_of
+from .writeback import is_installed, push_allocated_identities, representative_card, state_of
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +79,7 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
         if not cards:
             logger.warning("  %s: pass %s could not be resolved", tracking.label(tracked), tracked.ag_card_id)
             continue
-        card = snapshot.resolve_ag_card(tracked.ag_card_id, tracked.pacs_person_id,
-                                        tracked.pacs_credential_id, tracked.sync_ref)
-        state = state_of(card)
+        state = state_of(representative_card(cards))
         if state == "deleted" and tracked.last_known_ag_state == "deleted" and getattr(
             pacs, "keeps_deleted_pass_tokens", False,
         ):

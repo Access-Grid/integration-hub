@@ -23,6 +23,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -638,25 +639,37 @@ class UnityClient:
             "token[plasecTokenstatus]": status,
         }
         path = f"/identities/{identity_id}/tokens"
+        before = {t["id"] for t in self.list_tokens(identity_id)}
         resp = self._request("POST", path, data=form)
         if resp.status_code != 302:
             raise UnityError(f"POST {path}: HTTP {resp.status_code}")
-        located = re.search(r"/tokens/([0-9A-Za-z]+)", resp.headers.get("Location", ""))
+        location_path = urlsplit(resp.headers.get("Location", "")).path
+        located = re.search(r"/tokens/([^/]+)(?:/|$)", location_path)
+        returned_id = unquote(located.group(1)) if located else None
         made = [t for t in self.list_tokens(identity_id)
-                if t["internal_number"] == internal_number and t["embossed_number"] == embossed]
-        token = next((t for t in made if located and t["id"] == located.group(1)), None)
-        if token is None and len(made) == 1:
-            token = made[0]
+                if t["id"] not in before and t["internal_number"] == internal_number
+                and t["embossed_number"] == embossed]
+        token = next((t for t in made if t["id"] == returned_id), None)
         if token is None:
-            raise UnityError(f"identity {identity_id}: {len(made)} tokens read back after creating one")
+            raise UnityError(f"identity {identity_id}: {len(made)} tokens read back after creating one, "
+                             "but no new token matches the returned token ID; ownership unconfirmed")
         if token["status"] != status:
             raise UnityError(f"token {token['id']}: created with status {token['status']!r}, not {status!r}")
         logger.info("Unity: created token %s on identity %s", token["id"], identity_id)
         return token["id"]
 
     def delete_token(self, identity_id: str, token_id: str) -> None:
-        """Delete one token. Returns only once a re-read no longer shows it."""
+        """Delete an exactly tracked token, never one inferred from its number."""
         _refuse_in_dry_run("delete_token")
+        from ....sync import tracking
+        from . import written
+
+        owned = any(e["token_id"] == token_id for e in written.for_person(identity_id))
+        enrollment = any(t.pacs_person_id == identity_id and t.pacs_credential_id == token_id
+                         and t.ag_card_id and t.status not in ("deleted", "deduped")
+                         for t in tracking.all_tracked())
+        if not (owned or enrollment):
+            raise UnityError(f"token {token_id} of identity {identity_id}: token ID is not tracked — delete refused")
         if not self._logged_in:
             self.login()  # the CSRF token comes with the session
         if not self.csrf_token:

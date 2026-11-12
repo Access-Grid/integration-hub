@@ -87,6 +87,19 @@ def is_dead(entry: Any) -> bool:
     return state_of(entry) in _DEAD_STATES
 
 
+def representative_card(cards: list[Any]) -> Any | None:
+    """Choose the same lifecycle state for a pair regardless of member order.
+
+    A live member wins. Unknown states precede off states, so an unreadable
+    member cannot make the entire pair look suspended or deleted. Only a
+    pair whose every member is deleted is represented as deleted.
+    This selects state evidence; mutations still use the tracked pair ID.
+    """
+    priority = {"active": 0, "created": 1, "suspended": 3, "unlink": 4,
+                "unlinked": 4, "deleted": 5}
+    return min(cards, key=lambda c: priority.get(state_of(c), 2), default=None)
+
+
 # A device holding the credential. Anything else — a pass sitting in
 # "created" since it was issued — means nobody has installed it yet.
 _INSTALLED_STATES = frozenset({"installed", "active"})
