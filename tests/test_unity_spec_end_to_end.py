@@ -408,9 +408,7 @@ def _installed_seos(world):
     return unity, ag, cycle, pass_id, ios
 
 
-@pytest.mark.parametrize("state", ["suspended", pytest.param("unlink", marks=pytest.mark.xfail(strict=True, reason=(
-    "Known, awaiting a decision: phase 3 retires (deletes) the Unity token of an unlinked Seos card, and "
-    "the next cycle, finding no card, deletes the pass. The spec says unlinked only switches it off.")))])
+@pytest.mark.parametrize("state", ["suspended", "unlink"])
 def test_seos_pass_switched_off_in_accessgrid_switches_the_token_off_and_back_on(world, state):
     unity, ag, cycle, pass_id, ios = _installed_seos(world)
     ag.set_state(pass_id, state)

@@ -166,6 +166,10 @@ class AvigilonAdapter:
     # A token past its end date suspends its pass rather than deleting it:
     # moving the date on resumes the same pass, with no new invite.
     suspends_expired_cards = True
+    # A card its holder unlinked is switched off, not deleted (phase 4): kept,
+    # it is switched back on if the pass is. Deleting its token left the pass
+    # with no card, and the next cycle deleted the pass.
+    retires_unlinked_cards = False
 
     def descriptor(self) -> PacsDescriptor:
         return self._descriptor
@@ -716,7 +720,7 @@ class AvigilonAdapter:
 
     def retire_credentials(self, person_id: str, credential_id: str,
                            identities: list[CredentialIdentity]) -> int:
-        """Delete the tokens of credentials AccessGrid deleted or unlinked."""
+        """Delete the tokens of credentials AccessGrid deleted (not unlinked: retires_unlinked_cards)."""
         pid = str(person_id)
         gone = {(str(i.site_code), str(i.card_number)) for i in identities}
         retired = 0

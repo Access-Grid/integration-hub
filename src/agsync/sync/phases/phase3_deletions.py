@@ -278,7 +278,9 @@ def _retire_deleted_credentials(
         if not cards:
             continue
 
-        gone = deleted_identities_from_cards(cards)
+        gone = deleted_identities_from_cards(
+            cards, include_unlinked=getattr(pacs, "retires_unlinked_cards", True),
+        )
         if not gone:
             continue
 

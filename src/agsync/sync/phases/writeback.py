@@ -147,12 +147,15 @@ def identities_from_card(card: Any) -> list[CredentialIdentity]:
     return out
 
 
-def deleted_identities_from_cards(cards: Any) -> list[CredentialIdentity]:
+def deleted_identities_from_cards(cards: Any, include_unlinked: bool = True) -> list[CredentialIdentity]:
     """The credentials on this issue that AccessGrid has deleted.
 
     The mirror of `identities_from_cards`: same traversal, opposite filter.
-    Phase 3 uses it to find what the PACS may release.
+    Phase 3 uses it to find what the PACS may release. An unlinked card
+    counts unless `include_unlinked` is False: a PACS that only switches an
+    unlinked card off (Unity) keeps it, to switch back on if the pass is.
     """
+    gone = is_dead if include_unlinked else (lambda entry: state_of(entry) == "deleted")
     if not isinstance(cards, list | tuple):
         cards = [cards]
     out: list[CredentialIdentity] = []
@@ -165,12 +168,12 @@ def deleted_identities_from_cards(cards: Any) -> list[CredentialIdentity]:
         ]
         # A pass deleted whole takes its per-platform cards with it, whatever
         # their own states say.
-        parent_dead = is_dead(card)
+        parent_dead = gone(card)
         for entry in [*entries, card]:
             site, number = _attr(entry, _SITE_KEYS), _attr(entry, _CARD_KEYS)
             if not number or (site, number) in seen:
                 continue
-            if not (parent_dead or is_dead(entry)):
+            if not (parent_dead or gone(entry)):
                 continue
             seen.add((site, number))
             out.append(CredentialIdentity(site, number, None, None))
