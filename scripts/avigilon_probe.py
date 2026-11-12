@@ -19,14 +19,24 @@ Three rules, because the output is meant to be pasted into a chat or ticket:
     there. Dates, statuses and flags are kept: their format is the point.
 
 Usage:
-    python scripts/avigilon_probe.py [all|xml|search] <host> <username> [--samples 3]
+    python scripts/avigilon_probe.py [all|xml|search|detail|full] <host> <username> [--samples 3]
+`full` is the one to send a site: every read below except `xml`'s unpaged
+roster tests, then up to 50 identities' token lists (the embossed search's
+hits first) read with the hub's own requests and judged by a copy of the
+hub's rules, so the report says whether any holder would go unread.
 `all` (the default) reads everything as JSON and as XML. `xml` skips the
 JSON list and tests whether `/identities.xml` can be read in pieces — page
 and perpage, start and length, the A–Z last-name filter — against the whole
 list, read with a long timeout. `search` checks the embossed-number search
 the adapter sends: whether it answers, filters, ignores case and returns only
-holders of an `accessgrid` token. The password is prompted for. The report is
-printed and saved as JSON.
+holders of an `accessgrid` token; checks the Internal Number search the
+adapter uses to see whether a card number is already held, counts only; and
+reads, without submitting, the form Unity uses to add a token. `detail` finds
+cardholders whose list row has an email, phone, title or department, reads
+each one's detail as JSON and as XML, and reports per field whether each read
+has it and whether they agree — presence and agreement only, never values;
+it also checks whether the list can be searched by one identity's id. The
+password is prompted for. The report is printed and saved as JSON.
 """
 
 from __future__ import annotations
@@ -77,9 +87,22 @@ _PIECE_TIMEOUT = 120.0
 # The adapter's embossed-number search and XML page size (client.py
 # EMBOSSED_SEARCH and XML_PAGE_SIZE), and how many hits get their tokens read.
 _EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
-_XML_PAGE = 1000
+_INTERNAL_SEARCH = {"adv_search_field_0": "plasecInternalnumber", "adv_search_udf_0": "Token Internal #"}
+_XML_PAGE = 500
+# The page size the client asks token lists for (client.TOKENS_PER_PAGE), and
+# how many identities `full` reads token lists for the way the hub does.
+TOKENS_PER_PAGE = 500
+_TOKEN_READS_CHECKED = 50
 _SEARCH_CHECKED = 25
-MODES = ("all", "xml", "search")
+# What the client's create_token posts (client.py), besides the CSRF token.
+_CREATE_SENDS = ["utf8", "enrollVirdiAfter", "token[plasecInternalnumber]",
+                 "token[plasecEmbossednumber]", "token[plasecTokenstatus]"]
+MODES = ("all", "xml", "search", "detail", "full")
+# The identity fields a pass carries, compared between the list and the detail
+# by `detail` mode: present or not, and equal or not — never the values.
+CONTACT_FIELDS = ("identityEmailaddress", "identityPhone", "identityWorkphone", "identityTitle",
+                  "identityDepartment")
+_DETAIL_PAGES = 5  # list pages read looking for cardholders with contact fields
 
 # What our adapter reads and writes (src/agsync/lib/pacs/avigilon/). Copied
 # rather than imported so the exe stays standalone; tests/test_avigilon_probe.py
@@ -208,6 +231,124 @@ def flat(element: ET.Element) -> dict[str, str]:
     return row
 
 
+# -- Would the hub accept this token list? -----------------------------------
+# A copy of the client's rules (client.token_row, xml_rows(strict=True),
+# _tokens_json, _whole_token_list). The client rejects a whole list over one
+# bad entry, and a rejected list leaves its holder unread: no phase acts on
+# them until a read is accepted. tests/test_avigilon_probe.py runs every case
+# the client rejects through these and fails if the two disagree.
+
+def _status_known(raw: Any) -> bool:
+    text = str(raw if raw is not None else "").strip()
+    return text in ("1", "2", "3", "4") or text.lower() in STATUS_CODES
+
+
+def _first_field(attrs: dict[str, Any], suffix: str) -> str:
+    for prefix in _PREFIXES:
+        value = attrs.get(f"{prefix}{suffix}")
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def token_entry_problem(raw: Any) -> tuple[str | None, str, str]:
+    """(why the client rejects this token entry or None, its id, its raw status)."""
+    if not isinstance(raw, dict) or ("attributes" in raw and not isinstance(raw["attributes"], dict)):
+        return "malformed token entry", "", ""
+    if isinstance(raw.get("attributes"), dict):
+        attrs = raw["attributes"]
+        token_id = str(raw.get("id") or attrs.get("cn") or "")
+    else:
+        attrs = raw
+        token_id = str(raw.get("cn") or raw.get("id") or "")
+    source_id = raw.get("id") or attrs.get("cn") or raw.get("cn")
+    if (not isinstance(source_id, str | int) or isinstance(source_id, bool)
+            or not token_id.strip() or token_id != token_id.strip()):
+        return "token entry has no usable ID", "", ""
+    ext = attrs.get("extended_attributes")
+    if ext is None:
+        ext = {}
+    if not isinstance(ext, dict):
+        return "malformed extended attributes", token_id, ""
+    status = ext.get("token_status") or _first_field(attrs, "Tokenstatus")
+    if not isinstance(status, str | int) or isinstance(status, bool) or not str(status).strip():
+        return "token entry has no usable status", token_id, ""
+    if not _status_known(status):
+        return "unrecognised status", token_id, str(status)
+    return None, token_id, str(status)
+
+
+def _whole_list_problem(ids: list[str]) -> str | None:
+    if len(ids) >= TOKENS_PER_PAGE:
+        return "a full page — may be partial"
+    if len(set(ids)) != len(ids):
+        return "duplicate token IDs"
+    return None
+
+
+def json_token_read_problem(body: Any) -> tuple[str | None, list[str]]:
+    """(why the client rejects this tokens.json body or None, the raw statuses read)."""
+    items = body.get("tokens", body.get("data")) if isinstance(body, dict) else body
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return "unexpected response shape", []
+    ids, statuses = [], []
+    for item in items:
+        problem, token_id, status = token_entry_problem(item)
+        if status:
+            statuses.append(status)
+        if problem:
+            return problem, statuses
+        ids.append(token_id)
+    meta = body.get("meta") if isinstance(body, dict) else None
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        return "malformed count metadata", statuses
+    counts = {}
+    for key in ("recordsFiltered", "recordsTotal"):
+        if key not in meta:
+            continue
+        value = meta[key]
+        if isinstance(value, bool) or not isinstance(value, str | int) or not str(value).isdigit():
+            return f"invalid {key}", statuses
+        counts[key] = int(value)
+    if len(counts) == 2 and counts["recordsFiltered"] != counts["recordsTotal"]:
+        return "contradictory counts", statuses
+    total = counts.get("recordsFiltered", counts.get("recordsTotal"))
+    if total is not None and len(ids) != total:
+        return "row count differs from the count Unity states", statuses
+    return _whole_list_problem(ids), statuses
+
+
+def xml_token_read_problem(text: str) -> tuple[str | None, list[str]]:
+    """(why the client rejects this tokens.xml body or None, the raw statuses read)."""
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return "not XML", []
+    if root.tag == "token":
+        elements = [root]
+    elif root.tag == "nil-classes" and len(root) == 0:
+        elements = []
+    elif root.tag == "tokens":
+        elements = root.findall("token")
+        if len(elements) != len(root) or (root.text or "").strip():
+            return "<tokens> contains malformed token entries", []
+    else:
+        return f"expected <tokens>, got <{root.tag}>", []
+    ids, statuses = [], []
+    for element in elements:
+        problem, token_id, status = token_entry_problem(flat(element))
+        if status:
+            statuses.append(status)
+        if problem:
+            return problem, statuses
+        ids.append(token_id)
+    return _whole_list_problem(ids), statuses
+
+
 class Probe:
     def __init__(self, host: str, username: str, password: str, mode: str = "all"):
         self.base = f"https://{host}"
@@ -222,8 +363,11 @@ class Probe:
         # Rows as read, per source ("token xml", "identity list json", ...), for
         # comparing their field names and values against what the adapter expects.
         self.rows: dict[str, list[dict[str, Any]]] = {}
-        if mode in ("xml", "search"):
-            head = "xml_paging" if mode == "xml" else "search"
+        # The embossed search's hits, kept for `full`: the people the hub reads every cycle.
+        self.search_hits: list[str] = []
+        head = {"xml": "xml_paging", "search": "search", "detail": "detail_vs_list",
+                "full": "hub_token_reads"}.get(mode)
+        if head:
             self.report = {**dict(list(self.report.items())[:4]), head: {}, **self.report}
 
     def get(self, step: str, path: str, **kw: Any) -> httpx.Response | None:
@@ -367,7 +511,207 @@ class Probe:
             return self.report
         self.dashboard()
         self.search()
+        self.internal_search()
+        self.new_token_form()
         return self.report
+
+    def run_detail(self, samples: int) -> dict[str, Any]:
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        self.detail_vs_list(samples)
+        return self.report
+
+    def run_full(self, samples: int) -> dict[str, Any]:
+        """Every read the other modes make, bar `xml`'s unpaged roster tests, and
+        then each enrolled holder's token list judged as the hub judges it."""
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        json_ids = self.identities(samples)
+        xml_ids = self.identities_xml(samples)
+        self.per_identity(json_ids or xml_ids, samples)
+        self.card_formats()
+        self.search()
+        self.internal_search()
+        self.new_token_form()
+        self.detail_vs_list(samples)
+        self.hub_token_reads(list(dict.fromkeys(self.search_hits + json_ids + xml_ids)))
+        self.compare_fields()
+        return self.report
+
+    def hub_token_reads(self, ids: list[str]) -> None:
+        """Would the hub accept each holder's token list, as JSON or as XML?
+
+        Read with the client's own requests, judged by a copy of its rules.
+        The hub tries one format and then the other; a holder neither
+        format reads for is skipped by every phase, every cycle — no issue,
+        no status change, no revoke. Counts, reasons and status words only.
+        """
+        checked = ids[:_TOKEN_READS_CHECKED]
+        summary: dict[str, Any] = {
+            "identities_checked": len(checked), "enrolled_holders_among_them": 0,
+            "hub_reads": 0, "hub_cannot_read": 0, "json": {}, "xml": {},
+            "count_keys_in_json": {}, "statuses_seen": {},
+        }
+
+        def tally(fmt: str, outcome: str) -> None:
+            summary[fmt][outcome] = summary[fmt].get(outcome, 0) + 1
+
+        params = {"page": 1, "perpage": TOKENS_PER_PAGE}
+        for cn in checked:
+            enrolled = cn in self.search_hits
+            summary["enrolled_holders_among_them"] += enrolled
+            verdicts = {}
+            resp = self.get(f"hub_tokens_json:{cn}", f"/identities/{cn}/tokens.json",
+                            headers={"Accept": "application/json"}, params=params)
+            outcome = self.outcome(resp)
+            if outcome == "ok":
+                body = self.json_body(f"hub_tokens_json:{cn}", resp)
+                if body is None:
+                    outcome = "200 but not JSON"
+                else:
+                    problem, statuses = json_token_read_problem(body)
+                    outcome = problem or "accepted"
+                    meta = body.get("meta") if isinstance(body, dict) else None
+                    keys = ",".join(k for k in ("recordsFiltered", "recordsTotal")
+                                    if isinstance(meta, dict) and k in meta) or "none"
+                    summary["count_keys_in_json"][keys] = summary["count_keys_in_json"].get(keys, 0) + 1
+                    for s in statuses:
+                        summary["statuses_seen"][s] = summary["statuses_seen"].get(s, 0) + 1
+            verdicts["json"] = outcome
+            resp = self.get(f"hub_tokens_xml:{cn}", f"/identities/{cn}/tokens.xml",
+                            headers={"Accept": "*/*"}, params=params)
+            outcome = self.outcome(resp)
+            if outcome == "ok":
+                problem, _ = xml_token_read_problem(resp.text)
+                outcome = problem or "accepted"
+            verdicts["xml"] = outcome
+            for fmt, outcome in verdicts.items():
+                tally(fmt, outcome)
+            if "accepted" in verdicts.values():
+                summary["hub_reads"] += 1
+                # A read the hub accepts says nothing new; keep the report to the failures.
+                self.report["steps"].pop(f"hub_tokens_json:{cn}", None)
+                self.report["steps"].pop(f"hub_tokens_xml:{cn}", None)
+            else:
+                summary["hub_cannot_read"] += 1
+                self.note(f"hub_tokens_json:{cn}", enrolled=enrolled, verdict=verdicts["json"])
+                self.note(f"hub_tokens_xml:{cn}", enrolled=enrolled, verdict=verdicts["xml"])
+        summary["verdict"] = (
+            "no identities to check" if not checked
+            else "every holder checked is readable" if not summary["hub_cannot_read"]
+            else f"{summary['hub_cannot_read']} of {len(checked)} holders checked would be skipped by the hub "
+                 f"every cycle — see json/xml for why"
+        )
+        self.report["hub_token_reads"] = summary
+
+    def detail_vs_list(self, samples: int) -> None:
+        """Does an identity's detail carry the contact fields its list row does?
+
+        The adapter reads a tracked person from their detail whenever the
+        embossed search does not return them, and a field the detail lacks
+        would read as emptied. Cardholders are taken from the first list pages
+        whose row has at least one contact field.
+        """
+        def value(row: dict[str, Any], suffix: str) -> str:
+            return str(next((row[p + suffix] for p in _PREFIXES if row.get(p + suffix) not in (None, "")), ""))
+
+        picked: list[dict[str, Any]] = []
+        for page in range(1, _DETAIL_PAGES + 1):
+            rows = self.read_xml("identities", f"detail_list_page_{page}", "/identities.xml", "identities",
+                                 "identity", params={**_XML_SEARCH, "page": page, "perpage": _XML_PAGE},
+                                 timeout=_WHOLE_LIST_TIMEOUT)
+            if not rows:
+                break
+            picked += [r for r in rows if r.get("cn") not in (None, "", "0")
+                       and any(value(r, f) for f in CONTACT_FIELDS)][:samples - len(picked)]
+            if len(picked) >= samples or len(rows) < _XML_PAGE:
+                break
+        summary = {f: {"list": 0, "detail_json": 0, "detail_xml": 0, "json_agrees": 0, "xml_agrees": 0}
+                   for f in CONTACT_FIELDS}
+        per_identity = []
+        for row in picked:
+            cn = row["cn"]
+            body = self.read_json("identity_detail", f"detail_json:{cn}", f"/identities/{cn}.json")
+            as_json = attrs_of(body) if body is not None else None
+            xml_rows = self.read_xml("identity_detail", f"detail_xml:{cn}", f"/identities/{cn}.xml",
+                                     "identities", "identity")
+            as_xml = xml_rows[0] if xml_rows else None
+            fields = {}
+            for f in CONTACT_FIELDS:
+                listed = value(row, f)
+                entry = {"list": bool(listed)}
+                for name, detail in (("detail_json", as_json), ("detail_xml", as_xml)):
+                    if detail is None:
+                        entry[name] = "unread"
+                        continue
+                    got = value(detail, f)
+                    entry[name] = bool(got)
+                    agrees = got == listed
+                    entry[f"{name}_agrees"] = agrees
+                    summary[f][name] += bool(got)
+                    summary[f][f"{name.split('_')[1]}_agrees"] += agrees
+                summary[f]["list"] += bool(listed)
+                fields[f] = entry
+            per_identity.append({"id": cn, "fields": fields})
+        self.report["detail_vs_list"] = {
+            "cardholders_compared": len(per_identity),
+            # Per field: how many list rows had it, how many details had it,
+            # and how many details agreed with the list (blank = blank agrees).
+            "summary": summary,
+            "per_identity": per_identity,
+            "list_search_by_id": self._list_by_id(picked[0]["cn"]) if picked else "no cardholder to try",
+        }
+
+    def _list_by_id(self, cn: str) -> dict[str, Any]:
+        """Does the list search take an identity id? It would give tracked
+        people their list row, without reading each detail."""
+        rows = self.read_xml("identity_search", "list_by_id", "/identities.xml", "identities", "identity",
+                             params={**_XML_SEARCH, "id": cn, "page": 1, "perpage": _XML_PAGE},
+                             timeout=_WHOLE_LIST_TIMEOUT)
+        if rows is None:
+            return {"answered": False}
+        ids = [r.get("cn") for r in rows]
+        return {"answered": True, "rows": len(rows), "only_that_identity": ids == [cn]}
+
+    def new_token_form(self) -> None:
+        """Unity's form for adding a token, read and never submitted.
+
+        A Seos pass has the hub create a token holding AccessGrid's card
+        number, sending only the fields in _CREATE_SENDS; this shows whether
+        the form has them, what else it would post, and how it writes dates.
+        """
+        rows = self.read_xml("identity_search", "new_token_identity", "/identities.xml", "identities",
+                             "identity", params={**_XML_SEARCH, "page": 1, "perpage": 1})
+        cn = next((r.get("cn") for r in rows or [] if r.get("cn") not in (None, "", "0")), None)
+        if cn is None:
+            self.report["new_token_form"] = {"error": "no identity to read the form on"}
+            return
+        resp = self.get("new_token_form", f"/identities/{cn}/tokens/new", follow_redirects=True)
+        if resp is None or resp.status_code != 200:
+            self.report["new_token_form"] = {"status": None if resp is None else resp.status_code}
+            return
+        parser = FormFields()
+        parser.feed(resp.text)
+        fields = []
+        for f in parser.fields:
+            if f["name"] in ("authenticity_token", "utf8"):
+                f = {**f, "value": "<withheld>" if f["value"] else ""}
+            else:
+                f = {**f, "value": redact(f["value"], f["name"].removeprefix("token[").removesuffix("]"))}
+            fields.append(f)
+        names = {f["name"] for f in fields}
+        self.report["new_token_form"] = {
+            "status": 200,
+            "fields": fields,
+            "create_sends_but_form_lacks": [n for n in _CREATE_SENDS if n not in names],
+            "posts_to": sorted(set(re.findall(r"<form[^>]+action=[\"']([^\"']+)[\"']", resp.text, re.I)))[:5],
+        }
 
     def _xml_ids(self, step: str, value: str | None, page: int = 1) -> set[str] | None:
         """Identity ids on one page of the XML list, searched for `value` if given."""
@@ -379,6 +723,58 @@ class Probe:
             return None
         self.note(step, rows=len(rows))
         return {r.get("cn", "") for r in rows} - {"", "0"}
+
+    def internal_search(self) -> None:
+        """Does the Internal Number search find the identity holding a number,
+        on an Active token and on an Inactive one?
+
+        Run with numbers from tokens on the roster's first page. The embossed
+        search skips Inactive tokens; if this one does too, a number held on
+        an Inactive token elsewhere is not caught. Reports counts and yes/no
+        only: the numbers themselves are never written down.
+        """
+        roster = self.read_xml("identity_search", "internal_search_roster", "/identities.xml", "identities",
+                               "identity", params={**_XML_SEARCH, "page": 1, "perpage": 50}) or []
+        samples: dict[str, tuple[str, str]] = {}  # "active"/"inactive" -> (holder, number)
+        for cn in [r.get("cn") for r in roster if r.get("cn") not in (None, "", "0")]:
+            for t in self.read_xml("search_hit_tokens", "internal_search_tokens",
+                                   f"/identities/{cn}/tokens.xml", "tokens", "token") or []:
+                number = next((v for p in _PREFIXES if (v := str(t.get(f"{p}Internalnumber") or ""))), "")
+                raw = next((str(t[f"{p}Tokenstatus"]) for p in _PREFIXES if t.get(f"{p}Tokenstatus")), "")
+                status = STATUS_CODES.get(raw.strip().lower(), raw.strip())
+                kind = {"1": "active", "2": "inactive"}.get(status)
+                if number and kind and kind not in samples:
+                    samples[kind] = (cn, number)
+            if len(samples) == 2:
+                break
+        if "active" not in samples:
+            self.report["internal_search"] = {"error": "no Active token with an Internal Number on the first "
+                                                       "50 identities"}
+            return
+
+        def ids(step: str, value: str) -> set[str] | None:
+            rows = self.read_xml("identity_search", step, "/identities.xml", "identities", "identity",
+                                 params={**_XML_SEARCH, **_INTERNAL_SEARCH, "adv_search_val_0": value,
+                                         "page": 1, "perpage": _XML_PAGE}, timeout=_WHOLE_LIST_TIMEOUT)
+            return None if rows is None else {r.get("cn", "") for r in rows} - {"", "0"}
+
+        found = {}
+        for kind, (holder, number) in samples.items():
+            hits = ids(f"internal_search_{kind}", number)
+            found[kind] = {"hits": None if hits is None else len(hits),
+                           "holder_found": None if hits is None else holder in hits}
+        nothing = ids("internal_search_no_such_number", "99999999999")
+        active = found["active"]
+        works = active["holder_found"] and active["hits"] <= 25 and nothing == set()
+        self.report["internal_search"] = {
+            "active_token": active,
+            "inactive_token": found.get("inactive", "no Inactive token with an Internal Number on the first "
+                                                    "50 identities"),
+            "no_such_number_rows": None if nothing is None else len(nothing),
+            "verdict": ("works" if works else "check the steps: the adapter refuses to write Seos cards "
+                        "while this search cannot say who holds a number"),
+            "inactive_tokens_found": found.get("inactive", {}).get("holder_found"),
+        }
 
     def search(self) -> None:
         """Does /identities.xml take the adapter's embossed-number search, and
@@ -396,7 +792,8 @@ class Probe:
                 break
         upper = self._xml_ids("search_upper_case", "ACCESSGRID")
         nothing = self._xml_ids("search_no_such_value", "zz-no-such-embossed-zz")
-        checked = sorted(hits or [])[:_SEARCH_CHECKED]
+        self.search_hits = sorted(hits or [])
+        checked = self.search_hits[:_SEARCH_CHECKED]
         confirmed, statuses = 0, {}
         for cn in checked:
             tokens = self.read_xml("search_hit_tokens", "search_hit_tokens", f"/identities/{cn}/tokens.xml",
@@ -717,7 +1114,10 @@ def main() -> int:
         argv.insert(0, "all")  # the form before modes existed: <host> <username>
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("mode", choices=MODES, help="all: JSON and XML; xml: test paging the XML identity list; "
-                                               "search: test the embossed-number search")
+                                               "search: test the embossed-number search; "
+                                               "detail: compare a cardholder's detail with their list row; "
+                                               "full: all of these but xml, plus whether the hub accepts "
+                                               "each enrolled holder's token list")
     ap.add_argument("host", help="appliance address, e.g. 10.0.0.5 (no https://)")
     ap.add_argument("username")
     ap.add_argument("--samples", type=int, default=3, help="identities with tokens to sample")
@@ -725,8 +1125,12 @@ def main() -> int:
     password = getpass.getpass("Unity password: ")
 
     probe = Probe(args.host, args.username, password, args.mode)
-    if args.mode == "search":
+    if args.mode == "full":
+        report = probe.run_full(args.samples)
+    elif args.mode == "search":
         report = probe.run_search()
+    elif args.mode == "detail":
+        report = probe.run_detail(args.samples)
     else:
         report = probe.run_xml(args.samples) if args.mode == "xml" else probe.run(args.samples)
     report["finished"] = datetime.now().isoformat()

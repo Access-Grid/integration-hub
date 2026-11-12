@@ -12,6 +12,12 @@
   {% if ok == 'email_domain' %}
     <div class="test-result ok">{{ t('settings.email_domain.saved') }}</div>
   {% endif %}
+  {% if ok == 'notify_email' %}
+    <div class="test-result ok">{{ t('settings.notify_email.saved') }}</div>
+  {% endif %}
+  {% if err == 'notify_email' %}
+    <div class="err">{{ t('settings.notify_email.invalid') }}</div>
+  {% endif %}
   {% if err == 'email_domain' %}
     <div class="err">{{ t('settings.email_domain.invalid') }}</div>
   {% endif %}
@@ -204,11 +210,23 @@
 
   {% if pacs_email_domain is not none %}
   <h2>{{ t('settings.email_domain.title') }}</h2>
-  <p class="muted">{{ t('settings.email_domain.subtitle') }}</p>
+  <p class="muted">{{ t('settings.email_domain.subtitle') }}
+    {% if pacs_email_domain_optional %}{{ t('settings.email_domain.optional') }}{% endif %}</p>
   <form action="/settings/email-domain" method="post">
     <label>{{ t('settings.email_domain.label') }}
       <input name="email_domain" value="{{ pacs_email_domain }}"
-             placeholder="cards.example.com" required>
+             placeholder="cards.example.com" {% if not pacs_email_domain_optional %}required{% endif %}>
+    </label>
+    <button type="submit">{{ t('common.save') }}</button>
+  </form>
+  {% endif %}
+
+  {% if pacs_has_notify_email %}
+  <h2>{{ t('settings.notify_email.title') }}</h2>
+  <p class="muted">{{ t('settings.notify_email.subtitle') }}</p>
+  <form action="/settings/notify-email" method="post">
+    <label>{{ t('settings.notify_email.label') }}
+      <input name="notify_email" type="email" value="{{ pacs_notify_email }}" placeholder="security@example.com">
     </label>
     <button type="submit">{{ t('common.save') }}</button>
   </form>

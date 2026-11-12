@@ -77,6 +77,9 @@ def settings_page(
     vendor_id = pacs.get("vendor", "")
     descriptor = get_descriptor(vendor_id) if vendor_id else None
     params = pacs.get("params") or {}
+    # Settings this PACS takes as connection fields: shown even when an
+    # install set up before the field existed has no value saved for it.
+    fields = {f.id: f for f in descriptor.connection_fields} if descriptor else {}
     smtp = NotificationConfig.load() or {}
     session = PacsSession.load(vendor_id) or {}
     return request.app.state.template_response(
@@ -114,8 +117,12 @@ def settings_page(
                 }
                 for f in _address_fields(descriptor)
             ],
-            "pacs_email_domain": params.get("email_domain"),
+            "pacs_email_domain": params.get("email_domain", "" if "email_domain" in fields else None),
+            # Optional where it is only a fallback (Unity's Seos passes):
+            # blank turns synthesizing off.
+            "pacs_email_domain_optional": "email_domain" in fields and not fields["email_domain"].required,
             "pacs_notify_email": params.get("notify_email", ""),
+            "pacs_has_notify_email": "notify_email" in fields,
             "pacs_session_at": session.get("captured_at", "") if session.get("auth_cookie") else "",
             "smtp_host": smtp.get("smtp_host", ""),
             "smtp_port": smtp.get("smtp_port", 587),
@@ -217,15 +224,36 @@ def update_email_domain(
     behaviour, but it touches every pass already issued.
     """
     domain = email_domain.strip().lstrip("@")
-    if not domain or " " in domain or "." not in domain:
+    pacs = PacsConfig.load() or {}
+    descriptor = get_descriptor(pacs.get("vendor", ""))
+    optional = any(f.id == "email_domain" and not f.required for f in (descriptor.connection_fields if descriptor else []))
+    if (domain or not optional) and (not domain or " " in domain or "." not in domain):
         return RedirectResponse(url="/settings?err=email_domain", status_code=303)
     if not PacsConfig.update_params(email_domain=domain):
         return RedirectResponse(url="/settings?err=not_configured", status_code=303)
-    logger.info("Synthesized email domain changed to %r", domain)
+    logger.info("Synthesized email domain changed to %r", domain or "(none — not synthesizing)")
     engine = get_engine()
     engine.invalidate_pacs_adapter()
     engine.trigger_now()
     return RedirectResponse(url="/settings?ok=email_domain", status_code=303)
+
+
+@router.post("/settings/notify-email")
+def update_notify_email(
+    request: Request,
+    notify_email: str = Form(""),
+    _user=Depends(require_admin),
+):
+    """Who is mailed about cards the sync will not act on. Blank mails nobody."""
+    from ..lib.pacs.emails import first_valid_email
+
+    address = notify_email.strip()
+    if address and not first_valid_email(address):
+        return RedirectResponse(url="/settings?err=notify_email", status_code=303)
+    if not PacsConfig.update_params(notify_email=address):
+        return RedirectResponse(url="/settings?err=not_configured", status_code=303)
+    logger.info("Notification email changed to %r", address or "(none)")
+    return RedirectResponse(url="/settings?ok=notify_email", status_code=303)
 
 
 @router.post("/settings/dry-run")

@@ -44,6 +44,73 @@ logger = logging.getLogger(__name__)
 MAX_PROVISIONS_PER_CYCLE = 25
 
 
+def _card_key(cred, eff_site_code: str) -> tuple[str, str] | None:
+    """(site code, card number) as card metadata indexes it; None for a card AccessGrid allocates."""
+    if cred.allocate_identity or not cred.card_number:
+        return None
+    return (str(eff_site_code or ""), str(cred.card_number))
+
+
+def refuse_duplicate(snapshot: Snapshot, pid: str, name: str, cred, eff_site_code: str) -> bool:
+    """Is this card's number already on a live pass? If so, say so and mail it.
+
+    For a PACS whose card numbers must be unique (descriptor
+    unique_card_numbers). A deleted or unlinked pass carries the number of
+    nobody's working card, so it does not count.
+    """
+    from ... import notifications
+    from .writeback import is_dead
+
+    key = _card_key(cred, eff_site_code)
+    hit = snapshot.ag_cards_by_site_card.get(key) if key else None
+    if hit is None or is_dead(hit):
+        return False
+    problem = (
+        f"{name} ({pid}) has card {key[0] or '-'}/{key[1]} ({cred.id}) marked for a pass, but AccessGrid pass "
+        f"{getattr(hit, 'id', '?')} (employee {getattr(hit, 'employee_id', '?')}) already carries that number "
+        f"— not issuing a second. Correct the card number in the PACS."
+    )
+    logger.error("  %s", problem)
+    notifications.notify_card_problem(f"duplicate:{pid}:{cred.id}", problem)
+    return True
+
+
+def unrecorded_pass(snapshot: Snapshot, pid: str, name: str, cred) -> bool:
+    """Does AccessGrid already hold a live pass for this card that we have no record of?
+
+    Asked just before issuing, when no tracking row holds a pass for it. A
+    live pass carrying this person and credential is then one an earlier
+    issue created whose reply never arrived — the call failed, the pass did
+    not. Issuing again would send the holder a second invite and leave the
+    first pass beyond the sync's reach. It is not adopted: for a template
+    pair the listing shows only the halves, never the pair id we act on. So
+    it is held and mailed, until someone deletes that pass in AccessGrid.
+    """
+    from ... import notifications
+    from .writeback import is_dead
+
+    live = [c for c in snapshot.ag_cards_by_token.get((pid, cred.id), []) if not is_dead(c)]
+    if not live:
+        return False
+    ids = ", ".join(f"{getattr(c, 'id', '?')} ({getattr(c, 'state', '') or '?'})" for c in live)
+    problem = (
+        f"{name} ({pid}) has card {cred.id} marked for a pass, but AccessGrid already holds "
+        f"{'pass' if len(live) == 1 else 'passes'} {ids} for it that the sync has no record of — most "
+        f"likely an earlier issue whose reply never arrived. Not issuing another. Delete "
+        f"{'that pass' if len(live) == 1 else 'those passes'} in AccessGrid to have a new one issued."
+    )
+    logger.error("  %s", problem)
+    notifications.notify_card_problem(f"unrecorded:{pid}:{cred.id}", problem)
+    return True
+
+
+def note_issued_card(snapshot: Snapshot, cred, eff_site_code: str, card) -> None:
+    """Index a pass just issued by its number, so a second card with it this cycle is caught too."""
+    key = _card_key(cred, eff_site_code)
+    if key:
+        snapshot.ag_cards_by_site_card[key] = card
+
+
 def run(
     snapshot: Snapshot,
     ag: AccessGrid,
@@ -55,8 +122,10 @@ def run(
     card_title: str = "",
     card_classification: str = "",
     pacs: PacsAdapter | None = None,
+    default_pass_days: int = 365,
     should_stop: Callable[[], bool] | None = None,
     max_per_cycle: int = MAX_PROVISIONS_PER_CYCLE,
+    require_unique_card: bool = False,
 ) -> int:
     provisioned = 0
     skipped = 0
@@ -66,6 +135,11 @@ def run(
         "Phase 1: Checking for new credentials to provision (dedupe=%s)",
         "on" if dedupe_by_site_card else "off",
     )
+    if not snapshot.ag_cards_read:
+        # Every check below that a card is not issued twice reads the
+        # listing; empty, they would all pass.
+        logger.warning("Phase 1: AccessGrid's pass list was not read — issuing nothing this cycle")
+        return 0
 
     for pid, creds in snapshot.credentials_by_person.items():
         person = snapshot.people.get(pid)
@@ -86,15 +160,21 @@ def run(
 
             existing = tracking.get(pid, cred.id)
             if existing and existing.ag_card_id:
-                # Already provisioned (or already deduped) — keep tracking row fresh.
-                if existing.status == "deduped":
-                    continue
-                ag_card = snapshot.resolve_ag_card(
-                    existing.ag_card_id, pid, cred.id,
+                # Already provisioned (or already deduped). Its AccessGrid
+                # state is not recorded here: phases 2 and 4 tell which side
+                # changed by comparing against the last state recorded, so
+                # recording it first hid every AccessGrid-side suspend,
+                # resume and unlink — phase 4 saw nothing to do and phase 2
+                # pushed the PACS's old state back over it. Phase 4 records
+                # the state once it has acted on it.
+                continue
+            if existing and existing.sync_error:
+                # An issue that failed. Phase 5 retries it, up to its cap;
+                # issuing it here too did so every cycle, with no cap at all.
+                logger.debug(
+                    "  %s %s: earlier issue failed (%s) — left to phase 5",
+                    pid, cred.id, existing.sync_error,
                 )
-                ag_state = (getattr(ag_card, "state", "") or "").lower() if ag_card else ""
-                if ag_state and ag_state != existing.last_known_ag_state:
-                    tracking.update_last_known_ag_state(pid, cred.id, ag_state)
                 continue
 
             if expired(cred):
@@ -141,6 +221,12 @@ def run(
                     )
                     deduped += 1
                     continue
+            if require_unique_card and refuse_duplicate(snapshot, pid, person.full_name, cred, eff_site_code):
+                skipped += 1
+                continue
+            if unrecorded_pass(snapshot, pid, person.full_name, cred):
+                skipped += 1
+                continue
 
             eligible += 1
             if provisioned >= max_per_cycle:
@@ -149,59 +235,9 @@ def run(
                 # cycle, by which time an operator has had a chance to look.
                 continue
 
-            now = datetime.now(UTC)
-            start_date = (cred.activate_date or now).isoformat()
-            expiration_date = (cred.deactivate_date or (now + timedelta(days=365))).isoformat()
-
-            # Start from the user-configured extras, then layer the
-            # sync-managed keys on top so they always win the merge.
-            metadata: dict = dict(extra_metadata or {})
-            # Our own handle on this issue, echoed back on every card the
-            # call produces — including both halves of a template pair, which
-            # is what makes them findable in a later listing.
-            sync_ref = tracking.new_sync_ref()
-            metadata["sync_ref"] = sync_ref
-            metadata["pacs_credential_id"] = cred.id
-            if not cred.allocate_identity:
-                if eff_site_code:
-                    metadata["site_code"] = eff_site_code
-                if cred.card_number:
-                    metadata["card_number"] = str(cred.card_number)
-
-            params: dict = {
-                "card_template_id": template_id,
-                "employee_id": pid,
-                "full_name": person.full_name,
-                "start_date": start_date,
-                "expiration_date": expiration_date,
-                "metadata": metadata,
-            }
-            # Wire format: either the pre-encoded file_data blob (opt-in, when
-            # the adapter supplies one) or the decoded site_code + card_number
-            # (default). site_code/card_number stay in metadata either way so
-            # dedupe and debugging still work.
-            if cred.allocate_identity:
-                # Send no identity at all: AccessGrid allocates the facility
-                # code and card number, and the adapter writes them back.
-                pass
-            elif use_file_data and cred.file_data:
-                params["file_data"] = cred.file_data
-            else:
-                if eff_site_code and eff_site_code.isdigit():
-                    params["site_code"] = int(eff_site_code)
-                if cred.card_number:
-                    params["card_number"] = cred.card_number
-            if person.email:
-                params["email"] = person.email
-            if person.phone:
-                params["phone_number"] = person.phone
-            # A per-person title from the PACS wins; the configured one
-            # fills in for systems that have no such field, which is most.
-            title = person.title or card_title
-            if title:
-                params["title"] = title
-            if card_classification:
-                params["classification"] = card_classification
+            params = provision_params(person, cred, template_id, eff_site_code, extra_metadata,
+                                      use_file_data, card_title, card_classification, default_pass_days)
+            sync_ref = params["metadata"]["sync_ref"]
 
             if dryrun.active():
                 # Checked before the pending row is written, not just before
@@ -227,29 +263,19 @@ def run(
                 last_synced_phone=person.phone,
                 last_synced_full_name=person.full_name,
                 last_synced_title=person.title,
+                last_synced_department=person.department,
             )
 
+            snapshot.issue_attempted.add((pid, cred.id))
             try:
                 logger.info("  Provisioning: %s (%s)", person.full_name, pid)
                 card = ag.access_cards.provision(**params)
                 ag_card_id = getattr(card, "id", None)
                 ag_state = (getattr(card, "state", "active") or "active").lower()
-                tracking.upsert(
-                    pacs_person_id=pid,
-                    pacs_credential_id=cred.id,
-                    ag_card_id=ag_card_id,
-                    full_name=person.full_name,
-                    employee_id=pid,
-                    status="active" if ag_state in ("active", "created") else ag_state,
-                    last_synced_email=person.email,
-                    last_synced_phone=person.phone,
-                    last_synced_full_name=person.full_name,
-                    last_synced_title=person.title,
-                    last_known_ag_state=ag_state,
-                    sync_ref=sync_ref,
-                )
+                record_issue(person, cred, ag_card_id, ag_state, sync_ref)
                 provisioned += 1
                 logger.info("  Provisioned AG card %s for %s", ag_card_id, person.full_name)
+                note_issued_card(snapshot, cred, eff_site_code, card)
                 if cred.allocate_identity and pacs is not None:
                     # Hand the freshly-minted identity straight back so the
                     # card exists in the PACS before the next cycle reads it.
@@ -258,7 +284,7 @@ def run(
                 logger.error("  Provision failed for %s: %s", person.full_name, e)
                 tracking.record_error(pid, cred.id, str(e))
             except Exception as e:  # noqa: BLE001
-                logger.error("  Unexpected error provisioning %s: %s", person.full_name, e)
+                logger.error("  Unexpected error provisioning %s: %s", person.full_name, e, exc_info=True)
                 tracking.record_error(pid, cred.id, f"{type(e).__name__}: {e}")
 
     if eligible > max_per_cycle:
@@ -273,3 +299,68 @@ def run(
         provisioned, skipped, deduped,
     )
     return provisioned
+
+
+def provision_params(person, cred, template_id, eff_site_code, extra_metadata=None,
+                     use_file_data=False, card_title="", card_classification="", default_pass_days=365):
+    """The single payload builder for first issues and retries, pairs and singles."""
+    now = datetime.now(UTC)
+    metadata: dict = dict(extra_metadata or {})
+    # Our own handle on this issue, echoed back on every card the
+    # call produces — including both halves of a template pair, which
+    # is what makes them findable in a later listing.
+    sync_ref = tracking.new_sync_ref()
+    metadata["sync_ref"] = sync_ref
+    metadata["pacs_credential_id"] = cred.id
+    if not cred.allocate_identity:
+        if eff_site_code:
+            metadata["site_code"] = eff_site_code
+        if cred.card_number:
+            metadata["card_number"] = str(cred.card_number)
+
+    params: dict = {
+        "card_template_id": template_id,
+        "employee_id": person.id,
+        "full_name": person.full_name,
+        "start_date": (cred.activate_date or now).isoformat(),
+        "expiration_date": (cred.deactivate_date or (now + timedelta(days=default_pass_days))).isoformat(),
+        "metadata": metadata,
+    }
+    # Same wire-format choice as phase 1: verbatim file_data (opt-in) or
+    # decoded site_code + card_number (default); site/card stay metadata.
+    if cred.allocate_identity:
+        # AccessGrid allocates when the identity is omitted.
+        pass
+    elif cred.file_data and (use_file_data or cred.send_file_data):
+        params["file_data"] = cred.file_data
+    else:
+        if eff_site_code and eff_site_code.isdigit():
+            params["site_code"] = int(eff_site_code)
+        if cred.card_number:
+            params["card_number"] = cred.card_number
+    if person.email:
+        params["email"] = person.email
+    if person.phone:
+        params["phone_number"] = person.phone
+    # A per-person title from the PACS wins; the configured one fills in
+    # for systems that have no such field, which is most of them.
+    title = person.title or card_title
+    if title:
+        params["title"] = title
+    if person.department:
+        params["department"] = person.department
+    if card_classification:
+        params["classification"] = card_classification
+    return params
+
+
+def record_issue(person, cred, card_id, state, sync_ref):
+    """Keep the returned pair ID intact: mutations must never target a half."""
+    tracking.upsert(
+        pacs_person_id=person.id, pacs_credential_id=cred.id, ag_card_id=card_id,
+        full_name=person.full_name, employee_id=person.id,
+        status="active" if state in ("active", "created") else state,
+        last_synced_email=person.email, last_synced_phone=person.phone,
+        last_synced_full_name=person.full_name, last_synced_title=person.title,
+        last_synced_department=person.department, last_known_ag_state=state, sync_ref=sync_ref,
+    )

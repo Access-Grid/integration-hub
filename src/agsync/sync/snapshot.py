@@ -39,6 +39,27 @@ class Snapshot:
     ag_cards_by_site_card: dict[tuple[str, str], Any] = field(default_factory=dict)
     # Cards re-read individually this cycle, keyed by id. See detailed_cards.
     ag_card_detail: dict[str, Any] = field(default_factory=dict)
+    # Of those, the ids whose re-read failed, so the listed card stands in.
+    # A listed card answers `devices: []`, so for these "no device" means
+    # "unknown", never "not installed".
+    ag_card_detail_failed: set[str] = field(default_factory=set)
+    # (person, credential) whose pass phase 2 tried to suspend or resume
+    # this cycle. Even a rejected write must not reactivate the PACS card.
+    # The listing above predates that call, so
+    # phase 4 reading it would take the old state for an AccessGrid change
+    # and write it back over the PACS change that caused it.
+    pushed_to_ag: set[tuple[str, str]] = field(default_factory=set)
+    # False when AccessGrid's pass listing could not be read: the indexes
+    # above are then empty, not "no passes", and nothing may be issued on
+    # the strength of them.
+    ag_cards_read: bool = True
+    # (person, credential) phase 1 tried to issue this cycle. A failed call
+    # may still have created the pass, and the listing above predates it,
+    # so phase 5 leaves these for a cycle that can see it.
+    issue_attempted: set[tuple[str, str]] = field(default_factory=set)
+    # True for a PACS whose expired card suspends its pass (phase 2) rather
+    # than deletes it (phase 3): the adapter's suspends_expired_cards.
+    suspends_expired: bool = False
 
     def resolve_ag_cards(
         self,
@@ -112,8 +133,12 @@ class Snapshot:
                 try:
                     self.ag_card_detail[card_id] = ag.access_cards.get(card_id)
                 except Exception as e:  # noqa: BLE001
-                    logger.debug("Could not re-read AG card %s: %s", card_id, e)
+                    logger.warning(
+                        "Could not re-read AG card %s — its listing stands in, "
+                        "which does not say what it is installed on: %s", card_id, e,
+                    )
                     self.ag_card_detail[card_id] = card
+                    self.ag_card_detail_failed.add(card_id)
             out.append(self.ag_card_detail[card_id])
         return out
 
@@ -124,9 +149,19 @@ class Snapshot:
         credential_id: str = "",
         sync_ref: str = "",
     ) -> Any | None:
-        """One card for a tracked issue, for callers that need a single state."""
+        """One card for a tracked issue, for callers that need a single state.
+
+        A live one if there is one, then one not deleted. AccessGrid deletes
+        the half of a pair nobody installed and keeps listing it; read first,
+        its "deleted" hid the live half's state, and suspends stopped syncing
+        both ways. The same goes for a pair whose installed half was then
+        unlinked: the unlink is the pass's state, not the abandoned half's
+        delete.
+        """
+        from .phases.writeback import representative_card
+
         cards = self.resolve_ag_cards(ag_card_id, person_id, credential_id, sync_ref)
-        return cards[0] if cards else None
+        return representative_card(cards)
 
     @property
     def total_credentials(self) -> int:
@@ -146,6 +181,7 @@ def build_snapshot(
     template_id: str,
 ) -> Snapshot:
     snap = Snapshot()
+    snap.suspends_expired = bool(getattr(pacs, "suspends_expired_cards", False))
 
     logger.info("Building snapshot — fetching people from PACS")
     for person in pacs.list_people():
@@ -200,7 +236,7 @@ def build_snapshot(
                 )
             continue  # no entry at all — see phase 3
         except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to fetch credentials for %s (%s): %s", pid, person.full_name, e)
+            logger.warning("Failed to fetch credentials for %s (%s): %s", pid, person.full_name, e, exc_info=True)
             continue
         snap.credentials_by_person[pid] = creds
 
@@ -221,8 +257,11 @@ def build_snapshot(
     try:
         cards = list_cards(ag, template_id)
     except Exception as e:  # noqa: BLE001
-        logger.error("Failed to list AG cards: %s", e)
+        logger.error("Failed to list AG cards — no pass is issued this cycle: %s", e, exc_info=True)
         cards = []
+        snap.ag_cards_read = False
+
+    from .phases.writeback import is_dead
 
     for card in cards:
         snap.ag_card_by_id[card.id] = card
@@ -239,8 +278,15 @@ def build_snapshot(
 
         site = metadata.get("site_code")
         card_no = metadata.get("card_number")
-        if site is not None and card_no is not None:
-            snap.ag_cards_by_site_card[(str(site), str(card_no))] = card
+        if card_no is not None:
+            # A card with no site code (H10302) under "". A live card is
+            # never displaced by a dead one with the same number: AccessGrid
+            # keeps listing deleted passes, and a re-issued card's deleted
+            # pass must not hide its live one, or the live one hide nothing.
+            key = (str(site) if site is not None else "", str(card_no))
+            current = snap.ag_cards_by_site_card.get(key)
+            if current is None or is_dead(current) or not is_dead(card):
+                snap.ag_cards_by_site_card[key] = card
 
     logger.info(
         "Snapshot complete: %d people, %d credentials, %d AG cards "

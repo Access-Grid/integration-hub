@@ -49,6 +49,66 @@ Credentials are therefore tracked by their physical identity (site + card
 number), not the mutable slot id, so a deleted-and-recreated card doesn't
 churn its AccessGrid pass.
 
+### Avigilon Unity
+
+Enrollment is per identity and token: set the token's Embossed Number to
+`accessgrid` and keep its card number in Internal Number. Setup chooses the
+Unity card format and an optional synthetic-email domain. Leave the domain
+blank to hold Seos enrollments without email; supplying a domain enables
+`first.last.<identity id>@domain`. Configure the notification recipient and
+SMTP in Settings so held enrollments and discrepancies can be emailed.
+
+A template pair is one enrollment for an unknown phone platform. Its issued
+pair ID is stored unchanged and used for every AccessGrid mutation. The
+individual Apple and Android cards are read to determine installation and
+credential numbers; AccessGrid deletes the unused platform after installation.
+An active member determines the pair's active state regardless of listing order;
+Seos still requires an installation before activating its Unity tokens.
+
+Unity token deletion requires the exact identity and token ID in tracking.
+An `accessgrid` marker and matching number do not establish ownership. If a
+crash leaves a created token without its recorded ID, writeback and cleanup
+retain the ambiguous token and reservation and alert the operator for review.
+Creation must confirm a new token ID from Unity's response before recording it.
+Malformed token rows, missing IDs/statuses, duplicate IDs, and incomplete or
+contradictory counts make the token read unavailable. A valid JSON/XML fallback
+may supply the complete list; otherwise the existing pass and tokens are held.
+A successfully read empty list still permits normal revocation.
+
+Seos device tokens can be disabled independently in Unity. One active device
+keeps its pass active; disabling every device suspends the whole pass using its
+pair ID. A whole-pass suspension deactivates its tracked tokens, and resuming it
+preserves independent device restrictions. Those restrictions and pending status
+writes are persisted so retries and restarts retain their meaning. Switching an
+independently disabled token back to Active in Unity clears its restriction.
+This detects observed status changes: marking an already inactive token inactive
+again while its whole pass is suspended provides no evidence of a new device block.
+
+- Seos issues omit site code and card number. Allocated numbers are written
+  as inactive Unity tokens, recorded with their facility codes in the encrypted
+  tracking database, and only then is the enrollment token deleted. Unity
+  exposes facility codes on card formats rather than on individual tokens.
+- Seos tokens activate only when an active pass is installed on a phone or
+  watch. Issued but uninstalled passes stay inactive. Suspended, unlinked,
+  and wholly deleted passes deactivate their Unity tokens; only an abandoned
+  platform's token is retired while its sibling survives. Switching a deleted
+  pass's token back on issues a new pass (Seos: that token becomes its
+  enrollment, and the pass's other tokens are deleted).
+- Other templates send site code and card number for H10301 (26-bit), or the
+  parity-inclusive, 64-character hex payload for H10302/H10304. Unknown
+  layouts are held and reported. An email or phone is needed for delivery.
+- Names, phone, title, and department follow Unity. Non-Seos email and
+  credential edits update the same pass; credential edits refresh its payload.
+  Seos email and credential-number edits generate alerts without changing
+  the issued Seos identity.
+- Revocation requires at least 30% of distinct tracked identities to return.
+  Missing tracked identities are read directly, and unread records are held.
+  Writeback records are forgotten only after AccessGrid revocation succeeds.
+
+First attempts and retries share the same issuance payload and tracking code.
+Each cycle reconciles status once per tracked pass and leaves rejected writes
+pending for another cycle.
+
 ### Millennium Ultra (MGI)
 
 Millennium Ultra has no API, so this adapter drives the same web screens an
@@ -174,9 +234,10 @@ card numbers saved to Millennium Ultra"), with the numbers themselves on the
 badge for looking up a pass that is not working. Read from `pacs_cards`.
 
 **Changing a person's details.** Phase 6 pushes name, phone, title and the
-card's expiration date to AccessGrid, as metadata updates. It does **not**
-push email: AccessGrid rejects it on an issued pass, since the address is
-what the pass was delivered to. A changed address is logged once. A pass's
+card's expiration date to AccessGrid, as metadata updates. Email is pushed
+only for a DESFire/SmartTap pass, in an update of its own; a rejected one is
+retried. On a Seos pass AccessGrid rejects it, so a changed address is logged
+once. A pass's
 expiry is recorded the first time it is seen, rather than pushed, so
 existing passes are not all rewritten at once.
 

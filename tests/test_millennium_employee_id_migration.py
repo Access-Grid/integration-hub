@@ -18,7 +18,6 @@ from agsync.settings_store import get_json
 from agsync.sync import tracking
 from tests._fakes import FakeMillenniumClient, export_row
 
-
 GONE = object()
 
 

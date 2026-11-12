@@ -106,6 +106,10 @@ class Credential:
     # instead of the decoded site_code + card_number. Empty when the vendor
     # has no such blob (Avigilon, Alta).
     file_data: str = ""
+    # Send file_data whatever the operator chose: the card is in a format
+    # whose site code and card number AccessGrid would read as 26-bit, so
+    # file_data is the only correct way to send it (Unity, non-26-bit).
+    send_file_data: bool = False
     status: CredentialStatus = CredentialStatus.UNKNOWN
     activate_date: datetime | None = None
     deactivate_date: datetime | None = None
@@ -160,6 +164,24 @@ class PacsDescriptor:
     # The engine then resolves the template's protocol each cycle and passes
     # it in as `mode`, so the two systems cannot drift apart.
     derives_mode_from_template: bool = False
+    # Passes phase 1 may issue in one cycle; None keeps its default runaway
+    # cap (phase1_provision.MAX_PROVISIONS_PER_CYCLE).
+    max_provisions_per_cycle: int | None = None
+    # How long a pass lasts when the PACS gives its card no end date.
+    default_pass_days: int = 365
+    # Seconds the engine waits at least between cycles; None keeps its
+    # default (engine.MIN_INTERVAL_S). A cycle slower than a third of it
+    # still waits 3x its own time.
+    min_interval_s: int | None = None
+    # True if two passes must never carry the same site code + card number,
+    # whatever the operator's dedupe setting: a second token holding a
+    # number already on a pass is refused and mailed, not issued. Checked
+    # against passes issued earlier in the same cycle too.
+    unique_card_numbers: bool = False
+    # True if setup asks for one of the PACS's card formats, read live, whose
+    # facility code becomes the site code. The adapter provides
+    # card_formats() and card_format_params(params, format_id).
+    picks_card_format: bool = False
     # Set when requires_connect is True: what the side-car should open and
     # which cookies prove the human got through. Keeping it here is what
     # lets the connect flow stay vendor-agnostic — the alternative, and what

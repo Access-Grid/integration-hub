@@ -127,3 +127,16 @@ def test_default_mode_never_sends_file_data(stub_tracking):
     assert "file_data" not in params
     assert params["site_code"] == 99
     assert params["card_number"] == "228"
+
+
+def test_a_credential_that_must_go_as_file_data_does_without_the_opt_in(stub_tracking):
+    """A Unity card in a format longer than 26 bits: site code + card number
+    would be read as 26-bit, so file_data goes whatever the setting says."""
+    from dataclasses import replace
+
+    ag = FakeAG()
+    cred = replace(_cred_with_file_data("ab" * 32), send_file_data=True)
+    phase1_provision.run(_snapshot(cred), ag, "tpl", site_code="")  # use_file_data defaults False
+    params = ag.access_cards.calls[0]
+    assert params["file_data"] == "ab" * 32
+    assert "site_code" not in params and "card_number" not in params

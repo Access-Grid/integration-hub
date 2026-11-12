@@ -35,7 +35,6 @@ What makes Millennium different from every other adapter here:
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -50,6 +49,8 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
+from ..emails import first_valid_email as _first_valid_email
+from ..emails import synthesize_email
 from . import export, import_file, migrate, pacs_cards
 from .client import (
     ANTIFORGERY_COOKIE_PREFIX,
@@ -79,43 +80,6 @@ PAIR_EMPTY_SLOTS = 1
 # the import to put them there ("insert").
 UNWRITTEN = ("write", "insert")
 
-
-def _first_valid_email(*candidates: str) -> str:
-    """The first of these that could actually be delivered to.
-
-    Millennium's email fields are free text and hold whatever was typed —
-    a name, a note, a phone number. Issuing a pass to one of those fails at
-    AccessGrid with an error about the address rather than about the field
-    it came from, so anything without an @ and a dot after it is treated as
-    absent and the synthesized address is used instead.
-    """
-    for candidate in candidates:
-        value = (candidate or "").strip()
-        if not value or " " in value:
-            continue
-        local, _, domain = value.partition("@")
-        if local and "." in domain:
-            return value
-    return ""
-
-
-def synthesize_email(first: str, last: str, employee_id: str, domain: str) -> str:
-    """first.last.<employee id>@domain, for a cardholder with no address.
-
-    The Employee ID keeps two people with the same name apart.
-    """
-    if not employee_id:
-        logger.error(
-            "Millennium: cannot synthesize an email for %s %s — no Employee ID",
-            first, last,
-        )
-        return ""
-    domain = (domain or "").strip().lstrip("@")
-    if not domain:
-        return ""
-    parts = [re.sub(r"[^a-z0-9]", "", (p or "").lower()) for p in (first, last)]
-    local = ".".join([p for p in parts if p] + [str(employee_id)])
-    return f"{local}@{domain}"
 
 
 class MillenniumUltraAdapter:

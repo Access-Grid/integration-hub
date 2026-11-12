@@ -23,6 +23,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -34,9 +35,15 @@ HTTP_TIMEOUT = 30.0
 ROSTER_TIMEOUT = 300.0
 HTTP_USER_AGENT = "AGSyncTool/0.1"
 PAGE_SIZE = 100
-# The XML list is read a thousand at a time: thirteen pages for the live
-# box's 12,939 identities rather than one 20 MB response.
-XML_PAGE_SIZE = 1000
+# The XML list is read five hundred at a time rather than in one 20 MB
+# response. A page shorter than asked ends the read, so a box that quietly
+# capped pages below this would cut the search short; 500 leaves room under
+# whatever cap a box might have (the live one honoured 1000).
+XML_PAGE_SIZE = 500
+# Tokens are one identity's, never this many. Asked for explicitly, so a
+# token list that pages by default sends them all; one that comes back
+# full may have more behind it, and is not taken as complete.
+TOKENS_PER_PAGE = 500
 # Ten thousand pages of a hundred is far past any real roster; reaching it
 # means the paging is broken, and stopping is better than spinning forever.
 MAX_PAGES = 10_000
@@ -72,6 +79,9 @@ XML_IDENTITY_SEARCH = {
 # Unity's advanced search on a token's Embossed Number, as its own search
 # page sends it. The value goes in adv_search_val_0.
 EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
+# The same search on a token's Internal Number. Not yet seen on a live box:
+# the probe's search mode (`internal_search`) checks Unity takes it.
+INTERNAL_SEARCH = {"adv_search_field_0": "plasecInternalnumber", "adv_search_udf_0": "Token Internal #"}
 
 # The CSRF token as Unity's pages carry it. A live box (Nov 2026) set no
 # XSRF-TOKEN cookie at all, so the cookie is only the fallback; our first
@@ -90,6 +100,10 @@ class UnityAuthError(UnityError):
     """Unity would not give us a working session."""
 
 
+class UnityNotFound(UnityError):
+    """Unity answered 404 for an identity: it does not hold one by that id."""
+
+
 def _unwrap(raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """(id, fields) from either the flat or the JSON:API shape."""
     if isinstance(raw.get("attributes"), dict):
@@ -98,7 +112,7 @@ def _unwrap(raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return str(raw.get("cn") or raw.get("id") or ""), raw
 
 
-def xml_rows(text: str, root_tag: str, row_tag: str) -> list[dict[str, str]]:
+def xml_rows(text: str, root_tag: str, row_tag: str, *, strict: bool = False) -> list[dict[str, str]]:
     """Each `<row_tag>` element as a flat dict of its descendants' text.
 
     Flat is the shape identity_row/token_row already read, so XML needs no
@@ -115,6 +129,8 @@ def xml_rows(text: str, root_tag: str, row_tag: str) -> list[dict[str, str]]:
         elements = []  # how Rails renders an empty array as XML
     elif root.tag == root_tag:
         elements = root.findall(row_tag)
+        if strict and (len(elements) != len(root) or (root.text or "").strip()):
+            raise UnityError(f"<{root_tag}> contains malformed {row_tag} entries")
     else:
         raise UnityError(f"expected <{root_tag}>, got <{root.tag}>")
     rows = []
@@ -175,6 +191,27 @@ def identity_row(raw: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def card_format_row(raw: dict[str, Any]) -> dict[str, str]:
+    """A card format, from either the XML or the JSON shape."""
+    format_id, attrs = _unwrap(raw)
+    return {
+        "id": format_id,
+        "name": _text(attrs.get("plasecName")),
+        "facility_code": _text(attrs.get("plaseccfmtFacilitycode")),
+        "total_bits": _text(attrs.get("plaseccfmtMaxdigits")),
+        # Where each field sits in the card's bits (wiegand.Layout).
+        **{key: _text(attrs.get(f"plaseccfmt{field}")).strip() for key, field in _LAYOUT_FIELDS.items()},
+    }
+
+
+# card_format_row key -> Unity's field, after the `plaseccfmt` prefix.
+_LAYOUT_FIELDS = {
+    "fc_loc": "Fcodeloc", "fc_len": "Fcodelen", "card_loc": "Cardloc", "card_len": "Cardlen",
+    "even_loc": "Evenparityloc", "even_len": "Evenparitylen", "odd_loc": "Oddparityloc",
+    "odd_len": "Oddparitylen", "issue_len": "Issuelen", "offset": "Offset", "flags": "Flags",
+}
+
+
 def token_row(raw: dict[str, Any], identity_id: str) -> dict[str, Any]:
     """A token, from the tokens list or embedded in an identity's detail.
 
@@ -183,12 +220,26 @@ def token_row(raw: dict[str, Any], identity_id: str) -> dict[str, Any]:
     full field set is kept under `fields` because a token update must send
     every field back, and only the original response has them.
     """
+    if not isinstance(raw, dict) or (
+        "attributes" in raw and not isinstance(raw["attributes"], dict)
+    ):
+        raise UnityError(f"tokens for {identity_id}: malformed token entry")
     token_id, attrs = _unwrap(raw)
-    ext = attrs.get("extended_attributes") or {}
+    source_id = raw.get("id") or attrs.get("cn") or raw.get("cn")
+    if (not isinstance(source_id, str | int) or isinstance(source_id, bool)
+            or not token_id.strip() or token_id != token_id.strip()):
+        raise UnityError(f"tokens for {identity_id}: token entry has no usable ID")
+    ext = attrs.get("extended_attributes")
+    if ext is None:
+        ext = {}
+    if not isinstance(ext, dict):
+        raise UnityError(f"token {token_id} of {identity_id}: malformed extended attributes")
     raw_status = ext.get("token_status") or _field(attrs, "Tokenstatus")
+    if not isinstance(raw_status, str | int) or isinstance(raw_status, bool) or not str(raw_status).strip():
+        raise UnityError(f"token {token_id} of {identity_id}: token entry has no usable status")
     status = status_code(raw_status)
     if not status:
-        logger.warning("Unity token %s has an unrecognised status %r", token_id, raw_status)
+        raise UnityError(f"token {token_id} of {identity_id}: unrecognised status {raw_status!r}")
 
     def date(name: str) -> str:
         return str(ext.get(f"formatted_{name}_date") or _field(attrs, f"{name.capitalize()}date"))
@@ -205,6 +256,29 @@ def token_row(raw: dict[str, Any], identity_id: str) -> dict[str, Any]:
         "fields": attrs,
     }
 
+
+
+def _refuse_in_dry_run(what: str) -> None:
+    """The last line of defence: the adapter checks dry run before every
+    write and logs what it would do, so reaching this is a bug, and it fails
+    loudly rather than write."""
+    from .... import dryrun
+
+    if dryrun.active():
+        raise UnityError(f"dry run: {what} refused — nothing is written to Unity")
+
+
+def _whole_token_list(identity_id: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`rows`, unless they fill the page asked for: then more may be behind it.
+
+    A short token list reads as tokens deleted, which retires passes, so a
+    list that might be partial is an error, never an answer.
+    """
+    if len(rows) >= TOKENS_PER_PAGE:
+        raise UnityError(f"tokens for {identity_id}: {len(rows)} returned, a full page — may be partial")
+    if len({r["id"] for r in rows}) != len(rows):
+        raise UnityError(f"tokens for {identity_id}: duplicate token IDs — may be partial")
+    return rows
 
 class UnityClient:
     """Session-based client. Signs in with a password, so an expired session
@@ -263,6 +337,11 @@ class UnityClient:
                 self._csrf_meta = self._read_csrf_meta()
                 return
         raise UnityAuthError("Unity rejected the username or password")
+
+    def ensure_signed_in(self) -> None:
+        """Sign in unless already signed in; raises as login() does."""
+        if not self._logged_in:
+            self.login()
 
     def _can_read(self) -> bool:
         """Does the identity list answer with data, as JSON or else as XML?
@@ -394,6 +473,13 @@ class UnityClient:
         logger.info("Unity: %d identities hold a token embossed %r", len(rows), value)
         return rows
 
+    def search_internal(self, number: str) -> list[dict[str, str]]:
+        """Identities holding a token whose Internal Number matches `number`.
+
+        Like search_embossed, only a lead: the tokens themselves decide.
+        """
+        return self._identities_xml({**INTERNAL_SEARCH, "adv_search_val_0": number})
+
     def _identities_xml(self, search: dict[str, str] | None = None) -> list[dict[str, str]]:
         """Page through the XML list, a thousand at a time.
 
@@ -450,8 +536,23 @@ class UnityClient:
         return list(rows.values())
 
     def get_identity(self, identity_id: str) -> dict[str, str]:
-        """Full detail — the JSON list has no email, phone, title or department."""
-        body = self._get_json(f"/identities/{identity_id}.json")
+        """Full detail — the JSON list has no email, phone, title or department.
+
+        Raises UnityNotFound on a 404. Whether Unity answers 404 for an
+        identity it does not hold is still to be seen live (the probe's
+        missing_identity_statuses), so the adapter checks a known identity
+        reads before taking a 404 as gone.
+        """
+        path = f"/identities/{identity_id}.json"
+        resp = self._request("GET", path, headers={"Accept": "application/json"})
+        if resp.status_code == 404:
+            raise UnityNotFound(f"GET {path}: HTTP 404")
+        if resp.status_code != 200:
+            raise UnityError(f"GET {path}: HTTP {resp.status_code}")
+        try:
+            body = resp.json()
+        except ValueError as e:
+            raise UnityError(f"GET {path}: response is not JSON") from e
         raw = body.get("data", body) if isinstance(body, dict) else None
         if not isinstance(raw, dict):
             raise UnityError(f"identity {identity_id}: unexpected response shape")
@@ -466,21 +567,46 @@ class UnityClient:
 
     def _tokens_xml(self, identity_id: str) -> list[dict[str, Any]]:
         path = f"/identities/{identity_id}/tokens.xml"
-        resp = self._request("GET", path, headers={"Accept": "*/*"})
+        resp = self._request("GET", path, headers={"Accept": "*/*"},
+                             params={"page": 1, "perpage": TOKENS_PER_PAGE})
         if resp.status_code != 200:
             raise UnityError(f"GET {path}: HTTP {resp.status_code}")
         # A person with no tokens may come back as an empty <tokens/>; that
         # parses to no rows, which here is the truth rather than a failure.
-        return [token_row(t, identity_id) for t in xml_rows(resp.text, "tokens", "token")]
+        return _whole_token_list(identity_id, [token_row(t, identity_id)
+                                               for t in xml_rows(resp.text, "tokens", "token", strict=True)])
 
     def _tokens_json(self, identity_id: str) -> list[dict[str, Any]]:
-        body = self._get_json(f"/identities/{identity_id}/tokens.json")
+        body = self._get_json(f"/identities/{identity_id}/tokens.json",
+                              {"page": 1, "perpage": TOKENS_PER_PAGE})
         items = body.get("tokens", body.get("data")) if isinstance(body, dict) else body
         if isinstance(items, dict):
             items = [items]
         if not isinstance(items, list):
             raise UnityError(f"tokens for {identity_id}: unexpected response shape")
-        return [token_row(t, identity_id) for t in items if isinstance(t, dict)]
+        # Never salvage a partial list: a discarded row might be the very
+        # token whose apparent absence would revoke a tracked pass.
+        rows = [token_row(t, identity_id) for t in items]
+        meta = body.get("meta") if isinstance(body, dict) else None
+        if meta is None:
+            meta = {}
+        if not isinstance(meta, dict):
+            raise UnityError(f"tokens for {identity_id}: malformed count metadata")
+        counts = {}
+        for key in ("recordsFiltered", "recordsTotal"):
+            if key not in meta:
+                continue
+            value = meta[key]
+            if isinstance(value, bool) or not isinstance(value, str | int) or not str(value).isdigit():
+                raise UnityError(f"tokens for {identity_id}: invalid {key}")
+            counts[key] = int(value)
+        if ("recordsFiltered" in counts and "recordsTotal" in counts
+                and counts["recordsFiltered"] != counts["recordsTotal"]):
+            raise UnityError(f"tokens for {identity_id}: contradictory counts")
+        total = counts.get("recordsFiltered", counts.get("recordsTotal"))
+        if total is not None and len(rows) != total:
+            raise UnityError(f"tokens for {identity_id}: read {len(rows)} of {total}")
+        return _whole_token_list(identity_id, rows)
 
     # -- writes ------------------------------------------------------------
 
@@ -495,6 +621,7 @@ class UnityClient:
         returns only once a re-read shows the new status and every other
         form field as it was.
         """
+        _refuse_in_dry_run("set_token_status")
         attrs = token["fields"]
         if not self.csrf_token:
             raise UnityError(f"token {token['id']}: no CSRF token to send, so Unity would refuse the write")
@@ -524,18 +651,90 @@ class UnityClient:
             return
         raise UnityError(f"token {token['id']}: status reads {after and after['status']!r} after writing {status!r}")
 
+    def create_token(self, identity_id: str, internal_number: str, embossed: str, status: str) -> str:
+        """Create a token on an identity and return its id.
+
+        Only the card number, embossed number and status are sent; Unity
+        defaults the rest, as its own form does for a field left blank. No
+        dates: the format Unity takes them back in has not been seen, and a
+        token without them is limited by its status alone. Returns only once
+        a re-read shows the token; raises on refusal or doubt.
+        """
+        _refuse_in_dry_run("create_token")
+        if not self._logged_in:
+            self.login()  # the CSRF token comes with the session
+        if not self.csrf_token:
+            raise UnityError(f"identity {identity_id}: no CSRF token to send, so Unity would refuse the token")
+        form = {
+            "utf8": "✓",
+            "authenticity_token": self.csrf_token,
+            "enrollVirdiAfter": "false",
+            "token[plasecInternalnumber]": internal_number,
+            "token[plasecEmbossednumber]": embossed,
+            "token[plasecTokenstatus]": status,
+        }
+        path = f"/identities/{identity_id}/tokens"
+        before = {t["id"] for t in self.list_tokens(identity_id)}
+        resp = self._request("POST", path, data=form)
+        if resp.status_code != 302:
+            raise UnityError(f"POST {path}: HTTP {resp.status_code}")
+        location_path = urlsplit(resp.headers.get("Location", "")).path
+        located = re.search(r"/tokens/([^/]+)(?:/|$)", location_path)
+        returned_id = unquote(located.group(1)) if located else None
+        made = [t for t in self.list_tokens(identity_id)
+                if t["id"] not in before and t["internal_number"] == internal_number
+                and t["embossed_number"] == embossed]
+        token = next((t for t in made if t["id"] == returned_id), None)
+        if token is None:
+            raise UnityError(f"identity {identity_id}: {len(made)} tokens read back after creating one, "
+                             "but no new token matches the returned token ID; ownership unconfirmed")
+        if token["status"] != status:
+            raise UnityError(f"token {token['id']}: created with status {token['status']!r}, not {status!r}")
+        logger.info("Unity: created token %s on identity %s", token["id"], identity_id)
+        return token["id"]
+
+    def delete_token(self, identity_id: str, token_id: str) -> None:
+        """Delete an exactly tracked token, never one inferred from its number."""
+        _refuse_in_dry_run("delete_token")
+        from ....sync import tracking
+        from . import written
+
+        owned = any(e["token_id"] == token_id for e in written.for_person(identity_id))
+        enrollment = any(t.pacs_person_id == identity_id and t.pacs_credential_id == token_id
+                         and t.ag_card_id and t.status not in ("deleted", "deduped")
+                         for t in tracking.all_tracked())
+        if not (owned or enrollment):
+            raise UnityError(f"token {token_id} of identity {identity_id}: token ID is not tracked — delete refused")
+        if not self._logged_in:
+            self.login()  # the CSRF token comes with the session
+        if not self.csrf_token:
+            raise UnityError(f"token {token_id}: no CSRF token to send, so Unity would refuse the delete")
+        path = f"/identities/{identity_id}/tokens/{token_id}"
+        form = {"utf8": "✓", "_method": "delete", "authenticity_token": self.csrf_token}
+        resp = self._request("POST", path, data=form)
+        if resp.status_code != 302:
+            raise UnityError(f"POST {path} (delete): HTTP {resp.status_code}")
+        if any(t["id"] == token_id for t in self.list_tokens(identity_id)):
+            raise UnityError(f"token {token_id}: still on identity {identity_id} after deleting it")
+        logger.info("Unity: deleted token %s from identity %s", token_id, identity_id)
+
     def list_card_formats(self) -> list[dict[str, str]]:
+        """Every card format defined in Unity: id, name, facility code, bits.
+
+        A token names no format, so these are the site's, not a card's. A
+        live box answered the JSON with 406 and the XML whole.
+        """
+        return self._json_then_xml("card_formats", self._card_formats_json, self._card_formats_xml)
+
+    def _card_formats_xml(self) -> list[dict[str, str]]:
+        resp = self._request("GET", "/card_formats.xml", headers={"Accept": "*/*"})
+        if resp.status_code != 200:
+            raise UnityError(f"GET /card_formats.xml: HTTP {resp.status_code}")
+        return [card_format_row(r) for r in xml_rows(resp.text, "card-formats", "card-format")]
+
+    def _card_formats_json(self) -> list[dict[str, str]]:
         body = self._get_json("/card_formats.json")
         items = body.get("data", body) if isinstance(body, dict) else body
         if not isinstance(items, list):
             raise UnityError("card formats: unexpected response shape")
-        formats = []
-        for raw in items:
-            format_id, attrs = _unwrap(raw)
-            formats.append({
-                "id": format_id,
-                "name": str(attrs.get("plasecName") or ""),
-                "facility_code": str(attrs.get("plaseccfmtFacilitycode") or ""),
-                "total_bits": str(attrs.get("plaseccfmtMaxdigits") or ""),
-            })
-        return formats
+        return [card_format_row(r) for r in items if isinstance(r, dict)]

@@ -322,6 +322,47 @@ MIGRATIONS: list[tuple[str, Step]] = [
         "ALTER TABLE ag_credentials ADD COLUMN last_synced_expiration TEXT;",
     ),
     ("013_legacy_cards_wait_for_install", _legacy_cards_wait_for_install),
+    (
+        "014_unity_tokens",
+        """
+        -- Tokens the hub created in Avigilon Unity for a Seos pass, one per
+        -- AccessGrid credential. They carry the same `accessgrid` embossed
+        -- number as an enrollment, so this is how they are told apart.
+        CREATE TABLE IF NOT EXISTS unity_tokens (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            pacs_person_id     TEXT NOT NULL,
+            pacs_credential_id TEXT NOT NULL,  -- the enrollment token the pass was issued for
+            -- NULL while being created: the row is written first, so a token
+            -- created but never recorded cannot pass for a new enrollment
+            token_id           TEXT UNIQUE,
+            facility_code      TEXT NOT NULL,  -- encrypted
+            card_number        TEXT NOT NULL,  -- encrypted
+            -- the status we last wrote: 1 active, 0 off (our own hold)
+            active             INTEGER NOT NULL DEFAULT 0,
+            -- the enrollment's dates, kept because the enrollment is deleted
+            activate_date      TEXT,
+            deactivate_date    TEXT,
+            created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_unity_tokens_person ON unity_tokens(pacs_person_id);
+        """,
+    ),
+    (
+        # NULL for a pass issued before departments were sent: phase 6 then
+        # sends the person's department once, if they have one.
+        "015_last_synced_department",
+        "ALTER TABLE ag_credentials ADD COLUMN last_synced_department TEXT;",
+    ),
+    (
+        "016_unity_device_suspension",
+        """
+        -- Preserve an operator's device block across whole-pass suspension.
+        ALTER TABLE unity_tokens ADD COLUMN operator_disabled INTEGER NOT NULL DEFAULT 0;
+        -- Write intent first: a crash after Unity accepts a status update
+        -- must not make our own write look like an operator's device edit.
+        ALTER TABLE unity_tokens ADD COLUMN pending_active INTEGER;
+        """,
+    ),
 ]
 
 
