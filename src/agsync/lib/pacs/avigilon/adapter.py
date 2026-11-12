@@ -237,6 +237,12 @@ class AvigilonAdapter:
             email = row.get("email", "")
             if self.seos and pid not in self._held:
                 email = self._seos_email(pid, row)
+            elif email and not first_valid_email(email):
+                # AccessGrid rejects the issue outright over an address like
+                # this, even for a holder it could reach by phone.
+                logger.warning("Unity: identity %s (%s) has %r as their email, which is not an address "
+                               "— leaving it off their pass", pid, row["full_name"], email)
+                email = ""
             # An unrecognised identity status is read as active on purpose:
             # inactive empties the person's credentials, which revokes passes.
             yield Person(

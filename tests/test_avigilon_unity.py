@@ -1283,3 +1283,12 @@ def test_seos_inactive_enrollment_with_no_pass_is_held(seos):
     _, a = seos([_token("t1"), _token("t2", internal="7", status="Inactive")])
     creds = {c.id: c for c in _cycle(a)}
     assert creds["t2"].hold and not creds["t1"].hold
+
+
+def test_an_email_that_is_not_an_address_is_left_off_a_desfire_pass():
+    # AccessGrid rejects the whole issue over it, though the holder has a phone.
+    fake = FakeUnity([_xml_identity("a", plasecidentityEmailaddress="n/a", plasecidentityPhone="5551234")],
+                     tokens={"a": [_token("t1")]})
+    _, people, (cred,) = _read(fake)
+    assert (people["a"].email, people["a"].phone) == ("", "5551234")
+    assert cred.trigger_active and not cred.hold
