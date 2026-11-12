@@ -720,17 +720,51 @@ class AvigilonAdapter:
         for e in written.for_credential(pid, credential_id):
             if (e["facility_code"], e["card_number"]) not in gone:
                 continue
-            if e["token_id"]:
+            token_id = e["token_id"]
+            if not token_id:
+                # Its token may have been created with the id never recorded.
+                # Forgetting the row would leave that token in Unity, read
+                # from then on as an operator's enrollment.
+                read, token_id = self._unrecorded_token(pid, credential_id, e["card_number"])
+                if not read:
+                    continue
+            if token_id:
                 try:
-                    self._client.delete_token(pid, e["token_id"])
+                    self._client.delete_token(pid, token_id)
                 except UnityError as err:
-                    if not self._token_gone(pid, e["token_id"]):
+                    if not self._token_gone(pid, token_id):
                         logger.error("Unity: could not delete token %s of %s, keeping its record to retry "
-                                     "next cycle: %s", e["token_id"], pid, err)
+                                     "next cycle: %s", token_id, pid, err)
                         continue
+                logger.info("Unity: deleted token %s of %s — AccessGrid no longer backs card %s/%s",
+                            token_id, pid, e["facility_code"], e["card_number"])
             written.remove(e["row"])
             retired += 1
         return retired
+
+    def _unrecorded_token(self, pid: str, credential_id: str, number: str) -> tuple[bool, str | None]:
+        """(read, token id) of a token we created for this number without recording it.
+
+        Matched as write_back_credentials adopts one. Not read means keep the
+        row and ask again next cycle — unless the identity itself is gone,
+        which takes every token with it.
+        """
+        try:
+            tokens = self._client.list_tokens(pid)
+        except UnityError as err:
+            try:
+                self._client.get_identity(pid)
+            except UnityNotFound:
+                return True, None
+            except UnityError:
+                pass
+            logger.warning("Unity: could not read the tokens of %s to find the unrecorded token for card %s, "
+                           "keeping its record to retry next cycle: %s", pid, number, err)
+            return False, None
+        known = {e["token_id"] for e in written.all_tokens() if e["token_id"]}
+        token = next((t for t in tokens if t["internal_number"] == number and _is_trigger(t)
+                      and t["id"] not in known and t["id"] != credential_id), None)
+        return True, token["id"] if token else None
 
     def _token_gone(self, pid: str, token_id: str) -> bool:
         """Is this token no longer in Unity, on Unity's own word?

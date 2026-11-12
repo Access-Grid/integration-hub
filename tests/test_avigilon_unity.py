@@ -1292,3 +1292,34 @@ def test_an_email_that_is_not_an_address_is_left_off_a_desfire_pass():
     _, people, (cred,) = _read(fake)
     assert (people["a"].email, people["a"].phone) == ("", "5551234")
     assert cred.trigger_active and not cred.hold
+
+
+def test_retiring_a_card_deletes_the_token_created_without_its_id_recorded(seos):
+    # Created in Unity, but the hub never recorded the id (a crash, or a
+    # read-back that failed). Forgetting the row used to leave the token in
+    # Unity, read from the next cycle on as an operator's enrollment.
+    fake, a = seos([_token("t1"), _token("lost", internal="9001", status="Inactive")])
+    written.add("a", "t1", "239", "9001", None, None)
+    _cycle(a)
+    assert a.retire_credentials("a", "t1", [_card("9001")]) == 1
+    assert written.for_credential("a", "t1") == []
+    assert all(t["id"] != "lost" for t in fake.tokens["a"])
+    assert "lost" not in {c.id for c in _cycle(a)}
+
+
+def test_retiring_an_unrecorded_token_waits_when_the_tokens_cannot_be_read(seos):
+    fake, a = seos([_token("t1"), _token("lost", internal="9001", status="Inactive")])
+    written.add("a", "t1", "239", "9001", None, None)
+    _cycle(a)
+    a._client.list_tokens = lambda pid: (_ for _ in ()).throw(UnityError("down"))
+    assert a.retire_credentials("a", "t1", [_card("9001")]) == 0
+    assert len(written.for_credential("a", "t1")) == 1, "kept, to retry next cycle"
+
+
+def test_retiring_a_never_created_token_just_forgets_its_row(seos):
+    fake, a = seos()
+    written.add("a", "t1", "239", "9001", None, None)
+    _cycle(a)
+    assert a.retire_credentials("a", "t1", [_card("9001")]) == 1
+    assert written.for_credential("a", "t1") == []
+    assert not [p for p in fake.posts if p.get("_method") == "delete"]
