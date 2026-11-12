@@ -500,7 +500,7 @@ def test_detail_is_not_fetched_when_the_list_has_the_email():
 def tracked(monkeypatch):
     """Make the tracking table hold a pass for each person id given."""
     def hold(*pids):
-        rows = [SimpleNamespace(pacs_person_id=p, ag_card_id=f"card-{p}", status="active",
+        rows = [SimpleNamespace(pacs_person_id=p, pacs_credential_id=f"t{p}", ag_card_id=f"card-{p}", status="active",
                                 last_synced_full_name=f"Tracked {p}", last_synced_email=f"{p}@x",
                                 last_synced_phone="", last_synced_title="") for p in pids]
         monkeypatch.setattr(tracking, "all_tracked", lambda: rows)
@@ -800,7 +800,7 @@ def test_seos_install_switches_tokens_on_and_suspend_off(seos):
     assert made["attributes"]["extended_attributes"]["token_status"] == "Inactive"
 
 
-def test_seos_token_switched_off_by_an_operator_suspends_and_stays_off(seos):
+def test_seos_token_switched_off_by_an_operator_suspends_and_stays_off(seos, mailed):
     fake, a = seos()
     _cycle(a)
     a.write_back_credentials("a", "t1", [_card("9001")])
@@ -812,6 +812,7 @@ def test_seos_token_switched_off_by_an_operator_suspends_and_stays_off(seos):
     posts = len(fake.posts)
     assert not a.update_credential_status("a", "t1", CredentialStatus.ACTIVE)
     assert len(fake.posts) == posts
+    assert "switched off in Unity after we switched it on" in mailed[0]
 
 
 def test_seos_one_hub_token_deleted_suspends_the_pass(seos):
@@ -1014,3 +1015,32 @@ def test_seos_status_for_a_hub_token_no_longer_in_unity_is_mailed(seos, mailed):
     fake.tokens["a"] = fake.tokens["a"][1:]
     assert a.update_credential_status("a", "t1", CredentialStatus.SUSPENDED)
     assert "is no longer in Unity" in mailed[0]
+
+
+# --- an accessgrid token that is not Active ---------------------------------------
+
+
+def test_inactive_trigger_with_no_pass_is_held_not_issued(tracked):
+    tracked("b")  # b holds a pass for tb; a second, Inactive trigger has none
+    fake = FakeUnity([_identity("b")], tokens={"b": [_token("tb"), _token("t2", internal="7", status="Inactive")]},
+                     details={"b": {"id": "b", "attributes": {}}})
+    a = _adapter(fake)
+    list(a.list_people())
+    creds = {c.id: c for c in a.list_credentials("b")}
+    assert creds["t2"].hold and not creds["tb"].hold
+
+
+def test_inactive_trigger_holding_a_pass_is_not_held_so_the_pass_suspends(tracked):
+    tracked("b")
+    fake = FakeUnity([_identity("b")], tokens={"b": [_token("tb", status="Inactive")]},
+                     details={"b": {"id": "b", "attributes": {}}})
+    a = _adapter(fake)
+    list(a.list_people())
+    [cred] = a.list_credentials("b")
+    assert not cred.hold and cred.status is CredentialStatus.SUSPENDED
+
+
+def test_seos_inactive_enrollment_with_no_pass_is_held(seos):
+    _, a = seos([_token("t1"), _token("t2", internal="7", status="Inactive")])
+    creds = {c.id: c for c in _cycle(a)}
+    assert creds["t2"].hold and not creds["t1"].hold

@@ -102,8 +102,8 @@ def _is_trigger(token: dict[str, Any]) -> bool:
     return token["embossed_number"].strip().lower() == TRIGGER_VALUE
 
 
-def _tracked_people() -> dict[str, Any]:
-    """Everyone we hold a pass for, with their tracking row.
+def _tracked_passes() -> list[Any]:
+    """The tracking rows of every pass we hold.
 
     Rows with a pass only, as the snapshot counts them: a row left pending by
     a failed issue has nothing to lose. Raises if the table can't be read:
@@ -116,7 +116,7 @@ def _tracked_people() -> dict[str, Any]:
         rows = tracking.all_tracked()
     except Exception as e:
         raise UnityError(f"the tracking table could not be read: {e}") from e
-    return {t.pacs_person_id: t for t in rows if t.ag_card_id and t.status not in ("deleted", "deduped")}
+    return [t for t in rows if t.ag_card_id and t.status not in ("deleted", "deduped")]
 
 
 class AvigilonAdapter:
@@ -131,6 +131,7 @@ class AvigilonAdapter:
         self._tokens: dict[str, list[dict[str, Any]]] = {}
         self._held: set[str] = set()
         self._inactive: set[str] = set()
+        self._issued: set[tuple[str, str]] = set()  # (person, credential) holding a pass
 
     # A deactivated identity's passes are suspended, not deleted: the snapshot
     # asks list_credentials for the inactive people it holds passes for.
@@ -148,9 +149,11 @@ class AvigilonAdapter:
     reads_whole_roster = False
 
     def list_people(self) -> Iterable[Person]:
-        tracked = _tracked_people()
+        passes = _tracked_passes()
+        tracked = {t.pacs_person_id: t for t in passes}
         rows, unread = self._identities(tracked)
         self._tokens, self._held, self._inactive = {}, set(), set()
+        self._issued = {(t.pacs_person_id, t.pacs_credential_id) for t in passes}
         for pid in unread:
             # Its last synced fields, so nothing reads as changed, and no
             # tokens, so list_credentials says it was not read.
@@ -314,6 +317,7 @@ class AvigilonAdapter:
                 dates[name] = pick(stated)
         if not ours:
             status = _TOKEN_STATUS.get(enrollment["status"], CredentialStatus.UNKNOWN)
+            hold = hold or self._not_yet_issuable(pid, cid, status)
         else:
             status, waiting = CredentialStatus.ACTIVE, False
             for e in ours:
@@ -340,6 +344,16 @@ class AvigilonAdapter:
             raw={"enrollment": enrollment, "written": [e["token_id"] for e in ours]},
         )
 
+    def _not_yet_issuable(self, pid: str, cid: str, status: CredentialStatus) -> bool:
+        """An enrollment that is not Active and has no pass yet: held, so no
+        pass is issued for it until it is switched on. One with a pass is
+        not held — its pass has to follow it to suspended."""
+        if status is CredentialStatus.ACTIVE or (pid, cid) in self._issued:
+            return False
+        logger.info("Unity token %s of %s is marked accessgrid but not Active — not issuing a pass until it is",
+                    cid, pid)
+        return True
+
     @staticmethod
     def _dates(token: dict[str, Any]) -> tuple[dict[str, datetime | None], bool]:
         hold = False
@@ -361,11 +375,13 @@ class AvigilonAdapter:
         if trigger and not token["internal_number"]:
             logger.warning("Unity token %s is marked accessgrid but has no Internal Number — holding it", token["id"])
             hold = True
+        status = _TOKEN_STATUS.get(token["status"], CredentialStatus.UNKNOWN)
+        hold = hold or (trigger and self._not_yet_issuable(pid, token["id"], status))
         return Credential(
             id=token["id"],
             person_id=pid,
             card_number=token["internal_number"],
-            status=_TOKEN_STATUS.get(token["status"], CredentialStatus.UNKNOWN),
+            status=status,
             activate_date=dates["activate_date"],
             deactivate_date=dates["deactivate_date"],
             trigger_active=trigger,
@@ -438,8 +454,9 @@ class AvigilonAdapter:
             tokens = {t["id"]: t for t in self._client.list_tokens(pid)}
             if want and any(e["active"] and e["token_id"] in tokens and tokens[e["token_id"]]["status"] != "1"
                             for e in ours):
-                logger.warning("Unity: a token of %s %s was switched off in Unity after we switched it on "
-                               "— leaving it off", pid, credential_id)
+                _problem(f"{pid}:{credential_id}:off",
+                         f"Unity: AccessGrid has the pass of identity {pid} ({credential_id}) active, but one of "
+                         f"its tokens was switched off in Unity after we switched it on — leaving it off")
                 return False
             for e in ours:
                 token = tokens.get(e["token_id"])
