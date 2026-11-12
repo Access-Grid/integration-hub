@@ -29,7 +29,7 @@ from fastapi.responses import RedirectResponse
 from ..auth import SESSION_COOKIE, current_user, sign_session
 from ..auth.store import admin_exists, create_admin
 from ..connect import register as uri_register
-from ..lib.pacs import available_pacs, get_descriptor
+from ..lib.pacs import available_pacs, build_adapter, get_descriptor
 from ..settings_store import AccessGridConfig, PacsConfig, is_configured
 from ..sync import get_engine
 
@@ -72,6 +72,12 @@ def _needs_connect_step(pacs: dict | None) -> bool:
     return not (pacs.get("params") or {}).get("trigger_card_format")
 
 
+def _needs_card_format(pacs: dict | None) -> bool:
+    """True when a PACS whose card format is picked in setup has none yet."""
+    descriptor = get_descriptor((pacs or {}).get("vendor", ""))
+    return bool(descriptor and descriptor.picks_card_format and not (pacs.get("params") or {}).get("card_format"))
+
+
 def _step(request: Request) -> int:
     if not admin_exists():
         return 1
@@ -82,7 +88,7 @@ def _step(request: Request) -> int:
         # If they got partway through PACS step we route based on whether
         # a vendor has been picked yet via the form param.
         return 3
-    if _needs_connect_step(pacs):
+    if _needs_connect_step(pacs) or _needs_card_format(pacs):
         return 4
     return 5
 
@@ -91,7 +97,8 @@ def _step(request: Request) -> int:
 def wizard_index(request: Request):
     s = _step(request)
     if s == 4:
-        return RedirectResponse(url="/wizard/connect", status_code=303)
+        url = "/wizard/card-format" if _needs_card_format(PacsConfig.load()) else "/wizard/connect"
+        return RedirectResponse(url=url, status_code=303)
     return request.app.state.template_response(
         request, f"wizard/step{s}.html",
         {"step": s, "pacs_options": available_pacs()},
@@ -183,9 +190,55 @@ async def wizard_pacs(request: Request):
         # Nothing works until a human signs in, so hand off to AG Connect
         # rather than starting the engine against an unusable connection.
         return RedirectResponse(url="/wizard/connect", status_code=303)
+    if descriptor.picks_card_format:
+        # Read from the PACS just saved, so it can only be asked now.
+        return RedirectResponse(url="/wizard/card-format", status_code=303)
     # Setup is complete — start the engine.
     if is_configured():
         get_engine().start()
+    return RedirectResponse(url="/wizard", status_code=303)
+
+
+@router.get("/card-format")
+def wizard_card_format(request: Request):
+    """Step 4b — the PACS's card formats, read live, to pick the site's."""
+    _require_admin_if_bootstrapped(request)
+    pacs = PacsConfig.load()
+    descriptor = get_descriptor((pacs or {}).get("vendor", ""))
+    if descriptor is None or not descriptor.picks_card_format:
+        return RedirectResponse(url="/wizard", status_code=303)
+    formats: list[dict] = []
+    error = ""
+    try:
+        adapter = build_adapter(pacs["vendor"], pacs.get("params") or {})
+        formats = [{"id": fid, "label": label} for fid, label in adapter.card_formats()]
+    except Exception as e:  # noqa: BLE001 — surfaced to the operator verbatim
+        logger.warning("wizard: could not read card formats: %s", e)
+        error = f"{type(e).__name__}: {e}"
+    return request.app.state.template_response(
+        request, "wizard/step4_format.html",
+        {"step": 4, "descriptor": descriptor, "formats": formats, "error": error},
+    )
+
+
+@router.post("/card-format")
+def wizard_card_format_save(request: Request, card_format: str = Form(...)):
+    """Record the site's card format, completing setup."""
+    _require_admin_if_bootstrapped(request)
+    pacs = PacsConfig.load()
+    if not pacs:
+        return RedirectResponse(url="/wizard", status_code=303)
+    try:
+        adapter = build_adapter(pacs["vendor"], pacs.get("params") or {})
+        params = adapter.card_format_params(dict(pacs.get("params") or {}), card_format)
+    except Exception as e:  # noqa: BLE001 — back to the picker, which reads the formats again
+        logger.warning("wizard: could not record the card format: %s", e)
+        return RedirectResponse(url="/wizard/card-format", status_code=303)
+    PacsConfig.save(pacs["vendor"], params, pacs.get("options") or {})
+    engine = get_engine()
+    engine.invalidate_pacs_adapter()
+    if is_configured():
+        engine.start()
     return RedirectResponse(url="/wizard", status_code=303)
 
 

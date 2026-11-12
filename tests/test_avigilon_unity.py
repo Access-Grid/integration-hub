@@ -73,6 +73,7 @@ class FakeUnity:
         self.hide_once = set()  # left out of the next roster read only: a row skipped mid-read
         self.detail_404 = False  # a box answering 404 for every identity's detail
         self.internal_search_ignored = False  # a box that lists everyone for an Internal Number search
+        self.card_formats = []  # served as XML only, as the live box does
 
     @staticmethod
     def _xml(root, row, rows):
@@ -109,6 +110,10 @@ class FakeUnity:
             start = 0 if self.per_page_cap else (page - 1) * per
             rows = self.identities[start:start + per]
             return httpx.Response(200, json={"data": rows, "meta": {"recordsFiltered": len(self.identities)}})
+        if path == "/card_formats.json":
+            return httpx.Response(406, json={"status": 406, "error": "Not Acceptable"})
+        if path == "/card_formats.xml":
+            return self._xml("card-formats", "card-format", self.card_formats)
         parts = path.strip("/").split("/")
         if path == "/identities.xml":
             q = dict(req.url.params)

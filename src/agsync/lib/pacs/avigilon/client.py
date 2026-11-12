@@ -182,6 +182,17 @@ def identity_row(raw: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def card_format_row(raw: dict[str, Any]) -> dict[str, str]:
+    """A card format, from either the XML or the JSON shape."""
+    format_id, attrs = _unwrap(raw)
+    return {
+        "id": format_id,
+        "name": _text(attrs.get("plasecName")),
+        "facility_code": _text(attrs.get("plaseccfmtFacilitycode")),
+        "total_bits": _text(attrs.get("plaseccfmtMaxdigits")),
+    }
+
+
 def token_row(raw: dict[str, Any], identity_id: str) -> dict[str, Any]:
     """A token, from the tokens list or embedded in an identity's detail.
 
@@ -612,17 +623,22 @@ class UnityClient:
         logger.info("Unity: deleted token %s from identity %s", token_id, identity_id)
 
     def list_card_formats(self) -> list[dict[str, str]]:
+        """Every card format defined in Unity: id, name, facility code, bits.
+
+        A token names no format, so these are the site's, not a card's. A
+        live box answered the JSON with 406 and the XML whole.
+        """
+        return self._json_then_xml("card_formats", self._card_formats_json, self._card_formats_xml)
+
+    def _card_formats_xml(self) -> list[dict[str, str]]:
+        resp = self._request("GET", "/card_formats.xml", headers={"Accept": "*/*"})
+        if resp.status_code != 200:
+            raise UnityError(f"GET /card_formats.xml: HTTP {resp.status_code}")
+        return [card_format_row(r) for r in xml_rows(resp.text, "card-formats", "card-format")]
+
+    def _card_formats_json(self) -> list[dict[str, str]]:
         body = self._get_json("/card_formats.json")
         items = body.get("data", body) if isinstance(body, dict) else body
         if not isinstance(items, list):
             raise UnityError("card formats: unexpected response shape")
-        formats = []
-        for raw in items:
-            format_id, attrs = _unwrap(raw)
-            formats.append({
-                "id": format_id,
-                "name": str(attrs.get("plasecName") or ""),
-                "facility_code": str(attrs.get("plaseccfmtFacilitycode") or ""),
-                "total_bits": str(attrs.get("plaseccfmtMaxdigits") or ""),
-            })
-        return formats
+        return [card_format_row(r) for r in items if isinstance(r, dict)]

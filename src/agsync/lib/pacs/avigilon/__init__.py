@@ -20,6 +20,8 @@ DESCRIPTOR = PacsDescriptor(
     max_provisions_per_cycle=200,
     # A token with no end date is meant to last; a year would lapse unseen.
     default_pass_days=3650,
+    # A token names no card format, so the site's is chosen once in setup.
+    picks_card_format=True,
 )
 
 register("avigilon", DESCRIPTOR, lambda params: AvigilonAdapter(**params))

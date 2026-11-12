@@ -121,10 +121,18 @@ def _tracked_passes() -> list[Any]:
 
 class AvigilonAdapter:
     def __init__(self, host: str, username: str, password: str, verify_ssl: bool = False,
-                 mode: str = "desfire", pair: bool = False):
+                 mode: str = "desfire", pair: bool = False, card_format: str = "",
+                 card_format_label: str = "", facility_code: str = "", card_format_bits: str = ""):
         self._client = UnityClient(host=host, username=username, password=password, verify_ssl=verify_ssl)
         # From the AccessGrid template (descriptor.derives_mode_from_template).
         self.seos = mode == "seos"
+        # The card format chosen in setup (card_format_params): a token names
+        # none, so its facility code is every DESFire card's site code.
+        self.facility_code = str(facility_code or "")
+        if card_format and not self.seos and str(card_format_bits) != "26":
+            logger.warning("Unity card format %s is %s-bit, but cards are sent as 26-bit site code + card "
+                           "number — readers expecting %s bits will not read them", card_format_label or card_format,
+                           card_format_bits or "an unknown", card_format_bits or "other")
         from . import DESCRIPTOR
         self._descriptor = DESCRIPTOR
         # Filled by list_people(), one cycle at a time.
@@ -143,6 +151,26 @@ class AvigilonAdapter:
     def test_connection(self) -> ConnectionResult:
         ok, msg = self._client.test_connection()
         return ConnectionResult(ok=ok, message=msg)
+
+    def card_formats(self) -> list[tuple[str, str]]:
+        """(id, label) for every card format in Unity, for the setup screens."""
+        return [(f["id"], _format_label(f)) for f in self._client.list_card_formats()]
+
+    def card_format_params(self, params: dict[str, Any], format_id: str) -> dict[str, Any]:
+        """`params` with `format_id` as the card format, read from Unity now.
+
+        Its facility code and length are stored with it, so a cycle needs
+        no extra read. Raises ValueError if Unity does not define it.
+        """
+        format_id = format_id.strip()
+        chosen = next((f for f in self._client.list_card_formats() if f["id"] == format_id), None)
+        if chosen is None:
+            raise ValueError(f"card format {format_id!r} is not defined in Unity")
+        if not chosen["facility_code"].isdigit():
+            raise ValueError(f"card format {_format_label(chosen)} has no facility code")
+        logger.info("Unity card format set to %s", _format_label(chosen))
+        return {**params, "card_format": format_id, "card_format_label": _format_label(chosen),
+                "facility_code": chosen["facility_code"], "card_format_bits": chosen["total_bits"]}
 
     # Phase 3 judges a short read by the tracked people it holds, not by the
     # size of a roster this adapter never reads.
@@ -381,6 +409,8 @@ class AvigilonAdapter:
             id=token["id"],
             person_id=pid,
             card_number=token["internal_number"],
+            # Empty when no format was chosen: the site code from settings stands.
+            site_code=self.facility_code,
             status=status,
             activate_date=dates["activate_date"],
             deactivate_date=dates["deactivate_date"],
@@ -592,6 +622,10 @@ class AvigilonAdapter:
             if e["token_id"]:
                 out.setdefault((e["person_id"], e["credential_id"]), []).append(e["card_number"])
         return out
+
+
+def _format_label(f: dict[str, str]) -> str:
+    return f"{f['name'] or f['id']} (FC {f['facility_code'] or '?'}, {f['total_bits'] or '?'}-bit)"
 
 
 def _card_problem(pid: str, card: tuple[str, str], problem: str) -> None:
