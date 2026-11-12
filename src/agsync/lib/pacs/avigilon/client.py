@@ -190,7 +190,17 @@ def card_format_row(raw: dict[str, Any]) -> dict[str, str]:
         "name": _text(attrs.get("plasecName")),
         "facility_code": _text(attrs.get("plaseccfmtFacilitycode")),
         "total_bits": _text(attrs.get("plaseccfmtMaxdigits")),
+        # Where each field sits in the card's bits (wiegand.Layout).
+        **{key: _text(attrs.get(f"plaseccfmt{field}")).strip() for key, field in _LAYOUT_FIELDS.items()},
     }
+
+
+# card_format_row key -> Unity's field, after the `plaseccfmt` prefix.
+_LAYOUT_FIELDS = {
+    "fc_loc": "Fcodeloc", "fc_len": "Fcodelen", "card_loc": "Cardloc", "card_len": "Cardlen",
+    "even_loc": "Evenparityloc", "even_len": "Evenparitylen", "odd_loc": "Oddparityloc",
+    "odd_len": "Oddparitylen", "issue_len": "Issuelen", "offset": "Offset", "flags": "Flags",
+}
 
 
 def token_row(raw: dict[str, Any], identity_id: str) -> dict[str, Any]:

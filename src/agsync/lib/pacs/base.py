@@ -106,6 +106,10 @@ class Credential:
     # instead of the decoded site_code + card_number. Empty when the vendor
     # has no such blob (Avigilon, Alta).
     file_data: str = ""
+    # Send file_data whatever the operator chose: the card is in a format
+    # whose site code and card number AccessGrid would read as 26-bit, so
+    # file_data is the only correct way to send it (Unity, non-26-bit).
+    send_file_data: bool = False
     status: CredentialStatus = CredentialStatus.UNKNOWN
     activate_date: datetime | None = None
     deactivate_date: datetime | None = None

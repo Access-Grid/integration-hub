@@ -121,7 +121,7 @@ def run(
         if cred.allocate_identity:
             # AccessGrid allocates when the identity is omitted.
             pass
-        elif use_file_data and cred.file_data:
+        elif cred.file_data and (use_file_data or cred.send_file_data):
             params["file_data"] = cred.file_data
         else:
             if eff_site_code and eff_site_code.isdigit():

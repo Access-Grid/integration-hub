@@ -185,7 +185,7 @@ def run(
                 # Send no identity at all: AccessGrid allocates the facility
                 # code and card number, and the adapter writes them back.
                 pass
-            elif use_file_data and cred.file_data:
+            elif cred.file_data and (use_file_data or cred.send_file_data):
                 params["file_data"] = cred.file_data
             else:
                 if eff_site_code and eff_site_code.isdigit():

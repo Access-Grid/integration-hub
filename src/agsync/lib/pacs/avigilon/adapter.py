@@ -40,7 +40,7 @@ from ..base import (
     PacsRecordUnavailable,
     Person,
 )
-from . import written
+from . import wiegand, written
 from .client import UnityAuthError, UnityClient, UnityError, UnityNotFound
 
 logger = logging.getLogger(__name__)
@@ -122,17 +122,28 @@ def _tracked_passes() -> list[Any]:
 class AvigilonAdapter:
     def __init__(self, host: str, username: str, password: str, verify_ssl: bool = False,
                  mode: str = "desfire", pair: bool = False, card_format: str = "",
-                 card_format_label: str = "", facility_code: str = "", card_format_bits: str = ""):
+                 card_format_label: str = "", facility_code: str = "", card_format_bits: str = "",
+                 card_format_layout: dict[str, Any] | None = None):
         self._client = UnityClient(host=host, username=username, password=password, verify_ssl=verify_ssl)
         # From the AccessGrid template (descriptor.derives_mode_from_template).
         self.seos = mode == "seos"
         # The card format chosen in setup (card_format_params): a token names
-        # none, so its facility code is every DESFire card's site code.
+        # none, so its facility code is every DESFire card's site code, and
+        # its layout how a card is sent — 26-bit as site code + card number,
+        # longer as file_data.
+        self.card_format = card_format
+        self.card_format_label = card_format_label or card_format
         self.facility_code = str(facility_code or "")
-        if card_format and not self.seos and str(card_format_bits) != "26":
-            logger.warning("Unity card format %s is %s-bit, but cards are sent as 26-bit site code + card "
-                           "number — readers expecting %s bits will not read them", card_format_label or card_format,
-                           card_format_bits or "an unknown", card_format_bits or "other")
+        self._layout: wiegand.Layout | None = None
+        if card_format_layout:
+            try:
+                self._layout = wiegand.Layout.from_row(card_format_layout)
+            except wiegand.UnencodableCard as e:
+                logger.warning("Unity card format %s: stored layout unreadable, reading it again: %s",
+                               self.card_format_label, e)
+        if card_format and not self.seos:
+            logger.info("Unity card format %s: %s", self.card_format_label,
+                        _layout_note(self._layout) if self._layout else "layout read on the first cycle")
         from . import DESCRIPTOR
         self._descriptor = DESCRIPTOR
         # Filled by list_people(), one cycle at a time.
@@ -166,11 +177,14 @@ class AvigilonAdapter:
         chosen = next((f for f in self._client.list_card_formats() if f["id"] == format_id), None)
         if chosen is None:
             raise ValueError(f"card format {format_id!r} is not defined in Unity")
-        if not chosen["facility_code"].isdigit():
+        layout = wiegand.Layout.from_row(chosen)  # UnencodableCard is a ValueError
+        # A format without facility code bits (H10302) needs none.
+        if layout.fc_len and not chosen["facility_code"].isdigit():
             raise ValueError(f"card format {_format_label(chosen)} has no facility code")
-        logger.info("Unity card format set to %s", _format_label(chosen))
+        logger.info("Unity card format set to %s: %s", _format_label(chosen), _layout_note(layout))
         return {**params, "card_format": format_id, "card_format_label": _format_label(chosen),
-                "facility_code": chosen["facility_code"], "card_format_bits": chosen["total_bits"]}
+                "facility_code": chosen["facility_code"] if layout.fc_len else "",
+                "card_format_bits": chosen["total_bits"], "card_format_layout": layout.as_params()}
 
     # Phase 3 judges a short read by the tracked people it holds, not by the
     # size of a roster this adapter never reads.
@@ -180,6 +194,8 @@ class AvigilonAdapter:
         passes = _tracked_passes()
         tracked = {t.pacs_person_id: t for t in passes}
         rows, unread = self._identities(tracked)
+        if self.card_format and not self.seos and self._layout is None:
+            self._read_layout()
         self._tokens, self._held, self._inactive = {}, set(), set()
         self._issued = {(t.pacs_person_id, t.pacs_credential_id) for t in passes}
         for pid in unread:
@@ -223,6 +239,52 @@ class AvigilonAdapter:
                 active=active,
                 raw=row,
             )
+
+    def _read_layout(self) -> None:
+        """The chosen format's layout, for a setup made before it was stored.
+
+        Read once; a failed read leaves it unknown, so this cycle's
+        enrollments wait rather than go out in a format we have not checked.
+        """
+        try:
+            row = next((f for f in self._client.list_card_formats() if f["id"] == self.card_format), None)
+            if row is None:
+                raise UnityError(f"card format {self.card_format} is no longer defined in Unity")
+            self._layout = wiegand.Layout.from_row(row)
+        except (UnityError, wiegand.UnencodableCard) as e:
+            logger.warning("Unity card format %s: layout unread, enrollments wait for it: %s",
+                           self.card_format_label, e)
+            return
+        logger.info("Unity card format %s: %s", self.card_format_label, _layout_note(self._layout))
+
+    def _encoding(self, pid: str, token: dict[str, Any]) -> tuple[str, bool]:
+        """(file_data, hold) for an enrollment not yet issued, in the chosen format.
+
+        26-bit (H10301) goes as site code + card number, so no file_data,
+        but its numbers must still fit. A card that cannot be sent is held
+        and mailed: issuing it in the wrong format makes a pass no reader
+        takes.
+        """
+        if not self.card_format:
+            return "", False  # no format chosen: the site code from settings stands, as before
+        if self._layout is None:
+            logger.warning("Unity token %s of %s: the card format's layout is unread — not issuing until it is",
+                           token["id"], pid)
+            return "", True
+        number = token["internal_number"]
+        try:
+            file_data = wiegand.encode(self._layout, self.facility_code, number)
+        except wiegand.UnencodableCard as e:
+            _card_problem(pid, (self.facility_code, number),
+                          f"Unity: token {token['id']} of identity {pid} is marked accessgrid, but its card "
+                          f"{self.facility_code}/{number} cannot be sent in card format {self.card_format_label}: "
+                          f"{e} — not issuing a pass")
+            return "", True
+        if self._layout.total_bits == 26:
+            return "", False
+        logger.info("Unity token %s of %s: card %s/%s goes as %s file_data", token["id"], pid,
+                    self.facility_code, number, wiegand.standard(self._layout))
+        return file_data, False
 
     def _identities(self, tracked: dict[str, Any]) -> tuple[dict[str, tuple[dict[str, str], bool]], list[str]]:
         """The search's hits and everyone tracked: ({id: (row, from detail)}, unread ids).
@@ -405,12 +467,17 @@ class AvigilonAdapter:
             hold = True
         status = _TOKEN_STATUS.get(token["status"], CredentialStatus.UNKNOWN)
         hold = hold or (trigger and self._not_yet_issuable(pid, token["id"], status))
+        file_data = ""
+        if trigger and not hold and (pid, token["id"]) not in self._issued:
+            file_data, hold = self._encoding(pid, token)
         return Credential(
             id=token["id"],
             person_id=pid,
             card_number=token["internal_number"],
             # Empty when no format was chosen: the site code from settings stands.
             site_code=self.facility_code,
+            file_data=file_data,
+            send_file_data=bool(file_data),
             status=status,
             activate_date=dates["activate_date"],
             deactivate_date=dates["deactivate_date"],
@@ -650,6 +717,14 @@ class AvigilonAdapter:
             if e["token_id"]:
                 out.setdefault((e["person_id"], e["credential_id"]), []).append(e["card_number"])
         return out
+
+
+def _layout_note(layout: wiegand.Layout) -> str:
+    name = wiegand.standard(layout)
+    if name is None:
+        return (f"{layout.total_bits}-bit, not a format this sync can encode "
+                f"({', '.join(wiegand.STANDARDS)}) — enrollments will be held")
+    return f"{name}, sent as " + ("site code + card number" if layout.total_bits == 26 else "file_data")
 
 
 def _format_label(f: dict[str, str]) -> str:
