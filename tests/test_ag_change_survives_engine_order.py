@@ -106,3 +106,51 @@ def test_an_accessgrid_suspend_of_a_seos_pass_is_not_resumed():
     assert calls == []
     assert tracking.get("p1", "t1").last_known_ag_state == "suspended"
 
+
+
+def test_a_pacs_switch_off_still_reaches_accessgrid():
+    calls, writes = _cycle("active", "active", SUSPENDED)
+    assert calls == [("suspend", "pass-1")]
+    assert writes == []
+
+
+def test_a_pacs_switch_on_still_reaches_accessgrid():
+    calls, writes = _cycle("suspended", "suspended", ACTIVE)
+    assert calls == [("resume", "pass-1")]
+    assert writes == []
+
+
+class _SeosPacs(_Pacs):
+    """A PACS the hub writes Seos cards into: the install gate drives its card."""
+
+    supports_credential_writeback = True
+
+    def write_back_credentials(self, pid, cid, identities):
+        return True
+
+
+def test_a_seos_card_switched_off_in_the_pacs_is_not_switched_back_on():
+    # The operator unticks the card of an installed pass. Phase 2 suspends
+    # the pass; the gate, reading the pass as it was before that call
+    # (active, installed), used to tick the card straight back.
+    tracking.upsert(
+        pacs_person_id="p1", pacs_credential_id="t1", ag_card_id="pass-1",
+        full_name="Ada Lovelace", employee_id="p1", status="active",
+        last_known_ag_state="active", sync_ref="ref-1",
+    )
+    card = SimpleNamespace(id="pass-1", state="active", metadata={"sync_ref": "ref-1"},
+                           devices=[{"device_type": "iphone", "status": "installed"}])
+    snap = Snapshot()
+    snap.people = {"p1": Person(id="p1", full_name="Ada Lovelace", email="ada@example.com")}
+    snap.credentials_by_person = {"p1": [Credential(
+        id="t1", person_id="p1", card_number="", status=SUSPENDED,
+        trigger_active=True, allocate_identity=True,
+    )]}
+    snap.ag_card_by_id["pass-1"] = card
+    snap.ag_cards_by_sync_ref["ref-1"] = [card]
+    ag, pacs = _Ag(card), _SeosPacs()
+    phase1_provision.run(snap, ag, "tpl")
+    phase2_local_to_ag.run(snap, ag)
+    phase4_ag_to_local.run(snap, pacs, ag)
+    assert ag.calls == [("suspend", "pass-1")]
+    assert pacs.writes == [], "the gate must not undo the operator's switch-off"

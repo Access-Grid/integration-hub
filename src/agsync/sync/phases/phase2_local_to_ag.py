@@ -204,6 +204,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                     "suspended", last_known_ag_state="suspended",
                 )
                 updated += 1
+                snapshot.pushed_to_ag.add((tracked.pacs_person_id, tracked.pacs_credential_id))
             elif desired == "active" and ag_state == "suspended":
                 logger.info(
                     "  Resuming AG card %s (PACS credential %s is %s)",
@@ -223,6 +224,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                     "active", last_known_ag_state="active",
                 )
                 updated += 1
+                snapshot.pushed_to_ag.add((tracked.pacs_person_id, tracked.pacs_credential_id))
         except AccessGridError as e:
             logger.error("  Failed to update AG card %s: %s", tracked.ag_card_id, e)
             logger.info(

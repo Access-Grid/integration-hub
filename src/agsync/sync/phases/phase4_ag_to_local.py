@@ -117,6 +117,23 @@ _STATUS_REASON = {
 }
 
 
+def _pushed_this_cycle(snapshot: Snapshot, tracked) -> bool:
+    """Did phase 2 just suspend or resume this pass to match the PACS?
+
+    Then the PACS already says what the pass now says, and the AccessGrid
+    state read at the start of the cycle is the one phase 2 replaced:
+    acting on it would undo the operator's change. The next cycle reads
+    the pass afresh.
+    """
+    if (tracked.pacs_person_id, tracked.pacs_credential_id) not in snapshot.pushed_to_ag:
+        return False
+    logger.info(
+        "  %s: pass just set from the PACS this cycle — leaving its PACS card as it is",
+        tracking.label(tracked),
+    )
+    return True
+
+
 def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int:
     """Make each PACS card say what its pass says.
 
@@ -141,6 +158,8 @@ def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int
         if cred is None or cred.hold or not cred.allocate_identity:
             # The "no such credential" case is already named once per cycle
             # by _push_new_credentials, which walks the same rows.
+            continue
+        if _pushed_this_cycle(snapshot, tracked):
             continue
 
         cards = snapshot.detailed_cards(
@@ -205,6 +224,8 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
         if tracked.status in ("deleted", "deduped") or not tracked.ag_card_id:
             continue
 
+        if _pushed_this_cycle(snapshot, tracked):
+            continue
         ag_card = snapshot.resolve_ag_card(
             tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id,
             tracked.sync_ref,

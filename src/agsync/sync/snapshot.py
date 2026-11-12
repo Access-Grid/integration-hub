@@ -39,6 +39,11 @@ class Snapshot:
     ag_cards_by_site_card: dict[tuple[str, str], Any] = field(default_factory=dict)
     # Cards re-read individually this cycle, keyed by id. See detailed_cards.
     ag_card_detail: dict[str, Any] = field(default_factory=dict)
+    # (person, credential) whose pass phase 2 suspended or resumed this
+    # cycle, to match the PACS. The listing above predates that call, so
+    # phase 4 reading it would take the old state for an AccessGrid change
+    # and write it back over the PACS change that caused it.
+    pushed_to_ag: set[tuple[str, str]] = field(default_factory=set)
 
     def resolve_ag_cards(
         self,
