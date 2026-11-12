@@ -559,6 +559,92 @@ def test_seos_entire_pass_deleted_deactivates_tokens_and_keeps_tracking(world, p
     assert ag.verbs("delete", "suspend", "resume") == []
 
 
+@PAIRS
+def test_desfire_token_switched_back_on_after_its_pass_was_deleted_issues_a_new_pass(world, pair):
+    unity, ag, cycle = _desfire(world, pair)
+    cycle()
+    old = ag.only_pass()
+    ag.install(old)
+    cycle()
+    ag.set_state(old, "deleted")
+    cycle()
+    cycle()
+    assert _tokens_by_number(unity) == {"5001": "Inactive"}
+    unity.identities[0]["plasecidentityTitle"] = "Lead"
+    cycle()
+    assert [c for c in ag.calls if c[1] == old and c[0] != "get"] == [], "nothing is sent to a deleted pass"
+
+    _status(unity.tokens["a"][0], "Active")
+    cycle()
+    cycle()
+    new = [pid for pid in ag.passes if pid != old]
+    assert len(new) == 1 and len(ag.verbs("provision")) == 2
+    [(_, _, sent)] = [c for c in ag.calls if c[0] == "provision"][1:]
+    assert (sent["site_code"], sent["card_number"], sent["title"]) == (239, "5001", "Lead")
+    row = _row()
+    assert (row.pacs_credential_id, row.ag_card_id, row.status) == ("t1", new[0], "active")
+    assert ag.verbs("delete", "suspend", "resume") == []
+
+
+@PAIRS
+def test_seos_token_switched_back_on_after_its_pass_was_deleted_issues_a_new_pass(world, pair):
+    unity, ag, cycle = _seos(world, pair)
+    cycle()
+    old = ag.only_pass()
+    ag.install(old)
+    cycle()
+    ag.set_state(old, "deleted")
+    cycle()
+    cycle()
+    [old_token] = unity.tokens["a"]
+    _status(old_token, "Active")
+    cycle()
+    cycle()
+    new = [pid for pid in ag.passes if pid != old]
+    assert len(new) == 1 and len(ag.verbs("provision")) == 2
+    new_numbers = {c["card_number"] for c in ag.passes[new[0]]}
+    assert _tokens_by_number(unity) == {n: "Inactive" for n in new_numbers}, "the old token is gone"
+    assert {e["card_number"] for e in written.all_tokens()} == new_numbers
+    [row] = [t for t in tracking.all_tracked() if t.ag_card_id]
+    assert (row.pacs_credential_id, row.ag_card_id) == (old_token["id"], new[0])
+    assert _row(cid="t1").status == "deleted"
+    ag.install(new[0])
+    cycle()
+    cycle()
+    assert list(_tokens_by_number(unity).values()) == ["Active"]
+
+
+def test_seos_pair_deleted_before_install_reissues_when_one_token_is_switched_on(world):
+    unity, ag, cycle = _seos(world, True)
+    cycle()
+    old = ag.only_pass()
+    cycle()
+    ag.set_state(old, "deleted")
+    cycle()
+    cycle()
+    assert len(unity.tokens["a"]) == 2 and set(_tokens_by_number(unity).values()) == {"Inactive"}
+    _status(unity.tokens["a"][1], "Active")
+    cycle()
+    cycle()
+    new = [pid for pid in ag.passes if pid != old]
+    assert len(new) == 1 and len(ag.verbs("provision")) == 2
+    new_numbers = {c["card_number"] for c in ag.passes[new[0]]}
+    assert _tokens_by_number(unity) == {n: "Inactive" for n in new_numbers}
+
+
+def test_seos_tokens_of_a_deleted_pass_left_off_issue_nothing(world):
+    unity, ag, cycle = _seos(world, True)
+    cycle()
+    old = ag.only_pass()
+    ag.install(old)
+    cycle()
+    ag.set_state(old, "deleted")
+    for _ in range(4):
+        cycle()
+    assert len(ag.verbs("provision")) == 1
+    assert set(_tokens_by_number(unity).values()) == {"Inactive"}
+
+
 def test_seos_active_but_uninstalled_stays_inactive(world):
     unity, ag, cycle = _seos(world)
     cycle()

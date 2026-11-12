@@ -30,6 +30,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
     for tracked in tracking.all_tracked():
         if tracked.status in ("deleted", "deduped") or not tracked.ag_card_id:
             continue
+        if getattr(tracked, "last_known_ag_state", "") == "deleted":
+            continue  # deleted in AccessGrid: nothing to update until a new pass is issued
         person = snapshot.people.get(tracked.pacs_person_id)
         if person is None:
             continue

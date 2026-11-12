@@ -95,6 +95,13 @@ def _reconcile(snapshot, pacs, ag, gate_only=False) -> int:
         card = snapshot.resolve_ag_card(tracked.ag_card_id, tracked.pacs_person_id,
                                         tracked.pacs_credential_id, tracked.sync_ref)
         state = state_of(card)
+        if state == "deleted" and tracked.last_known_ag_state == "deleted" and getattr(
+            pacs, "keeps_deleted_pass_tokens", False,
+        ):
+            # Deleted whole, and its card already switched off.
+            if not gate_only:
+                updated += _reissue_if_switched_on(pacs, tracked)
+            continue
         if not allocated and state == tracked.last_known_ag_state:
             continue
         try:
@@ -126,6 +133,29 @@ def _reconcile(snapshot, pacs, ag, gate_only=False) -> int:
                          tracked.ag_card_id, tracking.label(tracked), e)
     logger.info("Phase 4 done: %d PACS update(s)", updated)
     return updated
+
+
+def _reissue_if_switched_on(pacs, tracked) -> int:
+    """A pass deleted whole in AccessGrid gets a new one once its card is switched back on.
+
+    Its card was switched off when the pass was deleted. Switched on again in
+    the PACS, the deleted pass is forgotten, and phase 1 of the next cycle
+    issues a new one as for any enrollment.
+    """
+    try:
+        switched_on = pacs.release_deleted_pass(tracked.pacs_person_id, tracked.pacs_credential_id)
+    except Exception as e:  # noqa: BLE001 — one failing pass must not stop everyone else
+        logger.error("  %s: could not tell whether the card of deleted pass %s is back on: %s",
+                     tracking.label(tracked), tracked.ag_card_id, e)
+        return 0
+    if not switched_on:
+        logger.debug("  %s: pass %s was deleted in AccessGrid; its card stays off",
+                     tracking.label(tracked), tracked.ag_card_id)
+        return 0
+    logger.info("  %s: pass %s was deleted in AccessGrid and its card has been switched back on — "
+                "a new pass is issued next cycle", tracking.label(tracked), tracked.ag_card_id)
+    tracking.mark_deleted(tracked.pacs_person_id, tracked.pacs_credential_id)
+    return 1
 
 
 def _record_ag_state(tracked, ag_state: str) -> None:

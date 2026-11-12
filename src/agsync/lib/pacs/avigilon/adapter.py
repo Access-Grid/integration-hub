@@ -766,6 +766,61 @@ class AvigilonAdapter:
             retired += 1
         return retired
 
+    def release_deleted_pass(self, person_id: str, credential_id: str) -> bool:
+        """A pass AccessGrid deleted whole, its card since switched off: is it back on?
+
+        Phase 4 asks this every cycle until it is. True means the card was
+        switched back on in Unity and is now ready to be issued a new pass
+        like any enrollment; the caller then forgets the deleted pass.
+
+        DESFire: the enrollment token itself, which stays where it is. Seos:
+        any token we wrote for the pass. The first one switched on becomes the
+        enrollment for the new pass — forgotten here, so it reads as one, and
+        deleted once the new pass has its own tokens. Every other token we
+        wrote for it carries a number of the deleted pass and is deleted now.
+        Nothing is forgotten while a delete fails; the next cycle asks again.
+        """
+        pid = str(person_id)
+        tokens = self._tokens.get(pid)
+        if tokens is None:
+            return False  # not read this cycle
+        by_id = {t["id"]: t for t in tokens}
+
+        def on(token_id: str | None) -> bool:
+            token = by_id.get(token_id or "")
+            return token is not None and _is_trigger(token) and token["status"] == "1"
+
+        if not self.seos:
+            return on(credential_id)
+        ours = written.for_credential(pid, credential_id)
+        enrollment = next((e for e in ours if on(e["token_id"])), None)
+        if enrollment is None:
+            return False
+        for e in ours:
+            if e is enrollment:
+                continue
+            token_id = e["token_id"]
+            if not token_id:
+                read, token_id = self._unrecorded_token(pid, credential_id, e["card_number"])
+                if not read:
+                    return False
+            if token_id and token_id in by_id:
+                try:
+                    self._client.delete_token(pid, token_id)
+                except UnityError as err:
+                    if not self._token_gone(pid, token_id):
+                        logger.error("Unity: could not delete token %s of %s, left from deleted pass %s — "
+                                     "retrying next cycle: %s", token_id, pid, credential_id, err)
+                        return False
+                logger.info("Unity: deleted token %s of %s — its card %s/%s was on a pass AccessGrid deleted",
+                            token_id, pid, e["facility_code"], e["card_number"])
+                self._tokens[pid] = [t for t in self._tokens[pid] if t["id"] != token_id]
+            written.remove(e["row"])
+        written.remove(enrollment["row"])
+        logger.info("Unity: token %s of %s was switched back on after AccessGrid deleted its pass — it is now "
+                    "the enrollment for a new pass", enrollment["token_id"], pid)
+        return True
+
     def _unrecorded_token(self, pid: str, credential_id: str, number: str) -> tuple[bool, str | None]:
         """(read, token id) of a token we created for this number without recording it.
 

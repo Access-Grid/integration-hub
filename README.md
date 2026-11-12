@@ -70,7 +70,9 @@ credential numbers; AccessGrid deletes the unused platform after installation.
 - Seos tokens activate only when an active pass is installed on a phone or
   watch. Issued but uninstalled passes stay inactive. Suspended, unlinked,
   and wholly deleted passes deactivate their Unity tokens; only an abandoned
-  platform's token is retired while its sibling survives.
+  platform's token is retired while its sibling survives. Switching a deleted
+  pass's token back on issues a new pass (Seos: that token becomes its
+  enrollment, and the pass's other tokens are deleted).
 - Other templates send site code and card number for H10301 (26-bit), or the
   parity-inclusive, 64-character hex payload for H10302/H10304. Unknown
   layouts are held and reported. An email or phone is needed for delivery.
