@@ -54,6 +54,8 @@ class TrackedCredential:
     sync_ref: str = ""
     # The expiry last pushed to (or found on) the pass; None until recorded.
     last_synced_expiration: str | None = None
+    # The department last sent; None for a pass issued before it was sent.
+    last_synced_department: str | None = None
 
 
 def label(tracked: Any) -> str:
@@ -81,6 +83,9 @@ def _row_to_tracked(row: Any) -> TrackedCredential:
         sync_ref=(row["sync_ref"] if "sync_ref" in row.keys() else "") or "",
         last_synced_expiration=(
             row["last_synced_expiration"] if "last_synced_expiration" in row.keys() else None
+        ),
+        last_synced_department=(
+            row["last_synced_department"] if "last_synced_department" in row.keys() else None
         ),
     )
 
@@ -120,6 +125,7 @@ def upsert(
     last_synced_title: str = "",
     last_known_ag_state: str = "",
     sync_ref: str = "",
+    last_synced_department: str = "",
 ) -> None:
     now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
@@ -127,9 +133,9 @@ def upsert(
         INSERT INTO ag_credentials (
             pacs_person_id, pacs_credential_id, ag_card_id, full_name, employee_id,
             status, last_synced_email, last_synced_phone, last_synced_full_name,
-            last_synced_title, last_known_ag_state, sync_ref, retry_count,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            last_synced_title, last_known_ag_state, sync_ref, last_synced_department,
+            retry_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         ON CONFLICT(pacs_person_id, pacs_credential_id) DO UPDATE SET
             ag_card_id            = excluded.ag_card_id,
             full_name             = excluded.full_name,
@@ -139,6 +145,7 @@ def upsert(
             last_synced_phone     = excluded.last_synced_phone,
             last_synced_full_name = excluded.last_synced_full_name,
             last_synced_title     = excluded.last_synced_title,
+            last_synced_department = excluded.last_synced_department,
             last_known_ag_state   = excluded.last_known_ag_state,
             -- Keep the existing reference when a caller does not supply one,
             -- so a status update never orphans a card from its metadata.
@@ -149,7 +156,7 @@ def upsert(
         (
             pacs_person_id, pacs_credential_id, ag_card_id, full_name, employee_id,
             status, last_synced_email, last_synced_phone, last_synced_full_name,
-            last_synced_title, last_known_ag_state, sync_ref, now, now,
+            last_synced_title, last_known_ag_state, sync_ref, last_synced_department, now, now,
         ),
     )
 
@@ -242,7 +249,9 @@ def update_field_tracking(
     phone: str,
     title: str,
     expiration: str = "",
+    department: str | None = None,
 ) -> None:
+    """Record what the pass now holds. A department of None leaves the recorded one as it is."""
     now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
         """
@@ -252,10 +261,11 @@ def update_field_tracking(
                last_synced_phone      = ?,
                last_synced_title      = ?,
                last_synced_expiration = ?,
+               last_synced_department = COALESCE(?, last_synced_department),
                updated_at             = ?
          WHERE pacs_person_id = ? AND pacs_credential_id = ?
         """,
-        (full_name, email, phone, title, expiration, now, pacs_person_id, pacs_credential_id),
+        (full_name, email, phone, title, expiration, department, now, pacs_person_id, pacs_credential_id),
     )
 
 

@@ -347,6 +347,12 @@ MIGRATIONS: list[tuple[str, Step]] = [
         CREATE INDEX IF NOT EXISTS idx_unity_tokens_person ON unity_tokens(pacs_person_id);
         """,
     ),
+    (
+        # NULL for a pass issued before departments were sent: phase 6 then
+        # sends the person's department once, if they have one.
+        "015_last_synced_department",
+        "ALTER TABLE ag_credentials ADD COLUMN last_synced_department TEXT;",
+    ),
 ]
 
 

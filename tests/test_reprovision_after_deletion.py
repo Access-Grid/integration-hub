@@ -77,7 +77,7 @@ def test_suspending_does_not_release_the_card_id(db):
 def _provision_once(monkeypatch, tracked, expires=None):
     person = SimpleNamespace(
         id="9390", full_name="George Lampon", email="g@icon.test", phone="",
-        title="", active=True,
+        title="", department="", active=True,
     )
     cred = SimpleNamespace(
         id="seos", trigger_active=True, status=None, site_code="", hold=False,

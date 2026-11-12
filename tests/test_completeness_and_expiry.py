@@ -67,7 +67,7 @@ def _expiring(on):
 def _cycle(on):
     calls: list = []
     snap = Snapshot(
-        people={"p": SimpleNamespace(id="p", full_name="x", email="", phone="", title="")},
+        people={"p": SimpleNamespace(id="p", full_name="x", email="", phone="", title="", department="")},
         credentials_by_person={"p": [_expiring(on)]},
     )
     phase6_field_changes.run(snap, _ag(calls))

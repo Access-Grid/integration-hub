@@ -1,4 +1,4 @@
-"""Phase 6 — Sync person field changes (name/phone/title) to AG.
+"""Phase 6 — Sync person field changes (name/phone/title/department) to AG.
 
 Compare current PACS values to the last_synced_* values stored in the
 tracking row. If anything changed, push an AG update and store the new
@@ -48,6 +48,14 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                 changes["phone_number"] = person.phone
         if person.title != tracked.last_synced_title:
             changes["title"] = person.title
+        # A pass issued before departments were sent (None) gets the
+        # person's, if they have one; after that, any change, a cleared one
+        # included, as with title.
+        if tracked.last_synced_department is None:
+            if person.department:
+                changes["department"] = person.department
+        elif person.department != tracked.last_synced_department:
+            changes["department"] = person.department
         # The PACS's expiry. Recorded the first time it is seen, rather than
         # pushed, so passes issued before this was tracked are not all
         # rewritten at once; a date the PACS no longer states is not cleared.
@@ -60,7 +68,10 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
 
         email_changed = bool(person.email) and person.email != tracked.last_synced_email
         first_expiry = tracked.last_synced_expiration is None and bool(expiration)
-        if not changes and not email_changed and not first_expiry:
+        # Recorded, so a pass issued before departments were sent is judged
+        # against "" from now on rather than looked at again every cycle.
+        first_department = tracked.last_synced_department is None
+        if not changes and not email_changed and not first_expiry and not first_department:
             continue
 
         # Only where the PACS supplies the card: AccessGrid rejects an
@@ -118,6 +129,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
             phone=person.phone,
             title=person.title,
             expiration=expiration or (tracked.last_synced_expiration or ""),
+            department=person.department,
         )
 
     logger.info("Phase 6 done: %d field update(s)", updated)

@@ -507,7 +507,7 @@ def tracked(monkeypatch):
     def hold(*pids):
         rows = [SimpleNamespace(pacs_person_id=p, pacs_credential_id=f"t{p}", ag_card_id=f"card-{p}", status="active",
                                 last_synced_full_name=f"Tracked {p}", last_synced_email=f"{p}@x",
-                                last_synced_phone="", last_synced_title="") for p in pids]
+                                last_synced_phone="", last_synced_title="", last_synced_department="") for p in pids]
         monkeypatch.setattr(tracking, "all_tracked", lambda: rows)
     monkeypatch.setattr(snapshot_mod, "list_cards", lambda *a: [])
     return hold
@@ -934,7 +934,7 @@ def _desfire_tracked_pass(monkeypatch, halves, last_known="active"):
     row = SimpleNamespace(pacs_person_id="a", pacs_credential_id="t1", ag_card_id="pass-a", status="active",
                           sync_ref="ref-a", last_known_ag_state=last_known, full_name="Jim Cooper",
                           last_synced_full_name="Jim Cooper", last_synced_email="a@x",
-                          last_synced_phone="", last_synced_title="")
+                          last_synced_phone="", last_synced_title="", last_synced_department="")
     monkeypatch.setattr(tracking, "all_tracked", lambda: [row])
     recorded = []
     monkeypatch.setattr(tracking, "update_last_known_ag_state", lambda p, c, s: recorded.append(s))
@@ -1061,7 +1061,7 @@ def test_seos_issue_writes_both_cards_of_a_pair_into_unity_at_once(seos, monkeyp
     [cred] = _cycle(a)
     snap = Snapshot()
     snap.people["a"] = SimpleNamespace(id="a", full_name="Jim Cooper", email="j@x.co", phone="",
-                                       title="", active=True)
+                                       title="", department="", active=True)
     snap.credentials_by_person["a"] = [cred]
     monkeypatch.setattr(phase1_provision.tracking, "get", lambda *a: None)
     monkeypatch.setattr(phase1_provision.tracking, "upsert", lambda **kw: None)

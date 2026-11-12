@@ -211,7 +211,8 @@ class AvigilonAdapter:
             # tokens, so list_credentials says it was not read.
             t = tracked[pid]
             yield Person(id=pid, full_name=t.last_synced_full_name, email=t.last_synced_email,
-                         phone=t.last_synced_phone, title=t.last_synced_title)
+                         phone=t.last_synced_phone, title=t.last_synced_title,
+                         department=t.last_synced_department or "")
         for row, detailed in rows.values():
             pid = row["id"]
             active = row["status"] not in ("2", "3", "4")  # unknown counts as active: see below

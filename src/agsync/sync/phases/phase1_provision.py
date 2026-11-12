@@ -201,6 +201,8 @@ def run(
             title = person.title or card_title
             if title:
                 params["title"] = title
+            if person.department:
+                params["department"] = person.department
             if card_classification:
                 params["classification"] = card_classification
 
@@ -228,6 +230,7 @@ def run(
                 last_synced_phone=person.phone,
                 last_synced_full_name=person.full_name,
                 last_synced_title=person.title,
+                last_synced_department=person.department,
             )
 
             try:
@@ -246,6 +249,7 @@ def run(
                     last_synced_phone=person.phone,
                     last_synced_full_name=person.full_name,
                     last_synced_title=person.title,
+                    last_synced_department=person.department,
                     last_known_ag_state=ag_state,
                     sync_ref=sync_ref,
                 )

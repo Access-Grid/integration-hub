@@ -52,7 +52,7 @@ def _tracked(**overrides):
         ag_card_id="I_UgcwkCz7nO01s", full_name="Accessg Grid", employee_id="11587",
         status="active", last_synced_email="accessg.grid.11587@old.test",
         last_synced_phone="", last_synced_full_name="Accessg Grid",
-        last_synced_title="", last_known_ag_state="active", sync_error=None,
+        last_synced_title="", last_synced_department="", last_known_ag_state="active", sync_error=None,
         last_synced_expiration=None,
         retry_count=0, sync_ref="",
     )
@@ -68,7 +68,7 @@ def _snapshot(person: Person) -> Snapshot:
 
 def _person(**kw):
     base = dict(id="11587", full_name="Accessg Grid",
-                email="accessg.grid.11587@old.test", phone="", title="", active=True)
+                email="accessg.grid.11587@old.test", phone="", title="", department="", active=True)
     base.update(kw)
     return Person(**base)
 

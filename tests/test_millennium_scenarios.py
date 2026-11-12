@@ -88,7 +88,7 @@ def test_s1_an_enrolled_cardholder_is_provisioned_with_no_identity_of_ours(
     snap = Snapshot()
     snap.people["11587"] = SimpleNamespace(
         id="11587", full_name="Accessg Grid", email="a@b.test", phone="",
-        title="", active=True,
+        title="", department="", active=True,
     )
     snap.credentials_by_person["11587"] = [cred]
 
@@ -167,7 +167,7 @@ def test_s9_a_renamed_cardholder_is_pushed_to_accessgrid(monkeypatch):
     tracked = SimpleNamespace(
         pacs_person_id="11587", pacs_credential_id="seos", ag_card_id="pass-1",
         status="active", last_synced_full_name="Accessg Grid",
-        last_synced_email="a@b.test", last_synced_phone="", last_synced_title="",
+        last_synced_email="a@b.test", last_synced_phone="", last_synced_title="", last_synced_department="",
         last_synced_expiration=None,
     )
     monkeypatch.setattr(phase6_field_changes.tracking, "all_tracked", lambda: [tracked])
@@ -177,7 +177,7 @@ def test_s9_a_renamed_cardholder_is_pushed_to_accessgrid(monkeypatch):
     snap = Snapshot()
     snap.people["11587"] = SimpleNamespace(
         id="11587", full_name="Auston Access", email="a@b.test", phone="",
-        title="", active=True,
+        title="", department="", active=True,
     )
 
     calls: list[dict] = []
