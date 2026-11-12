@@ -31,6 +31,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
+from .... import dryrun
 from ..base import (
     ConnectionResult,
     Credential,
@@ -594,6 +595,10 @@ class AvigilonAdapter:
                          f"{credential_id} is no longer in Unity — status not written")
                 return False
             if token["status"] != wanted:
+                if dryrun.active():
+                    dryrun.would("switch Unity token %s of %s %s", credential_id, person_id,
+                                 "on" if wanted == "1" else "off")
+                    return False
                 self._client.set_token_status(token, wanted)
         except UnityError as e:
             self._status_unwritable(str(person_id), credential_id, status, e)
@@ -638,6 +643,11 @@ class AvigilonAdapter:
         complete = True
         try:
             tokens = {t["id"]: t for t in self._client.list_tokens(pid)}
+            if dryrun.active():
+                for e in ours:
+                    if (token := tokens.get(e["token_id"])) is not None and token["status"] != code:
+                        dryrun.would("switch Unity token %s of %s %s", e["token_id"], pid, "on" if want else "off")
+                return False
             for e in ours:
                 token = tokens.get(e["token_id"])
                 if token is None:
@@ -686,6 +696,9 @@ class AvigilonAdapter:
                 logger.error("Unity: AccessGrid reports card %s/%s on the pass of %s (%s), but it is "
                              "already written for %s — not writing", *card, pid, credential_id, elsewhere[card])
                 return False
+            if dryrun.active():
+                dryrun.would("write Unity token for card %s/%s on %s (%s), switched off", *card, pid, credential_id)
+                continue
             if not fresh:
                 tokens, fresh = self._client.list_tokens(pid), True
             adopt = next((t for t in tokens if t["internal_number"] == card[1] and _is_trigger(t)
@@ -707,6 +720,13 @@ class AvigilonAdapter:
             token_id = adopt["id"] if adopt else self._client.create_token(pid, card[1], TRIGGER_VALUE, "2")
             written.set_token(row, token_id)
             known.add(token_id)
+        if dryrun.active():
+            # Nothing written. With every token already there, the enrollment's delete is what's left.
+            if tokens is not None and all(card in mine and mine[card]["token_id"] for card in
+                                          ((str(i.site_code), str(i.card_number)) for i in identities)) \
+                    and any(t["id"] == credential_id for t in tokens):
+                dryrun.would("delete enrollment token %s of %s — its pass has its own tokens", credential_id, pid)
+            return False
         if tokens is None:
             return True  # not read this cycle: the enrollment's delete waits for a cycle that reads it
         if any(t["id"] == credential_id for t in tokens):
@@ -754,6 +774,10 @@ class AvigilonAdapter:
         retired = 0
         for e in written.for_credential(pid, credential_id):
             if (e["facility_code"], e["card_number"]) not in gone:
+                continue
+            if dryrun.active():
+                dryrun.would("delete Unity token %s of %s — AccessGrid no longer backs card %s/%s",
+                             e["token_id"] or "(id unrecorded)", pid, e["facility_code"], e["card_number"])
                 continue
             token_id = e["token_id"]
             if not token_id:
@@ -806,6 +830,10 @@ class AvigilonAdapter:
         ours = written.for_credential(pid, credential_id)
         enrollment = next((e for e in ours if on(e["token_id"])), None)
         if enrollment is None:
+            return False
+        if dryrun.active():
+            dryrun.would("make Unity token %s of %s the enrollment for a new pass, deleting the other "
+                         "tokens of deleted pass %s", enrollment["token_id"], pid, credential_id)
             return False
         for e in ours:
             if e is enrollment:

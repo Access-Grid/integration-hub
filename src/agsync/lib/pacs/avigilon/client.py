@@ -241,6 +241,16 @@ def token_row(raw: dict[str, Any], identity_id: str) -> dict[str, Any]:
 
 
 
+def _refuse_in_dry_run(what: str) -> None:
+    """The last line of defence: the adapter checks dry run before every
+    write and logs what it would do, so reaching this is a bug, and it fails
+    loudly rather than write."""
+    from .... import dryrun
+
+    if dryrun.active():
+        raise UnityError(f"dry run: {what} refused — nothing is written to Unity")
+
+
 def _whole_token_list(identity_id: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """`rows`, unless they fill the page asked for: then more may be behind it.
 
@@ -575,6 +585,7 @@ class UnityClient:
         returns only once a re-read shows the new status and every other
         form field as it was.
         """
+        _refuse_in_dry_run("set_token_status")
         attrs = token["fields"]
         if not self.csrf_token:
             raise UnityError(f"token {token['id']}: no CSRF token to send, so Unity would refuse the write")
@@ -613,6 +624,7 @@ class UnityClient:
         token without them is limited by its status alone. Returns only once
         a re-read shows the token; raises on refusal or doubt.
         """
+        _refuse_in_dry_run("create_token")
         if not self._logged_in:
             self.login()  # the CSRF token comes with the session
         if not self.csrf_token:
@@ -644,6 +656,7 @@ class UnityClient:
 
     def delete_token(self, identity_id: str, token_id: str) -> None:
         """Delete one token. Returns only once a re-read no longer shows it."""
+        _refuse_in_dry_run("delete_token")
         if not self._logged_in:
             self.login()  # the CSRF token comes with the session
         if not self.csrf_token:

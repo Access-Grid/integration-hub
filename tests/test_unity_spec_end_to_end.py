@@ -829,3 +829,98 @@ def test_revoke_of_already_absent_ag_pass_releases_writeback_records(world, monk
     cycle()
     assert not [e for e in written.all_tokens() if e["person_id"] == "a"]
     assert not [t for t in tracking.all_tracked() if t.pacs_person_id == "a"]
+
+
+# ==============================================================================
+# Dry run: Unity is read, never written
+# ==============================================================================
+
+
+@pytest.fixture
+def dry(monkeypatch):
+    """Switch dry run on from here (the suite runs with it off)."""
+    from agsync import dryrun
+
+    def on():
+        monkeypatch.setattr(dryrun, "active", lambda: True)
+    return on
+
+
+def _unity_state(unity):
+    import copy
+    return copy.deepcopy(unity.tokens), [(e["token_id"], e["card_number"], e["active"]) for e in written.all_tokens()]
+
+
+def test_dry_run_does_not_switch_a_desfire_token_off(world, dry, caplog):
+    unity, ag, cycle = _desfire(world, True)
+    cycle()
+    pass_id = ag.only_pass()
+    ag.install(pass_id)
+    cycle()
+    dry()
+    ag.set_state(pass_id, "suspended")
+    cycle()
+    cycle()
+    assert _tokens_by_number(unity) == {"5001": "Active"}
+    assert "[DRYRUN] would switch Unity token t1" in caplog.text
+
+
+def test_dry_run_does_not_switch_seos_tokens_on_at_install_or_retire_the_other_half(world, dry, caplog):
+    unity, ag, cycle = _seos(world, True)
+    cycle()
+    before = _unity_state(unity)
+    assert len(before[0]["a"]) == 2
+    dry()
+    ag.install(ag.only_pass())
+    cycle()
+    cycle()
+    assert _unity_state(unity) == before
+    assert "[DRYRUN] would switch Unity token" in caplog.text
+    assert "[DRYRUN] would delete Unity token" in caplog.text
+
+
+def test_dry_run_does_not_write_a_token_for_a_second_device(world, dry, caplog):
+    unity, ag, cycle, pass_id, ios = _installed_seos(world)
+    before = _unity_state(unity)
+    dry()
+    live = next(c for c in ag.passes[pass_id] if c["state"] == "active")
+    live["devices"].append({"device_type": "apple_watch", "status": "installed",
+                            "site_code": "239", "card_number": "9555"})
+    cycle()
+    cycle()
+    assert _unity_state(unity) == before
+    assert "[DRYRUN] would write Unity token for card 239/9555" in caplog.text
+
+
+def test_dry_run_does_not_reissue_a_deleted_pass_or_delete_its_tokens(world, dry, caplog):
+    unity, ag, cycle = _seos(world, True)
+    cycle()
+    old = ag.only_pass()
+    cycle()
+    ag.set_state(old, "deleted")
+    cycle()
+    cycle()
+    _status(unity.tokens["a"][1], "Active")
+    before = _unity_state(unity)
+    dry()
+    cycle()
+    cycle()
+    assert _unity_state(unity) == before
+    assert _row().ag_card_id == old
+    assert len(ag.verbs("provision")) == 1
+    assert "[DRYRUN] would make Unity token" in caplog.text
+
+
+def test_the_unity_client_refuses_to_write_in_dry_run(dry):
+    from agsync.lib.pacs.avigilon.client import UnityError
+
+    unity = FakeUnity([_person("a")], tokens={"a": [_token("t1", internal="5001")]})
+    client = _client(unity)
+    [token] = client.list_tokens("a")
+    dry()
+    for write in (lambda: client.set_token_status(token, "2"),
+                  lambda: client.create_token("a", "5002", "accessgrid", "2"),
+                  lambda: client.delete_token("a", "t1")):
+        with pytest.raises(UnityError, match="dry run"):
+            write()
+    assert [t["id"] for t in client.list_tokens("a")] == ["t1"]
