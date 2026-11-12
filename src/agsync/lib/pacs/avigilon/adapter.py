@@ -464,11 +464,11 @@ class AvigilonAdapter:
                          tokens: dict[str, dict[str, Any]]) -> Credential | None:
         """A Seos pass, judged by the tokens we wrote for it once there are any.
 
-        Every one has to be there and on. AccessGrid suspends a pass, not one
-        device, so a token deleted or switched off in Unity suspends it — but
-        a token off because we wrote it off, to wait for the install, is our
-        own hold. Once the enrollment is deleted and every token we wrote is
-        gone too, there is no credential, and phase 3 deletes the pass.
+        One active device keeps the pass active. Independent device blocks
+        remain local to that token; only a pass with no active device is
+        suspended. Our own install/suspension holds are distinguished from
+        operator changes in the persisted token record. Once the enrollment
+        and every token are gone, phase 3 deletes the pass.
         Before anything is written, the enrollment's status stands.
         """
         def gone(e: dict) -> bool:
@@ -503,16 +503,15 @@ class AvigilonAdapter:
             status = _TOKEN_STATUS.get(enrollment["status"], CredentialStatus.UNKNOWN)
             hold = hold or self._not_yet_issuable(pid, cid, status) or self._missing_email(pid, cid)
         else:
-            status, waiting = CredentialStatus.ACTIVE, False
-            for e in ours:
-                token = tokens.get(e["token_id"]) if e["token_id"] else None
-                if gone(e) or (token is not None and token["status"] != "1" and e["active"]):
-                    logger.info("Unity token %s of %s is %s — suspending the pass", e["token_id"], pid,
-                                "gone" if gone(e) else "switched off in Unity")
-                    status = CredentialStatus.SUSPENDED
-                    break
-                waiting = waiting or token is None or token["status"] != "1"
-            if status is CredentialStatus.ACTIVE and waiting:
+            ours = [written.observe_status(e, tokens[e["token_id"]]["status"])
+                    if e["token_id"] in tokens and not gone(e) else e for e in ours]
+            live = [tokens[e["token_id"]] for e in ours if e["token_id"] in tokens and not gone(e)]
+            hold = hold or any(t["status"] not in _TOKEN_STATUS for t in live)
+            if any(t["status"] == "1" for t in live):
+                status = CredentialStatus.ACTIVE
+            elif any(gone(e) or e["operator_disabled"] for e in ours):
+                status = CredentialStatus.SUSPENDED
+            else:
                 status = CredentialStatus.AWAITING_INSTALL
         return Credential(
             id=cid,
@@ -637,21 +636,34 @@ class AvigilonAdapter:
         """Only tokens we created are ours to delete."""
         return self.seos
 
+    def credential_status_matches(self, person_id: str, credential_id: str,
+                                  status: CredentialStatus) -> bool:
+        """An aggregate status cannot prove every backing device matches.
+
+        Use this cycle's observations and the persisted device policy. A
+        newly written token or interrupted write must be reconciled even
+        if another device already makes the aggregate look correct.
+        """
+        if not self.seos:
+            return True  # non-Seos keeps the engine's aggregate comparison
+        ours = written.for_credential(str(person_id), credential_id)
+        tokens = {t["id"]: t for t in self._tokens.get(str(person_id), [])}
+        want = status is CredentialStatus.ACTIVE
+        return bool(ours) and all(
+            e["token_id"] in tokens and e["pending_active"] is None
+            and (tokens[e["token_id"]]["status"] == "1") == (want and not e["operator_disabled"])
+            for e in ours
+        )
+
     def _set_written_status(self, pid: str, credential_id: str, status: CredentialStatus) -> bool:
-        """Apply the pass-level decision made by the sync engine to every token."""
+        """Apply a whole-pass hold without erasing independent device blocks."""
         ours = [e for e in written.for_credential(pid, credential_id) if e["token_id"]]
         if not ours:
             return False
         want = status is CredentialStatus.ACTIVE
-        code = "1" if want else "2"
         complete = True
         try:
             tokens = {t["id"]: t for t in self._client.list_tokens(pid)}
-            if dryrun.active():
-                for e in ours:
-                    if (token := tokens.get(e["token_id"])) is not None and token["status"] != code:
-                        dryrun.would("switch Unity token %s of %s %s", e["token_id"], pid, "on" if want else "off")
-                return False
             for e in ours:
                 token = tokens.get(e["token_id"])
                 if token is None:
@@ -660,13 +672,28 @@ class AvigilonAdapter:
                              f"but its token {e['token_id']} is no longer in Unity — status not written to it")
                     complete = False
                     continue
+                if token["status"] not in _TOKEN_STATUS:
+                    logger.warning("Unity token %s: status unknown — leaving it unchanged", e["token_id"])
+                    complete = False
+                    continue
+                e = written.observe_status(e, token["status"])
+                target = want and not e["operator_disabled"]
+                # Keep a device's Expired/Not Yet Active status intact.
+                if e["operator_disabled"] and token["status"] != "1":
+                    continue
+                code = "1" if target else "2"
+                if dryrun.active():
+                    if token["status"] != code:
+                        dryrun.would("switch Unity token %s of %s %s", e["token_id"], pid, "on" if target else "off")
+                    continue
                 if token["status"] != code:
+                    written.begin_status_write(e["token_id"], target)
                     self._client.set_token_status(token, code)
-                written.set_active(e["token_id"], want)
+                written.set_active(e["token_id"], target)
         except UnityError as e:
             self._status_unwritable(pid, credential_id, status, e)
             return False
-        return complete
+        return complete and not dryrun.active()
 
     def write_back_credentials(self, person_id: str, credential_id: str,
                                identities: list[CredentialIdentity]) -> bool:

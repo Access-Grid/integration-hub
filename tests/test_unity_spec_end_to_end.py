@@ -827,13 +827,13 @@ def test_two_non_seos_edits_cannot_claim_the_same_credential_in_one_cycle(world,
     assert any(key.startswith("duplicate:") for key, _ in mailed)
 
 
-def test_ag_resume_after_unity_suspension_reactivates_tokens(world):
+def test_ag_resume_preserves_an_independent_unity_device_suspension(world):
     unity, ag, cycle, pass_id, _ = _installed_seos(world)
     _status(unity.tokens["a"][0], "Inactive")
     cycle()
     ag.set_state(pass_id, "active")
     cycle()
-    assert set(_tokens_by_number(unity).values()) == {"Active"}
+    assert set(_tokens_by_number(unity).values()) == {"Inactive"}
     assert ag.verbs("suspend", "resume") == [("suspend", pass_id)]
 
 

@@ -811,7 +811,7 @@ def test_seos_install_switches_tokens_on_and_suspend_off(seos):
     assert made["attributes"]["extended_attributes"]["token_status"] == "Inactive"
 
 
-def test_seos_operator_suspension_can_be_reversed_by_a_pass_level_resume(seos, mailed):
+def test_seos_operator_device_suspension_survives_a_pass_level_resume(seos, mailed):
     fake, a = seos()
     _cycle(a)
     a.write_back_credentials("a", "t1", [_card("9001")])
@@ -821,7 +821,11 @@ def test_seos_operator_suspension_can_be_reversed_by_a_pass_level_resume(seos, m
     [cred] = _cycle(a)
     assert cred.status is CredentialStatus.SUSPENDED
     assert a.update_credential_status("a", "t1", CredentialStatus.ACTIVE)
-    assert _hub_tokens(fake)[0]["attributes"]["extended_attributes"]["token_status"] == "Active"
+    assert _hub_tokens(fake)[0]["attributes"]["extended_attributes"]["token_status"] == "Inactive"
+    made["attributes"]["extended_attributes"]["token_status"] = "Active"
+    [cred] = _cycle(a)
+    assert cred.status is CredentialStatus.ACTIVE
+    assert not written.for_credential("a", "t1")[0]["operator_disabled"]
     assert mailed == []
 
 

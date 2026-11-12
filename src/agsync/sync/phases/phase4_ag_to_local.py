@@ -50,6 +50,11 @@ def _set_status(snapshot, pacs, tracked, cred, cards, desired) -> int | None:
     if desired is CredentialStatus.ACTIVE and person is not None and not person.active:
         return None
     already = (cred.status is CredentialStatus.ACTIVE) == (desired is CredentialStatus.ACTIVE)
+    # An inactive identity already blocks all its devices. Retain their
+    # individual states so reactivating the identity can resume its pass.
+    matches = getattr(pacs, "credential_status_matches", None)
+    if already and (person is None or person.active) and callable(matches):
+        already = matches(tracked.pacs_person_id, tracked.pacs_credential_id, desired)
     if already:
         return 0
     logger.info("  Pass %s for %s: %s → %s; members=%s", tracked.ag_card_id,

@@ -70,6 +70,19 @@ An `accessgrid` marker and matching number do not establish ownership. If a
 crash leaves a created token without its recorded ID, writeback and cleanup
 retain the ambiguous token and reservation and alert the operator for review.
 Creation must confirm a new token ID from Unity's response before recording it.
+Malformed token rows, missing IDs/statuses, duplicate IDs, and incomplete or
+contradictory counts make the token read unavailable. A valid JSON/XML fallback
+may supply the complete list; otherwise the existing pass and tokens are held.
+A successfully read empty list still permits normal revocation.
+
+Seos device tokens can be disabled independently in Unity. One active device
+keeps its pass active; disabling every device suspends the whole pass using its
+pair ID. A whole-pass suspension deactivates its tracked tokens, and resuming it
+preserves independent device restrictions. Those restrictions and pending status
+writes are persisted so retries and restarts retain their meaning. Switching an
+independently disabled token back to Active in Unity clears its restriction.
+This detects observed status changes: marking an already inactive token inactive
+again while its whole pass is suspended provides no evidence of a new device block.
 
 - Seos issues omit site code and card number. Allocated numbers are written
   as inactive Unity tokens, recorded with their facility codes in the encrypted

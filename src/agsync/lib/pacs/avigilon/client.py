@@ -112,7 +112,7 @@ def _unwrap(raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return str(raw.get("cn") or raw.get("id") or ""), raw
 
 
-def xml_rows(text: str, root_tag: str, row_tag: str) -> list[dict[str, str]]:
+def xml_rows(text: str, root_tag: str, row_tag: str, *, strict: bool = False) -> list[dict[str, str]]:
     """Each `<row_tag>` element as a flat dict of its descendants' text.
 
     Flat is the shape identity_row/token_row already read, so XML needs no
@@ -129,6 +129,8 @@ def xml_rows(text: str, root_tag: str, row_tag: str) -> list[dict[str, str]]:
         elements = []  # how Rails renders an empty array as XML
     elif root.tag == root_tag:
         elements = root.findall(row_tag)
+        if strict and (len(elements) != len(root) or (root.text or "").strip()):
+            raise UnityError(f"<{root_tag}> contains malformed {row_tag} entries")
     else:
         raise UnityError(f"expected <{root_tag}>, got <{root.tag}>")
     rows = []
@@ -218,12 +220,26 @@ def token_row(raw: dict[str, Any], identity_id: str) -> dict[str, Any]:
     full field set is kept under `fields` because a token update must send
     every field back, and only the original response has them.
     """
+    if not isinstance(raw, dict) or (
+        "attributes" in raw and not isinstance(raw["attributes"], dict)
+    ):
+        raise UnityError(f"tokens for {identity_id}: malformed token entry")
     token_id, attrs = _unwrap(raw)
-    ext = attrs.get("extended_attributes") or {}
+    source_id = raw.get("id") or attrs.get("cn") or raw.get("cn")
+    if (not isinstance(source_id, str | int) or isinstance(source_id, bool)
+            or not token_id.strip() or token_id != token_id.strip()):
+        raise UnityError(f"tokens for {identity_id}: token entry has no usable ID")
+    ext = attrs.get("extended_attributes")
+    if ext is None:
+        ext = {}
+    if not isinstance(ext, dict):
+        raise UnityError(f"token {token_id} of {identity_id}: malformed extended attributes")
     raw_status = ext.get("token_status") or _field(attrs, "Tokenstatus")
+    if not isinstance(raw_status, str | int) or isinstance(raw_status, bool) or not str(raw_status).strip():
+        raise UnityError(f"token {token_id} of {identity_id}: token entry has no usable status")
     status = status_code(raw_status)
     if not status:
-        logger.warning("Unity token %s has an unrecognised status %r", token_id, raw_status)
+        raise UnityError(f"token {token_id} of {identity_id}: unrecognised status {raw_status!r}")
 
     def date(name: str) -> str:
         return str(ext.get(f"formatted_{name}_date") or _field(attrs, f"{name.capitalize()}date"))
@@ -260,6 +276,8 @@ def _whole_token_list(identity_id: str, rows: list[dict[str, Any]]) -> list[dict
     """
     if len(rows) >= TOKENS_PER_PAGE:
         raise UnityError(f"tokens for {identity_id}: {len(rows)} returned, a full page — may be partial")
+    if len({r["id"] for r in rows}) != len(rows):
+        raise UnityError(f"tokens for {identity_id}: duplicate token IDs — may be partial")
     return rows
 
 class UnityClient:
@@ -556,7 +574,7 @@ class UnityClient:
         # A person with no tokens may come back as an empty <tokens/>; that
         # parses to no rows, which here is the truth rather than a failure.
         return _whole_token_list(identity_id, [token_row(t, identity_id)
-                                               for t in xml_rows(resp.text, "tokens", "token")])
+                                               for t in xml_rows(resp.text, "tokens", "token", strict=True)])
 
     def _tokens_json(self, identity_id: str) -> list[dict[str, Any]]:
         body = self._get_json(f"/identities/{identity_id}/tokens.json",
@@ -566,10 +584,27 @@ class UnityClient:
             items = [items]
         if not isinstance(items, list):
             raise UnityError(f"tokens for {identity_id}: unexpected response shape")
-        rows = [token_row(t, identity_id) for t in items if isinstance(t, dict)]
-        meta = (body.get("meta") or {}) if isinstance(body, dict) else {}
-        total = meta.get("recordsFiltered") or meta.get("recordsTotal")
-        if total is not None and len(rows) < int(total):
+        # Never salvage a partial list: a discarded row might be the very
+        # token whose apparent absence would revoke a tracked pass.
+        rows = [token_row(t, identity_id) for t in items]
+        meta = body.get("meta") if isinstance(body, dict) else None
+        if meta is None:
+            meta = {}
+        if not isinstance(meta, dict):
+            raise UnityError(f"tokens for {identity_id}: malformed count metadata")
+        counts = {}
+        for key in ("recordsFiltered", "recordsTotal"):
+            if key not in meta:
+                continue
+            value = meta[key]
+            if isinstance(value, bool) or not isinstance(value, str | int) or not str(value).isdigit():
+                raise UnityError(f"tokens for {identity_id}: invalid {key}")
+            counts[key] = int(value)
+        if ("recordsFiltered" in counts and "recordsTotal" in counts
+                and counts["recordsFiltered"] != counts["recordsTotal"]):
+            raise UnityError(f"tokens for {identity_id}: contradictory counts")
+        total = counts.get("recordsFiltered", counts.get("recordsTotal"))
+        if total is not None and len(rows) != total:
             raise UnityError(f"tokens for {identity_id}: read {len(rows)} of {total}")
         return _whole_token_list(identity_id, rows)
 

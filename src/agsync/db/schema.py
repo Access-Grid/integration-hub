@@ -353,6 +353,16 @@ MIGRATIONS: list[tuple[str, Step]] = [
         "015_last_synced_department",
         "ALTER TABLE ag_credentials ADD COLUMN last_synced_department TEXT;",
     ),
+    (
+        "016_unity_device_suspension",
+        """
+        -- Preserve an operator's device block across whole-pass suspension.
+        ALTER TABLE unity_tokens ADD COLUMN operator_disabled INTEGER NOT NULL DEFAULT 0;
+        -- Write intent first: a crash after Unity accepts a status update
+        -- must not make our own write look like an operator's device edit.
+        ALTER TABLE unity_tokens ADD COLUMN pending_active INTEGER;
+        """,
+    ),
 ]
 
 
