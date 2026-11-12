@@ -60,18 +60,7 @@ def _set_status(snapshot, pacs, tracked, cred, cards, desired) -> int | None:
     ) else None
 
 
-def _hold_uninstalled_inactive(snapshot: Snapshot, pacs: PacsAdapter, ag) -> int:
-    """Apply the install gate without provisioning or recording AG state."""
-    if not getattr(pacs, "supports_credential_writeback", False):
-        return 0
-    return _reconcile(snapshot, pacs, ag, gate_only=True)
-
-
 def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> int:
-    return _reconcile(snapshot, pacs, ag)
-
-
-def _reconcile(snapshot, pacs, ag, gate_only=False) -> int:
     updated = 0
     logger.info("Phase 4: Reconciling AccessGrid passes with PACS credentials")
     for tracked in tracking.all_tracked():
@@ -86,8 +75,6 @@ def _reconcile(snapshot, pacs, ag, gate_only=False) -> int:
         if cred is not None and cred.hold:
             continue
         allocated = cred is not None and cred.allocate_identity
-        if gate_only and not allocated:
-            continue
         cards = _cards(snapshot, tracked, ag)
         if not cards:
             logger.warning("  %s: pass %s could not be resolved", tracking.label(tracked), tracked.ag_card_id)
@@ -99,13 +86,12 @@ def _reconcile(snapshot, pacs, ag, gate_only=False) -> int:
             pacs, "keeps_deleted_pass_tokens", False,
         ):
             # Deleted whole, and its card already switched off.
-            if not gate_only:
-                updated += _reissue_if_switched_on(pacs, tracked)
+            updated += _reissue_if_switched_on(pacs, tracked)
             continue
         if not allocated and state == tracked.last_known_ag_state:
             continue
         try:
-            if allocated and not gate_only:
+            if allocated:
                 updated += int(push_allocated_identities(
                     pacs, tracked.pacs_person_id, tracked.pacs_credential_id, cards,
                 ))
@@ -117,17 +103,16 @@ def _reconcile(snapshot, pacs, ag, gate_only=False) -> int:
                            else CredentialStatus.SUSPENDED if all(state_of(c) in _OFF for c in cards)
                            else None)
             if gate or (not allocated and state != tracked.last_known_ag_state):
-                if cred is not None and (gate_only or pacs.supports_status_writeback):
+                if cred is not None and pacs.supports_status_writeback:
                     changed = _set_status(snapshot, pacs, tracked, cred, cards, desired)
                     if changed is None:
                         continue
                     updated += changed
-            if not gate_only:
-                if getattr(pacs, "keeps_deleted_pass_tokens", False) and state == "deleted":
-                    tracking.update_status(tracked.pacs_person_id, tracked.pacs_credential_id,
-                                           "suspended", last_known_ag_state=state)
-                else:
-                    (_record_state if allocated else _record_ag_state)(tracked, state)
+            if getattr(pacs, "keeps_deleted_pass_tokens", False) and state == "deleted":
+                tracking.update_status(tracked.pacs_person_id, tracked.pacs_credential_id,
+                                       "suspended", last_known_ag_state=state)
+            else:
+                (_record_state if allocated else _record_ag_state)(tracked, state)
         except Exception as e:  # one failing pass must not stop everyone else
             logger.error("  Pass %s for %s could not be reconciled: %s",
                          tracked.ag_card_id, tracking.label(tracked), e)

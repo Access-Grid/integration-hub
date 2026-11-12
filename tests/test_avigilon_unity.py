@@ -1051,14 +1051,14 @@ def test_seos_pair_android_half_auto_deleted_on_ios_install_leaves_unity_in_the_
     assert a.written_credentials() == {("a", "t1"): ["9001"]}
 
     snap.credentials_by_person["a"] = _cycle(a)
-    assert phase4_ag_to_local._hold_uninstalled_inactive(snap, a, Ag()) == 1
+    phase4_ag_to_local.run(snap, a, Ag())
     assert tokens() == {"9001": "Active"}
     [cred] = _cycle(a)
     assert cred.status is CredentialStatus.ACTIVE
 
 
 def _installed_seos_pass(seos, monkeypatch, re_read):
-    """a's Seos pass, installed and its token on; phase 4's install gate run
+    """a's Seos pass, installed and its token on; phase 4 run
     with `re_read` answering each card fetch. Returns a's token status after."""
     from agsync.sync.phases import phase4_ag_to_local
 
@@ -1073,7 +1073,7 @@ def _installed_seos_pass(seos, monkeypatch, re_read):
     # The listing never carries devices: only a card fetch says it is installed.
     snap.ag_cards_by_sync_ref["ref-a"] = [SimpleNamespace(id="ios", state="active", devices=[])]
     snap.credentials_by_person["a"] = _cycle(a)
-    phase4_ag_to_local._hold_uninstalled_inactive(snap, a, SimpleNamespace(
+    phase4_ag_to_local.run(snap, a, SimpleNamespace(
         access_cards=SimpleNamespace(get=re_read)))
     [made] = _hub_tokens(fake)
     return made["attributes"]["extended_attributes"]["token_status"]

@@ -80,7 +80,7 @@ def test_an_active_holders_uninstalled_pass_is_still_not_suspended_for_its_held_
 def test_an_install_does_not_switch_on_the_cards_of_a_deactivated_holder(pass_state):
     snap, ag = _snapshot(person_active=False, pass_state=pass_state, installed=True)
     pacs = _Pacs()
-    phase4_ag_to_local._hold_uninstalled_inactive(snap, pacs, ag)
+    phase4_ag_to_local.run(snap, pacs, ag)
     assert CredentialStatus.ACTIVE not in pacs.writes
 
 
@@ -88,5 +88,5 @@ def test_an_install_still_switches_on_the_cards_of_an_active_holder():
     snap, ag = _snapshot(person_active=True, pass_state="active", installed=True,
                          status=CredentialStatus.AWAITING_INSTALL)
     pacs = _Pacs()
-    phase4_ag_to_local._hold_uninstalled_inactive(snap, pacs, ag)
+    phase4_ag_to_local.run(snap, pacs, ag)
     assert pacs.writes == [CredentialStatus.ACTIVE]

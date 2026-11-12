@@ -54,6 +54,7 @@ def test_a_device_that_is_not_installed_does_not_count():
 
 class _Pacs:
     supports_credential_writeback = True
+    supports_status_writeback = True
 
     def __init__(self):
         self.calls: list = []
@@ -61,6 +62,9 @@ class _Pacs:
     def update_credential_status(self, person_id, credential_id, status):
         self.calls.append((person_id, credential_id, status))
         return True
+
+    def write_back_credentials(self, person_id, credential_id, identities):
+        return False  # already written: nothing new
 
 
 class _Ag:
@@ -80,7 +84,7 @@ def wired(monkeypatch):
     def _build(card, pacs_status):
         row = SimpleNamespace(
             pacs_person_id="11618", pacs_credential_id="seos",
-            ag_card_id="pass-1", status="active", sync_ref="ref-1",
+            ag_card_id="pass-1", status="active", sync_ref="ref-1", last_known_ag_state="",
         )
         monkeypatch.setattr(phase4.tracking, "all_tracked", lambda: [row])
         snap = Snapshot()
@@ -95,7 +99,7 @@ def wired(monkeypatch):
 def test_an_active_card_is_deactivated_while_the_pass_waits(wired):
     """And says why: awaiting an install, not suspended by anyone."""
     snap, pacs, ag = wired(_card(state="created"), CredentialStatus.ACTIVE)
-    assert phase4._hold_uninstalled_inactive(snap, pacs, ag) == 1
+    assert phase4.run(snap, pacs, ag) == 1
     assert pacs.calls == [("11618", "seos", CredentialStatus.AWAITING_INSTALL)]
 
 
@@ -103,7 +107,7 @@ def test_the_card_goes_live_once_a_device_installs(wired):
     snap, pacs, ag = wired(
         _card(_device("apple_watch", "installed")), CredentialStatus.SUSPENDED,
     )
-    assert phase4._hold_uninstalled_inactive(snap, pacs, ag) == 1
+    assert phase4.run(snap, pacs, ag) == 1
     assert pacs.calls == [("11618", "seos", CredentialStatus.ACTIVE)]
 
 
@@ -111,22 +115,22 @@ def test_a_card_already_matching_its_pass_is_left_alone(wired):
     snap, pacs, ag = wired(
         _card(_device("iphone", "installed")), CredentialStatus.ACTIVE,
     )
-    assert phase4._hold_uninstalled_inactive(snap, pacs, ag) == 0
+    assert phase4.run(snap, pacs, ag) == 0
     assert pacs.calls == []
 
 
 def test_it_keeps_correcting_rather_than_waiting_for_a_change(wired):
     """Level-triggered on purpose: the operator can re-tick Active any time."""
     snap, pacs, ag = wired(_card(state="created"), CredentialStatus.ACTIVE)
-    phase4._hold_uninstalled_inactive(snap, pacs, ag)
-    phase4._hold_uninstalled_inactive(snap, pacs, ag)
+    phase4.run(snap, pacs, ag)
+    phase4.run(snap, pacs, ag)
     assert len(pacs.calls) == 2
 
 
 def test_a_read_only_pacs_is_untouched(wired):
     snap, pacs, ag = wired(_card(state="created"), CredentialStatus.ACTIVE)
     pacs.supports_credential_writeback = False
-    assert phase4._hold_uninstalled_inactive(snap, pacs, ag) == 0
+    assert phase4.run(snap, pacs, ag) == 0
     assert pacs.calls == []
 
 
