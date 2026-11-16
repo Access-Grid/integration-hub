@@ -91,6 +91,16 @@ def _ignore_client_disconnects(loop, context: dict) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Outbound TLS verifies against the OS trust store (so the hub works behind
+    # an SSL-inspection appliance whose CA only the OS trusts). Done here, not
+    # at process start: injecting earlier would also hand uvicorn's HTTPS
+    # *server* its context, and truststore is client-side only — the server
+    # would then answer nothing (ERR_EMPTY_RESPONSE). By now uvicorn has built
+    # and is using its own server context; this only affects clients opened
+    # afterwards, which is every outbound call the sync engine makes.
+    from .trust import use_os_trust_store
+
+    use_os_trust_store()
     init_db()
     install_log_handler()
     asyncio.get_running_loop().set_exception_handler(_ignore_client_disconnects)
@@ -136,12 +146,6 @@ def _start_status_reporter(engine) -> StatusReporter | None:
 
 
 def create_app() -> FastAPI:
-    # Verify outbound TLS against the OS trust store, for runs that reach the
-    # app without going through the CLI (uvicorn, the Windows service, tests).
-    from .trust import use_os_trust_store
-
-    use_os_trust_store()
-
     app = FastAPI(title="AccessGrid Sync", docs_url=None, redoc_url=None, lifespan=lifespan)
 
     templates = Jinja2Templates(directory=_templates_dir())
