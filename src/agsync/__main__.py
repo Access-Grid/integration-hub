@@ -48,6 +48,11 @@ def cli(ctx: click.Context) -> None:
 
     With no subcommand, starts the server (so the .exe is double-clickable).
     """
+    # Before any TLS: verify against the OS trust store, so the hub works on
+    # networks whose SSL-inspection CA is trusted by Windows but not certifi.
+    from .trust import use_os_trust_store
+
+    use_os_trust_store()
     if ctx.invoked_subcommand is None:
         ctx.invoke(run, host=None, port=None)
 

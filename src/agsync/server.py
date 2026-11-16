@@ -136,6 +136,12 @@ def _start_status_reporter(engine) -> StatusReporter | None:
 
 
 def create_app() -> FastAPI:
+    # Verify outbound TLS against the OS trust store, for runs that reach the
+    # app without going through the CLI (uvicorn, the Windows service, tests).
+    from .trust import use_os_trust_store
+
+    use_os_trust_store()
+
     app = FastAPI(title="AccessGrid Sync", docs_url=None, redoc_url=None, lifespan=lifespan)
 
     templates = Jinja2Templates(directory=_templates_dir())
