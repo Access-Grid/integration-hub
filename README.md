@@ -9,7 +9,8 @@ into AccessGrid. Runs as a Windows Service on a NUC, exposes a web UI on port 53
 - Avigilon Alta Access (cloud / OpenPath) — production
 - CDVI Atrium (on-prem) — production
 - DMP System Link (on-prem) — production, read-only
-- Lenel OnGuard — stub (interface only)
+- Millennium Ultra (MGI) — production
+- Lenel OnGuard — interface only
 
 ### DMP System Link
 
@@ -73,6 +74,214 @@ Credentials are therefore tracked by their physical identity (site + card
 number), not the mutable slot id, so a deleted-and-recreated card doesn't
 churn its AccessGrid pass.
 
+### Avigilon Unity
+
+Enrollment is per identity and token: set the token's Embossed Number to
+`accessgrid` and keep its card number in Internal Number. Setup chooses the
+Unity card format and an optional synthetic-email domain. Leave the domain
+blank to hold Seos enrollments without email; supplying a domain enables
+`first.last.<identity id>@domain`. Configure the notification recipient and
+SMTP in Settings so held enrollments and discrepancies can be emailed.
+
+A template pair is one enrollment for an unknown phone platform. Its issued
+pair ID is stored unchanged and used for every AccessGrid mutation. The
+individual Apple and Android cards are read to determine installation and
+credential numbers; AccessGrid deletes the unused platform after installation.
+An active member determines the pair's active state regardless of listing order;
+Seos still requires an installation before activating its Unity tokens.
+
+Unity token deletion requires the exact identity and token ID in tracking.
+An `accessgrid` marker and matching number do not establish ownership. If a
+crash leaves a created token without its recorded ID, writeback and cleanup
+retain the ambiguous token and reservation and alert the operator for review.
+Creation must confirm a new token ID from Unity's response before recording it.
+Malformed token rows, missing IDs/statuses, duplicate IDs, and incomplete or
+contradictory counts make the token read unavailable. A valid JSON/XML fallback
+may supply the complete list; otherwise the existing pass and tokens are held.
+A successfully read empty list still permits normal revocation.
+
+Seos device tokens can be disabled independently in Unity. One active device
+keeps its pass active; disabling every device suspends the whole pass using its
+pair ID. A whole-pass suspension deactivates its tracked tokens, and resuming it
+preserves independent device restrictions. Those restrictions and pending status
+writes are persisted so retries and restarts retain their meaning. Switching an
+independently disabled token back to Active in Unity clears its restriction.
+This detects observed status changes: marking an already inactive token inactive
+again while its whole pass is suspended provides no evidence of a new device block.
+
+- Seos issues omit site code and card number. Allocated numbers are written
+  as inactive Unity tokens, recorded with their facility codes in the encrypted
+  tracking database, and only then is the enrollment token deleted. Unity
+  exposes facility codes on card formats rather than on individual tokens.
+- Seos tokens activate only when an active pass is installed on a phone or
+  watch. Issued but uninstalled passes stay inactive. Suspended, unlinked,
+  and wholly deleted passes deactivate their Unity tokens; only an abandoned
+  platform's token is retired while its sibling survives. Switching a deleted
+  pass's token back on issues a new pass (Seos: that token becomes its
+  enrollment, and the pass's other tokens are deleted).
+- Other templates send site code and card number for H10301 (26-bit), or the
+  parity-inclusive, 64-character hex payload for H10302/H10304. Unknown
+  layouts are held and reported. An email or phone is needed for delivery.
+- Names, phone, title, and department follow Unity. Non-Seos email and
+  credential edits update the same pass; credential edits refresh its payload.
+  Seos email and credential-number edits generate alerts without changing
+  the issued Seos identity.
+- Revocation requires at least 30% of distinct tracked identities to return.
+  Missing tracked identities are read directly, and unread records are held.
+  Writeback records are forgotten only after AccessGrid revocation succeeds.
+
+First attempts and retries share the same issuance payload and tracking code.
+Each cycle reconciles status once per tracked pass and leaves rejected writes
+pending for another cycle.
+
+### Millennium Ultra (MGI)
+
+Millennium Ultra has no API, so this adapter drives the same web screens an
+operator uses. Connection settings: the Millennium URL, a domain for
+synthesized email addresses, and a notification address.
+
+**Signing in (AG Connect).** Millennium's login is protected by a captcha,
+so no headless login is possible — a person has to sign in, and the service
+borrows the session they get. The service runs in session 0 and cannot put a
+window on the operator's desktop, so the browser starts the conversation:
+the setup page offers an `agconnect://` link, the OS hands it to the AG
+Connect side-car, and the side-car opens a throwaway Chromium at the login
+page, waits for the sign-in, and returns the session cookie sealed with a
+one-shot AES-256-GCM key held only by the service. Run
+`agsync register-uri` once, as the operator who will be signing in, to
+register the handler (per-user; no elevation). On Windows that writes an
+`HKCU` protocol handler. macOS delivers a URL as an Apple Event rather than
+an argument, so there it compiles a small AppleScript applet into
+`~/Applications/AG Connect.app` — a bundle wrapping a plain executable would
+be launched with no arguments and the URL would be lost.
+
+Sessions expire, roughly hourly, and they do not say so. A dead cookie has
+been seen producing three different shapes, none of which looks like an
+error: a redirect to the login page, an empty 200 body, and a valid empty
+`[]` alongside HTTP 500 on the cardholder screens. The last is the dangerous
+one — a well-formed empty answer is indistinguishable from a PACS with no
+cardholders, and reads downstream as "everyone was deleted". All three raise
+`PacsAuthExpired`, so syncing pauses, a banner appears, and — if SMTP is
+configured under Settings → Notifications — a message asks someone to
+reconnect. The banner appears on every page, not just the status screen, and
+is itself the link: it points straight at the `agconnect://` side-car, so
+re-authenticating is one click from wherever the operator happens to be. A
+PACS that does not answer at all gets a different banner, since
+re-authenticating would not help. An install that genuinely has zero cardholders would be
+misreported by the empty-roster rule; that is the intended trade, since
+being wrong that way prompts a human and being wrong the other way stops the
+sync in silence.
+
+**Enrollment trigger (card format).** At setup you choose one card format,
+read live from the install; both its id and its display name are stored,
+and the name is what the export is matched against. Any cardholder holding a
+card in that format is enrolled. An *empty* card slot cannot carry a
+format, so the trigger is always a slot holding a real card. It can be
+changed later under Settings → Enrollment trigger. A card whose format is
+changed away from the trigger is not revoked: its pass is held, untouched,
+until the format comes back.
+
+**Reading: one export per cycle.** Each cycle reads Millennium's bulk
+cardholder export — a queued job, three requests, one row per cardholder
+with all three card slots and their access levels — and nothing else.
+Cardholders are keyed by **Employee ID**, since the export has no record
+id; a row without one, or sharing one with another row, is skipped with an
+ERROR. An empty export, or a trigger with no stored name, fails the cycle
+rather than reading as nobody enrolled. A cardholder with no valid email
+address gets `first.last.<Employee ID>@<configured domain>`.
+
+**Two directions**, read from the AccessGrid card template's `protocol`
+rather than asked for, and re-read every cycle along with whether the
+template is a pair. An unreadable template falls back to DESFire, the
+direction that never writes a card.
+
+- **DESFire** — the card already exists in Millennium; its facility code and
+  card number are copied out to AccessGrid. The only thing changed in
+  Millennium is the card's Active box.
+- **HID Seos** — AccessGrid mints the credential. The trigger card marks
+  *who* gets a pass; AccessGrid allocates the facility code and card number,
+  and the first card is written over the trigger card. A pair's second card
+  goes into an empty slot, so a pair needs one free slot. Each card written
+  takes the trigger format, the trigger card's access levels (all ten), an
+  activation date of now, and Active off until the pass is installed.
+
+  A pair is worth calling out: issuing against one returns a *unified pass*
+  rather than a card. Its credentials are in `details`, one per platform,
+  each with its own card number, and the pass itself has none — so both
+  halves are read from there.
+
+  Finding that pass again needs care, because listing the template returns
+  the individual cards and *not* the unified id. Rather than depend on which
+  id comes back, every issue mints a `sync_ref`, stamps it into the card
+  metadata before the call, and records it in `ag_credentials`. Each card an
+  issue produced carries it, so a pair resolves to both halves. Lookups try
+  the reference first, then the id, then employee id +
+  `pacs_credential_id` for cards issued before references existed — a weak
+  key, since it repeats if a credential was ever issued twice. See
+  `Snapshot.resolve_ag_cards`.
+
+**Which trigger cards get a pass.** `pacs_cards` records every card a pass
+rests on, one row per card, with the card number and facility code
+encrypted. Each trigger-format slot is checked against it:
+
+- a recorded card is its existing pass, followed if it moved slot;
+- a recorded slot now holding a different card, a card recorded on another
+  cardholder, or a tracked pass with nothing recorded is logged as an ERROR
+  and mailed to the notification address — nothing is issued, and the
+  existing pass is held;
+- anything else is a new pass, recorded at once as `card` (then `card-2`,
+  ...), which phase 1 issues and keeps retrying until it has.
+
+A held pass (`Credential.hold`) is left exactly as it is by every phase.
+
+**Writing: one import per cycle.** The phases only record what should
+change, as pending rows in `pacs_cards`. Once they have all run,
+`finish_cycle` sends one Millennium cardholder import — "update matched
+records only", matched by Employee ID, carrying only the columns being
+changed — and deletes any cards marked for deletion (found by an Employee ID
+search, then that cardholder's page). It keeps what the import log confirms;
+a row the log skipped stays pending for the next cycle. Dry run sends
+nothing.
+
+- Suspend and resume switch the card's Active box. A card we switched on
+  that an operator has since switched off is not switched back on.
+- A Seos card AccessGrid deletes, or its holder unlinks, is deleted from
+  Millennium. DESFire cards are the customer's and are never deleted.
+
+**Revocation.** A card gone from Millennium revokes its pass through phase
+3. A read with under 30% of the people of the last complete read revokes
+nobody for being missing.
+
+**Seeing what reached the PACS.** For Seos the AccessGrid pass existing is
+only half the story — the pass opens doors when its card numbers are in
+Millennium, and not before. The Credentials page reports that per row ("2
+card numbers saved to Millennium Ultra"), with the numbers themselves on the
+badge for looking up a pass that is not working. Read from `pacs_cards`.
+
+**Changing a person's details.** Phase 6 pushes name, phone, title and the
+card's expiration date to AccessGrid, as metadata updates. Email is pushed
+only for a DESFire/SmartTap pass, in an update of its own; a rejected one is
+retried. On a Seos pass AccessGrid rejects it, so a changed address is logged
+once. A pass's
+expiry is recorded the first time it is seen, rather than pushed, so
+existing passes are not all rewritten at once.
+
+**Pass details.** A pass carries the card's own validity from Millennium as
+its start and expiration dates, rather than "whenever the sync noticed it"
+— the stored text is local to the install, so it is converted using the
+`timeoffset` captured at sign-in. Title and classification describe the
+deployment rather than the person, so they are set once under Settings →
+Pass details; a PACS that does carry a per-person title still wins.
+
+**Upgrading an existing install.** On its first cycle the adapter moves
+everything keyed by Millennium record id to Employee ID: it reads each
+tracked cardholder's page once and re-keys tracking and `pacs_cards` in one
+transaction. A record it cannot read, with no Employee ID, or sharing one,
+stops the move — fix it in Millennium — and nothing syncs until it
+completes. It also fills in the trigger format's name, migration 011 moves
+the old ledger blob into `pacs_cards`, and DESFire passes tracked by slot
+(`slot2`) are adopted under their existing ids.
+
 ## Quick start (development)
 
 Requires Python 3.12 on Windows 11.
@@ -99,6 +308,10 @@ agsync run                # Run the server in the foreground
 agsync install-service    # Install as a Windows Service (requires admin)
 agsync uninstall-service  # Remove the Windows Service
 agsync reset-admin        # Wipe the admin user — wizard will re-run on next start
+agsync register-uri       # Register the agconnect:// handler for the current user
+agsync unregister-uri     # Remove it
+agsync connect <uri>      # AG Connect side-car — normally started by the OS
+                          # when the operator clicks Connect in the web UI
 ```
 
 ## Configuration
@@ -113,6 +326,7 @@ The SQLite database lives at `%LOCALAPPDATA%\AGSyncTool\app.db`.
 - `src/agsync/server.py` — FastAPI app
 - `src/agsync/sync/` — sync engine and phases
 - `src/agsync/lib/pacs/` — PACS adapters (one subpackage per vendor)
+- `src/agsync/connect/` — AG Connect side-car (captcha-gated PACS logins)
 - `src/agsync/ag/` — AccessGrid HTTP client
 - `src/agsync/templates/` — Jinja2 templates (HTMX-driven)
 - `src/agsync/locales/` — i18n dictionaries

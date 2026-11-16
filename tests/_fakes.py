@@ -1,4 +1,4 @@
-"""Test doubles shared across the Avigilon Alta suite."""
+"""Test doubles shared across the PACS adapter suites."""
 
 from __future__ import annotations
 
@@ -53,6 +53,80 @@ class FakeCdviClient:
     def set_card_enabled(self, card, enabled):
         self.set_enabled_calls.append({"card_id": str(card.get("id")), "enabled": enabled})
         return self.card_command_result
+
+    def close(self):
+        pass
+
+
+# The export's columns, in Millennium's order.
+EXPORT_COLUMNS = [
+    "First Name", "Last Name", "Card Type", "Employee ID", "Phone", "E-Mail",
+    "Current Status",
+] + [
+    f"Card {n} {field}"
+    for n in (1, 2, 3)
+    for field in (
+        "Printed Card No.", "Encoded Card No.", "Activation Date",
+        "Expiration Date", "Active", "Card Format", "Facility Code", "Badge Type",
+    )
+] + [f"Card {n} Access Level {k} [Global]" for n in (1, 2, 3) for k in range(1, 11)]
+
+
+def export_row(employee_id, first="Ada", last="Lovelace", email="", phone="", slots=()):
+    """One cardholder as an export row.
+
+    `slots` is a list of dicts, one per slot from slot 1: card_number,
+    facility_code, card_format (the display name), active, activation and
+    expiration (export date text), and access_levels (names, from level 1).
+    An omitted slot, or None, is empty.
+    """
+    row = {
+        "Employee ID": employee_id, "First Name": first, "Last Name": last,
+        "E-Mail": email, "Phone": phone,
+    }
+    for n, slot in enumerate(slots, start=1):
+        if not slot:
+            continue
+        row[f"Card {n} Encoded Card No."] = slot.get("card_number", "")
+        row[f"Card {n} Facility Code"] = slot.get("facility_code", "")
+        row[f"Card {n} Card Format"] = slot.get("card_format", "")
+        row[f"Card {n} Active"] = "True" if slot.get("active", True) else "False"
+        row[f"Card {n} Activation Date"] = slot.get("activation", "")
+        row[f"Card {n} Expiration Date"] = slot.get("expiration", "")
+        for k, name in enumerate(slot.get("access_levels", ()), start=1):
+            row[f"Card {n} Access Level {k} [Global]"] = name
+    return row
+
+
+class FakeMillenniumClient:
+    """Stand-in for MillenniumUltraClient — no network.
+
+    Serves `rows` (see export_row) as the export CSV, so the adapter reads
+    them through the real export.parse.
+    """
+
+    def __init__(self, rows=None, formats=None):
+        self.rows = list(rows or [])
+        self._formats = formats or [("1", "Wiegand Card"), ("7", "HID 37")]
+
+    def export_cardholders(self):
+        import csv
+        import io
+
+        out = io.StringIO()
+        writer = csv.DictWriter(out, fieldnames=EXPORT_COLUMNS, restval="")
+        writer.writeheader()
+        writer.writerows(self.rows)
+        return out.getvalue()
+
+    def first_cardholder_id(self):
+        return "1"
+
+    def card_formats(self, cardholder_id):
+        return self._formats
+
+    def test_connection(self):
+        return True, "ok"
 
     def close(self):
         pass

@@ -6,6 +6,8 @@ provisioned. The row's lifecycle:
     pending  → first seen, provision in flight
     active   → AG card exists and AG state is active/created
     suspended → AG card exists, AG state is suspended
+    expired  → suspended because its card passed its end date (a PACS with
+                suspends_expired_cards); resumed when the date moves on
     deleted  → AG card was deleted (we keep the row briefly so phase 3
                 can confirm before forgetting)
     error    → last attempt failed, retry_count tracks attempts
@@ -16,11 +18,23 @@ truly gone.
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from ..db.connection import execute, execute_one, get_db
+
+
+def new_sync_ref() -> str:
+    """A fresh reference for one issue.
+
+    Minted before the API call, because the id AccessGrid returns is not
+    always the id its own listing gives back — a card template pair is
+    tracked by a unified id that never appears in the template's card list.
+    Something we chose ourselves sidesteps that entirely.
+    """
+    return secrets.token_hex(8)
 
 
 @dataclass
@@ -39,6 +53,19 @@ class TrackedCredential:
     credential_data: str
     sync_error: str | None
     retry_count: int
+    # Our own reference for this issue, echoed in the card's metadata.
+    sync_ref: str = ""
+    # The expiry last pushed to (or found on) the pass; None until recorded.
+    last_synced_expiration: str | None = None
+    # The department last sent; None for a pass issued before it was sent.
+    last_synced_department: str | None = None
+
+
+def label(tracked: Any) -> str:
+    """How the logs name a tracked pass: "990001/card (Smoke Alpha)"."""
+    who = f"{tracked.pacs_person_id}/{tracked.pacs_credential_id}"
+    name = getattr(tracked, "full_name", "")
+    return f"{who} ({name})" if name else who
 
 
 def _row_to_tracked(row: Any) -> TrackedCredential:
@@ -57,6 +84,13 @@ def _row_to_tracked(row: Any) -> TrackedCredential:
         credential_data=row["credential_data"] or "",
         sync_error=row["sync_error"],
         retry_count=row["retry_count"] or 0,
+        sync_ref=(row["sync_ref"] if "sync_ref" in row.keys() else "") or "",
+        last_synced_expiration=(
+            row["last_synced_expiration"] if "last_synced_expiration" in row.keys() else None
+        ),
+        last_synced_department=(
+            row["last_synced_department"] if "last_synced_department" in row.keys() else None
+        ),
     )
 
 
@@ -95,6 +129,8 @@ def upsert(
     last_synced_title: str = "",
     last_known_ag_state: str = "",
     credential_data: str = "",
+    sync_ref: str = "",
+    last_synced_department: str = "",
 ) -> None:
     now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
@@ -102,9 +138,9 @@ def upsert(
         INSERT INTO ag_credentials (
             pacs_person_id, pacs_credential_id, ag_card_id, full_name, employee_id,
             status, last_synced_email, last_synced_phone, last_synced_full_name,
-            last_synced_title, last_known_ag_state, credential_data,
+            last_synced_title, last_known_ag_state, credential_data, sync_ref, last_synced_department,
             retry_count, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         ON CONFLICT(pacs_person_id, pacs_credential_id) DO UPDATE SET
             ag_card_id            = excluded.ag_card_id,
             full_name             = excluded.full_name,
@@ -114,17 +150,21 @@ def upsert(
             last_synced_phone     = excluded.last_synced_phone,
             last_synced_full_name = excluded.last_synced_full_name,
             last_synced_title     = excluded.last_synced_title,
+            last_synced_department = excluded.last_synced_department,
             last_known_ag_state   = excluded.last_known_ag_state,
             -- keep a previously-recorded value if this call didn't supply one
             credential_data       = COALESCE(NULLIF(excluded.credential_data, ''),
                                              ag_credentials.credential_data),
+            -- Keep the existing reference when a caller does not supply one,
+            -- so a status update never orphans a card from its metadata.
+            sync_ref              = COALESCE(NULLIF(excluded.sync_ref, ''), sync_ref),
             sync_error            = NULL,
             updated_at            = excluded.updated_at
         """,
         (
             pacs_person_id, pacs_credential_id, ag_card_id, full_name, employee_id,
             status, last_synced_email, last_synced_phone, last_synced_full_name,
-            last_synced_title, last_known_ag_state, credential_data, now, now,
+            last_synced_title, last_known_ag_state, credential_data, sync_ref, last_synced_department, now, now,
         ),
     )
 
@@ -142,6 +182,34 @@ def update_status(pacs_person_id: str, pacs_credential_id: str, status: str, las
          WHERE pacs_person_id = ? AND pacs_credential_id = ?
         """,
         (status, last_known_ag_state, now, pacs_person_id, pacs_credential_id),
+    )
+
+
+def mark_deleted(pacs_person_id: str, pacs_credential_id: str) -> None:
+    """Record that the pass we issued is gone, and release the id.
+
+    ag_card_id is what phase 1 reads to decide a credential is already
+    handled — it checks for the id, not the status — so a row that keeps it
+    after the pass is deleted can never be provisioned again. Deleting a
+    cardholder's card in the PACS and adding a new one then does nothing at
+    all, and says nothing either, because that check is a bare continue.
+
+    The row itself stays: status and last_known_ag_state keep the record of
+    what happened, and the field-tracking columns keep what was last sent.
+    """
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    get_db().execute(
+        """
+        UPDATE ag_credentials
+           SET status = 'deleted',
+               last_known_ag_state = 'deleted',
+               ag_card_id = NULL,
+               sync_error = NULL,
+               retry_count = 0,
+               updated_at = ?
+         WHERE pacs_person_id = ? AND pacs_credential_id = ?
+        """,
+        (now, pacs_person_id, pacs_credential_id),
     )
 
 
@@ -180,6 +248,21 @@ def failed_records(max_retries: int) -> list[TrackedCredential]:
     return [_row_to_tracked(r) for r in rows]
 
 
+def exhausted_records(max_retries: int) -> list[TrackedCredential]:
+    """Rows whose issue failed max_retries times: retried no more."""
+    rows = execute(
+        """
+        SELECT * FROM ag_credentials
+         WHERE sync_error IS NOT NULL
+           AND retry_count >= ?
+           AND ag_card_id IS NULL
+         ORDER BY updated_at ASC
+        """,
+        (max_retries,),
+    )
+    return [_row_to_tracked(r) for r in rows]
+
+
 def update_field_tracking(
     pacs_person_id: str,
     pacs_credential_id: str,
@@ -188,19 +271,24 @@ def update_field_tracking(
     email: str,
     phone: str,
     title: str,
+    expiration: str = "",
+    department: str | None = None,
 ) -> None:
+    """Record what the pass now holds. A department of None leaves the recorded one as it is."""
     now = datetime.now(UTC).isoformat(timespec="seconds")
     get_db().execute(
         """
         UPDATE ag_credentials
-           SET last_synced_full_name = ?,
-               last_synced_email     = ?,
-               last_synced_phone     = ?,
-               last_synced_title     = ?,
-               updated_at            = ?
+           SET last_synced_full_name  = ?,
+               last_synced_email      = ?,
+               last_synced_phone      = ?,
+               last_synced_title      = ?,
+               last_synced_expiration = ?,
+               last_synced_department = COALESCE(?, last_synced_department),
+               updated_at             = ?
          WHERE pacs_person_id = ? AND pacs_credential_id = ?
         """,
-        (full_name, email, phone, title, now, pacs_person_id, pacs_credential_id),
+        (full_name, email, phone, title, expiration, department, now, pacs_person_id, pacs_credential_id),
     )
 
 

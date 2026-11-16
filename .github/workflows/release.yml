@@ -30,7 +30,7 @@ jobs:
 
       - name: Smoke test (CLI imports)
         env:
-          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'ZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXk=' }}
+          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'YWdzeW5jLWNpLWR1bW15LWtleS1kby1ub3QtdXNlISE=' }}
         run: |
           agsync --version
           python -c "from agsync.server import create_app; create_app()"
@@ -47,7 +47,10 @@ jobs:
             --collect-all agsync `
             --collect-all accessgrid `
             --hidden-import agsync.lib.pacs.avigilon `
+            --hidden-import agsync.lib.pacs.avigilon_alta `
+            --hidden-import agsync.lib.pacs.cdvi `
             --hidden-import agsync.lib.pacs.lenel `
+            --hidden-import agsync.lib.pacs.millennium_ultra `
             --hidden-import win32timezone `
             --add-data "src/agsync/templates;agsync/templates" `
             --add-data "src/agsync/static;agsync/static" `
@@ -58,6 +61,51 @@ jobs:
       - name: Verify built binary
         run: |
           dist\agsync.exe --version
+        shell: pwsh
+
+      # A second, much smaller exe: a read-only dump of the tracking table
+      # and the Seos ledger. Shipped alongside because what this install
+      # believes it has issued has so far only been inferable from log
+      # lines, and a rule that decides whether to delete somebody's pass
+      # needs checking against the real rows first.
+      - name: Build agdiag.exe with PyInstaller
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --onefile `
+            --name agdiag `
+            --collect-all agsync `
+            --hidden-import win32timezone `
+            scripts/agdiag_entry.py
+        shell: pwsh
+
+      - name: Verify agdiag runs and withholds secrets
+        env:
+          AG_SYNC_DB_PATH: ${{ runner.temp }}\no-such.db
+        run: |
+          $out = dist\agdiag.exe | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "agdiag exited $LASTEXITCODE" }
+          if ($out -notmatch "diagnostic dump") { throw "unexpected output: $out" }
+        shell: pwsh
+
+      # A standalone, read-only probe of an Avigilon Unity box: which login
+      # and formats (JSON/XML) it answers, and whether AccessGrid is
+      # reachable. Built from the script alone — it needs only httpx — so a
+      # site can run it before the hub is installed.
+      - name: Build avigilon-discovery.exe with PyInstaller
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --onefile `
+            --name avigilon-discovery `
+            scripts/avigilon_probe.py
+        shell: pwsh
+
+      - name: Verify avigilon-discovery runs
+        run: |
+          $out = dist\avigilon-discovery.exe --help | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "avigilon-discovery exited $LASTEXITCODE" }
+          if ($out -notmatch "username") { throw "unexpected output: $out" }
         shell: pwsh
 
       - name: Compute release name
@@ -72,14 +120,20 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agsync-windows-${{ steps.rel.outputs.tag }}
-          path: dist/agsync.exe
+          path: |
+            dist/agsync.exe
+            dist/agdiag.exe
+            dist/avigilon-discovery.exe
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.rel.outputs.tag }}
-          files: dist/agsync.exe
+          files: |
+            dist/agsync.exe
+            dist/agdiag.exe
+            dist/avigilon-discovery.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
 
@@ -100,7 +154,7 @@ jobs:
 
       - name: Smoke test (CLI imports)
         env:
-          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'ZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXktZHVtbXk=' }}
+          AG_SYNC_ENCRYPTION_KEY: ${{ secrets.CI_FERNET_KEY || 'YWdzeW5jLWNpLWR1bW15LWtleS1kby1ub3QtdXNlISE=' }}
         run: |
           agsync --version
           python -c "from agsync.server import create_app; create_app()"
@@ -116,7 +170,10 @@ jobs:
             --collect-all agsync \
             --collect-all accessgrid \
             --hidden-import agsync.lib.pacs.avigilon \
+            --hidden-import agsync.lib.pacs.avigilon_alta \
+            --hidden-import agsync.lib.pacs.cdvi \
             --hidden-import agsync.lib.pacs.lenel \
+            --hidden-import agsync.lib.pacs.millennium_ultra \
             --add-data "src/agsync/templates:agsync/templates" \
             --add-data "src/agsync/static:agsync/static" \
             --add-data "src/agsync/locales:agsync/locales" \

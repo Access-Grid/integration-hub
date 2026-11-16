@@ -1,0 +1,19 @@
+10/19/2026 7:37:37 PM  | Information | Start import cardholders
+10/19/2026 7:37:37 PM  | Information | Import rule: Update existing records when matched - plus add new
+10/19/2026 7:37:37 PM  | Information | Import unknown items is Disabled
+10/19/2026 7:37:37 PM  | Information | Don't replace assigned  access levels is Disabled
+10/19/2026 7:37:37 PM  | Information | Importing file contains 1 records and 70 columns
+10/19/2026 7:37:37 PM  | Error       | Error while importing: Necessary column (EmployeeID) doesn't exist in imported data fields!
+10/19/2026 7:38:21 PM  | Information | Start import cardholders
+10/19/2026 7:38:21 PM  | Information | Import rule: Update existing records when matched - plus add new
+10/19/2026 7:38:21 PM  | Information | Import unknown items is Disabled
+10/19/2026 7:38:21 PM  | Information | Don't replace assigned  access levels is Disabled
+10/19/2026 7:38:21 PM  | Information | Importing file contains 1 records and 70 columns
+10/19/2026 7:38:22 PM  | Information | Summary:
+  0 cardholders added
+  1 cardholders updated
+  0 cards added
+  0 cards updated
+
+10/19/2026 7:38:22 PM  | Information | Cardholders has been imported successfully!
+10/19/2026 7:38:22 PM  | Information | CardsViewLog record added

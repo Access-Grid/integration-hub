@@ -1,7 +1,8 @@
-"""Shared fixtures for the Avigilon Alta test suite.
+"""Shared fixtures for the adapter test suites.
 
-The sample payloads mirror the real shapes returned by the Helium/OpenPath
-API (captured from a live tenant), trimmed to the fields the adapter reads.
+Each vendor's payloads mirror the real shapes its system returns, captured
+from a live tenant or controller and trimmed to the fields the adapter
+reads — Avigilon Alta first, then CDVI Atrium and Millennium Ultra below.
 """
 
 from __future__ import annotations
@@ -9,6 +10,56 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _never_the_real_database(tmp_path, monkeypatch):
+    """Point every test at a database of its own.
+
+    Without this a test that reaches storage reads the operator's live
+    install: `get_settings()` defaults db_path to it, so `PacsCards.all()`
+    answers with real cardholders and `AccessGridConfig.load()` with a real
+    API key. That is how test_only_the_cardholders_carrying_a_trigger_card
+    came to depend on run order — it passed only when some earlier test had
+    left the shared connection pointed somewhere harmless.
+
+    The connection has to be dropped properly for the new path to take.
+    `connection` keeps `_initialized` and a thread-local `conn`; there is
+    no `_conn`, so the line several suites use to reset it sets an
+    attribute nobody reads.
+    """
+    from agsync.config import get_settings
+    from agsync.db import connection
+
+    def drop() -> None:
+        conn = getattr(connection._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            del connection._local.conn
+        connection._initialized = False
+
+    monkeypatch.setenv("AG_SYNC_DB_PATH", str(tmp_path / "test.db"))
+    get_settings.cache_clear()
+    drop()
+    yield
+    drop()
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _allowed_to_act(monkeypatch):
+    """Let the suite exercise what this install does when it may act.
+
+    Dry run is the shipped default, so without this every test asserting
+    that something was written would be asserting against a no-op. The
+    default, and the stored setting behind it, are pinned in test_dry_run.py
+    rather than here, so flipping either cannot go unnoticed.
+    """
+    from agsync import dryrun
+
+    monkeypatch.setattr(dryrun, "active", lambda: False)
+    yield
+    dryrun.invalidate()
 
 
 def _iso(dt: datetime) -> str:
@@ -134,6 +185,46 @@ def make_cdvi_adapter():
 
     def _build(fake_client) -> CdviAdapter:
         adapter = CdviAdapter(base_url="https://ctrl.test", username="u", password="p")
+        adapter._client.close()  # close the real httpx client built in __init__
+        adapter._client = fake_client
+        return adapter
+
+    return _build
+
+
+# --- Millennium Ultra fixtures -------------------------------------------
+#
+# The adapter reads only the export, built per test with tests._fakes
+# export_row. The cardholder page is the real thing, captured from a live
+# install (see tests/millennium_fixtures), and is kept for the client tests.
+
+
+@pytest.fixture
+def millennium_page() -> str:
+    from pathlib import Path
+
+    return (
+        Path(__file__).parent / "millennium_fixtures" / "cardholder_11587_form.html"
+    ).read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def make_millennium_adapter():
+    """Build a MillenniumUltraAdapter with its client swapped for a fake."""
+    from agsync.lib.pacs.millennium_ultra.adapter import MillenniumUltraAdapter
+
+    def _build(fake_client, migrated=True, **kwargs) -> MillenniumUltraAdapter:
+        if migrated:
+            from agsync.lib.pacs.millennium_ultra import migrate
+            from agsync.settings_store import set_json
+
+            set_json(migrate.DONE_KEY, True)
+        kwargs.setdefault("base_url", "https://millennium.test")
+        kwargs.setdefault("trigger_card_format", "7")
+        kwargs.setdefault("trigger_card_format_label", "HID 37")
+        kwargs.setdefault("email_domain", "cards.example.com")
+        kwargs.setdefault("auth_cookie", "test-cookie")
+        adapter = MillenniumUltraAdapter(**kwargs)
         adapter._client.close()  # close the real httpx client built in __init__
         adapter._client = fake_client
         return adapter

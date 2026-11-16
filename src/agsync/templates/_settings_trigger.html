@@ -1,0 +1,25 @@
+{# HTMX-loaded into the settings page: reading the format list means talking
+   to the PACS, which should not hold up the whole page render. #}
+{% if error %}
+  <div class="err">{{ error }}</div>
+  <a class="button" href="/connect">{{ t('connect.action') }}</a>
+{% elif not formats %}
+  <div class="err">{{ t('wizard.connect.no_formats') }}</div>
+{% else %}
+  <form action="/settings/trigger-format" method="post">
+    <label>{{ t('wizard.connect.trigger_label') }}
+      <select name="trigger_card_format" required>
+        {% for f in formats %}
+          <option value="{{ f.id }}" {% if f.id == current %}selected{% endif %}>{{ f.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if current and current not in format_ids %}
+      {# The saved trigger is not in the live list any more, so leaving this
+         page without choosing would quietly change nothing while the engine
+         keeps matching a format the install no longer defines. #}
+      <div class="err">{{ t('settings.trigger.missing', id=current) }}</div>
+    {% endif %}
+    <button type="submit">{{ t('common.save') }}</button>
+  </form>
+{% endif %}

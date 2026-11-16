@@ -1,0 +1,26 @@
+{# Polled by the connect screen, which swaps this element whole. Only the
+   "still waiting" branch re-declares the poller — a finished or failed panel
+   leaves it out, and that absence is what stops the polling. Each poll after
+   connecting is a live read against the PACS, so this matters. #}
+{% if state == 'cancelled' or state == 'error' or state == 'expired' %}
+  <div id="connect-panel">
+    <div class="err">
+      {% if message %}{{ message }}{% else %}{{ t('wizard.connect.expired') }}{% endif %}
+    </div>
+    <a class="button" href="{{ '/wizard/connect' if pick else '/connect' }}">{{ t('wizard.connect.retry') }}</a>
+  </div>
+{% else %}
+  <div id="connect-panel"
+       hx-get="/connect/status?launch={{ launch }}{% if pick %}&amp;pick=1{% endif %}"
+       hx-trigger="every 2s"
+       hx-swap="outerHTML">
+    <a class="button" href="{{ launch_uri }}" id="connect-launch">
+      {{ t('wizard.connect.button') }}
+    </a>
+    <div class="waiting">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>{{ t('wizard.connect.waiting') }}</span>
+    </div>
+    <p class="muted small">{{ t('wizard.connect.hint') }}</p>
+  </div>
+{% endif %}

@@ -1,0 +1,14 @@
+10/19/2026 7:36:24 PM  | Information | Start import cardholders
+10/19/2026 7:36:24 PM  | Information | Import rule: Update existing records when matched - plus add new
+10/19/2026 7:36:24 PM  | Information | Import unknown items is Disabled
+10/19/2026 7:36:24 PM  | Information | Don't replace assigned  access levels is Disabled
+10/19/2026 7:36:24 PM  | Information | Importing file contains 1 records and 70 columns
+10/19/2026 7:36:25 PM  | Warning     | Cardholder 'Employee ID:22344' has been skipped because: Cardholder's name or EmployeeID can not be null!
+10/19/2026 7:36:25 PM  | Information | Summary:
+  0 cardholders added
+  0 cardholders updated
+  1 cardholders skipped (see reasons above)
+  0 cards added
+  0 cards updated
+
+10/19/2026 7:36:25 PM  | Information | Cardholders has been imported successfully!

@@ -46,3 +46,4 @@ from . import avigilon_alta as _avigilon_alta  # noqa: E402, F401
 from . import cdvi as _cdvi  # noqa: E402, F401
 from . import dmp as _dmp  # noqa: E402, F401
 from . import lenel as _lenel  # noqa: E402, F401
+from . import millennium_ultra as _millennium_ultra  # noqa: E402, F401

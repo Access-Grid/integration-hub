@@ -1,0 +1,37 @@
+{# Swapped in once AG Connect has handed back a session. The card formats
+   below are read live from the PACS — there is no static list. #}
+<div id="connect-panel">
+<div class="test-result ok">{{ t('wizard.connect.connected') }}</div>
+
+{% if error %}
+  <div class="err">{{ error }}</div>
+  <a class="button" href="/wizard/connect">{{ t('wizard.connect.retry') }}</a>
+{% elif not formats %}
+  <div class="err">{{ t('wizard.connect.no_formats') }}</div>
+  <a class="button" href="/wizard/connect">{{ t('wizard.connect.retry') }}</a>
+{% else %}
+  <form action="/wizard/pacs-trigger" method="post">
+    <h3>{{ t('wizard.connect.trigger_title') }}</h3>
+    <p class="muted">{{ t('wizard.connect.trigger_subtitle') }}</p>
+    <label>{{ t('wizard.connect.trigger_label') }}
+      {# Placeholder is selected and disabled so the operator has to make a
+         deliberate choice — the first format in the list silently becoming
+         the trigger would decide who gets provisioned. #}
+      <select name="trigger_card_format" required>
+        <option value="" disabled selected>{{ t('wizard.connect.trigger_placeholder') }}</option>
+        {% for f in formats %}
+          <option value="{{ f.id }}">{{ f.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    {# Direction of travel comes from the AccessGrid card template, not from
+       the operator. Shown because Seos writes cards into the PACS. #}
+    <p class="muted small">
+      {{ t('pacs.' ~ vendor ~ '.mode_' ~ mode) }}
+    </p>
+
+    <button type="submit">{{ t('common.finish') }}</button>
+  </form>
+{% endif %}
+</div>

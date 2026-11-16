@@ -3,13 +3,198 @@
 Each entry in MIGRATIONS is run once, in order. Already-applied migrations
 are tracked in the `_migrations` table so we can add to this list without
 breaking existing installs.
+
+A step is either SQL or a callable taking the connection — the latter for
+data that SQL cannot reach, such as the encrypted settings blobs, whose
+contents are ciphertext to SQLite.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import Callable
 
-MIGRATIONS: list[tuple[str, str]] = [
+Step = str | Callable[[sqlite3.Connection], None]
+
+
+def _seos_credential_id_drops_the_slot(conn: sqlite3.Connection) -> None:
+    """Key a Seos credential on the cardholder, not on a slot position.
+
+    The id used to be "seos-slot<N>", N being the slot of the lowest-indexed
+    card carrying the trigger format. Cards we write carry that format too,
+    so writing into a slot below the operator's marker moved the id — and a
+    moved id reads as a brand-new credential, which phase 1 provisions a
+    second pass for. There is exactly one Seos credential per cardholder, so
+    the position never earned its place in the key.
+    """
+    conn.execute(
+        "UPDATE ag_credentials SET pacs_credential_id = 'seos' "
+        "WHERE pacs_credential_id LIKE 'seos-slot%'"
+    )
+
+    # The ledger of what we wrote into Millennium is an encrypted blob keyed
+    # "<person>:<credential>", so it has to be rewritten in Python.
+    from ..crypto import decrypt, encrypt
+
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = 'millennium_seos_slots'"
+    ).fetchone()
+    if row is None:
+        return
+    ledger = json.loads(decrypt(row[0]))
+    migrated: dict[str, list] = {}
+    for key, entries in ledger.items():
+        person, _, credential = key.partition(":")
+        if credential.startswith("seos-slot"):
+            key = f"{person}:seos"
+        # Merge rather than overwrite: two slot-keyed entries for one
+        # cardholder are exactly the duplicate this migration exists to stop.
+        migrated.setdefault(key, []).extend(entries)
+    conn.execute(
+        "UPDATE settings SET value = ? WHERE key = 'millennium_seos_slots'",
+        (encrypt(json.dumps(migrated)),),
+    )
+
+
+def _seos_ledger_becomes_pacs_cards(conn: sqlite3.Connection) -> None:
+    """Move the Seos ledger out of its settings blob into `pacs_cards`.
+
+    One row per card we wrote into the PACS, so each card can carry its own
+    state: whether it is still tracked, the Active box we last knew, and a
+    change waiting for the next import. The card's identity is encrypted, as
+    it was in the blob, so rows are matched in Python rather than by SQL.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS pacs_cards (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            pacs_person_id     TEXT NOT NULL,
+            pacs_credential_id TEXT NOT NULL,
+            slot               INTEGER,
+            facility_code      TEXT NOT NULL,  -- encrypted
+            card_number        TEXT NOT NULL,  -- encrypted
+            -- 'live', or 'dormant' while the card is out of the trigger format
+            status             TEXT NOT NULL DEFAULT 'live',
+            -- the Active box as we last wrote or saw it; NULL when unknown
+            active             INTEGER,
+            -- a change waiting for the next import
+            pending            TEXT,
+            updated_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_pacs_cards_person ON pacs_cards(pacs_person_id);
+        """
+    )
+    from ..crypto import decrypt, encrypt
+
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = 'millennium_seos_slots'"
+    ).fetchone()
+    if row is None:
+        return
+    for key, entries in json.loads(decrypt(row[0])).items():
+        person, _, credential = key.partition(":")
+        for entry in entries:
+            active = entry.get("active")
+            conn.execute(
+                "INSERT INTO pacs_cards (pacs_person_id, pacs_credential_id, "
+                "slot, facility_code, card_number, active) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    person, credential, entry.get("slot"),
+                    encrypt(str(entry.get("facility_code"))),
+                    encrypt(str(entry.get("card_number"))),
+                    int(active) if isinstance(active, bool) else None,
+                ),
+            )
+    conn.execute("DELETE FROM settings WHERE key = 'millennium_seos_slots'")
+
+
+def _pacs_session_is_keyed_by_vendor(conn: sqlite3.Connection) -> None:
+    """Move the captured browser session under a vendor-keyed name.
+
+    It was stored as "millennium_session", which is the shape the whole
+    connect flow had: one vendor's cookie names in core. The payload is
+    unchanged — only core's name for it — so the row is renamed rather than
+    rewritten, and it stays encrypted throughout.
+    """
+    conn.execute(
+        "UPDATE OR REPLACE settings SET key = 'pacs_session:millennium_ultra' "
+        "WHERE key = 'millennium_session'"
+    )
+
+
+def _release_card_ids_on_deleted_rows(conn: sqlite3.Connection) -> None:
+    """Unstick cardholders whose pass was deleted before that was fixed.
+
+    Phase 1 decides a credential is already handled by the presence of an
+    ag_card_id, not by the row's status, and deleting a pass used to leave
+    the id behind. Those rows are permanently skipped: delete the card in
+    the PACS, add a new one, and nothing happens and nothing is logged.
+
+    Clearing the id on rows already marked deleted lets them be provisioned
+    again. Only 'deleted' rows are touched — a suspended or active row
+    still has a pass, and its id is the only way back to it.
+    """
+    conn.execute(
+        "UPDATE ag_credentials SET ag_card_id = NULL "
+        "WHERE status = 'deleted' AND ag_card_id IS NOT NULL"
+    )
+
+
+def _legacy_cards_wait_for_install(conn: sqlite3.Connection) -> None:
+    """Record as ours the Active box of cards on never-installed passes.
+
+    Older ledgers did not record the Active box we wrote, and a card we
+    wrote off to wait for its pass's install then read as one an operator
+    switched off, which suspends the pass. Seen on-site: four passes still
+    waiting to be installed would have been suspended, and their cards
+    never switched on.
+
+    Only passes AccessGrid has never reported installed: a card switched off
+    on a live pass is still an operator's decision.
+    """
+    conn.execute(
+        """
+        UPDATE pacs_cards SET active = 0
+         WHERE active IS NULL
+           AND EXISTS (
+               SELECT 1 FROM ag_credentials t
+                WHERE t.pacs_person_id = pacs_cards.pacs_person_id
+                  AND t.pacs_credential_id = pacs_cards.pacs_credential_id
+                  AND t.ag_card_id IS NOT NULL
+                  AND t.last_known_ag_state = 'created'
+           )
+        """
+    )
+
+
+def _drop_abandoned_desfire_rows(conn: sqlite3.Connection) -> None:
+    """Remove tracking rows left behind by a spell in DESFire mode.
+
+    DESFire keys a credential on the slot it sits in — "slot1", "slot2" —
+    while Seos keys it on the cardholder. An install switched between the
+    two, and phase 1's rows from the DESFire era outlived the mode: eleven
+    of them on the install this was written for, against cardholders that
+    are now tracked under "seos".
+
+    Only rows that never became a pass are removed: still 'pending', with
+    no AccessGrid card id. Those two together mean provisioning was never
+    completed, so there is nothing behind the row to lose — and a genuine
+    DESFire install is unaffected, because phase 1 writes the row again on
+    the next cycle from what the PACS actually holds.
+
+    Deliberately narrow. A DESFire row that did get a pass keeps its id,
+    which is the only way back to that pass.
+    """
+    conn.execute(
+        "DELETE FROM ag_credentials "
+        " WHERE pacs_credential_id GLOB 'slot[0-9]*' "
+        "   AND status = 'pending' "
+        "   AND ag_card_id IS NULL"
+    )
+
+
+MIGRATIONS: list[tuple[str, Step]] = [
     (
         "001_init",
         """
@@ -87,14 +272,103 @@ MIGRATIONS: list[tuple[str, str]] = [
         """,
     ),
     (
-        "004_credential_data",
+        "004_ag_credentials_sync_ref",
         """
-        -- The credential's wire identity as shown in the pass listing: either
-        -- the site_code/card_number pair or the pre-encoded file_data blob,
-        -- whichever the adapter transmits to AccessGrid.
-        ALTER TABLE ag_credentials
-        ADD COLUMN credential_data TEXT;
+        -- Unique per issue, minted before the API call and stamped into the
+        -- card's metadata, so a pass can be found again by something we
+        -- chose rather than by whatever id the response happened to return.
+        ALTER TABLE ag_credentials ADD COLUMN sync_ref TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_ag_credentials_sync_ref
+            ON ag_credentials(sync_ref);
         """,
+    ),
+    ("005_seos_credential_id_drops_the_slot", _seos_credential_id_drops_the_slot),
+    ("006_pacs_session_is_keyed_by_vendor", _pacs_session_is_keyed_by_vendor),
+    ("007_release_card_ids_on_deleted_rows", _release_card_ids_on_deleted_rows),
+    ("008_drop_abandoned_desfire_rows", _drop_abandoned_desfire_rows),
+    (
+        "009_failed_saves",
+        """
+        -- What the PACS was sent and what it answered, for a save it
+        -- refused. The log can say a cardholder was rejected and even why,
+        -- but "why" is the PACS's own wording and is sometimes absent —
+        -- cardholder 12247 is refused every cycle and the page carries no
+        -- validation message at all. Without the exchange itself there is
+        -- nothing left to look at.
+        --
+        -- Rows are large: a request is the whole cardholder form and a
+        -- response is the whole page back. Kept few and evicted oldest
+        -- first, like the log buffer.
+        CREATE TABLE IF NOT EXISTS failed_saves (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts            TEXT NOT NULL,
+            vendor        TEXT NOT NULL DEFAULT '',
+            cardholder_id TEXT NOT NULL DEFAULT '',
+            status_code   INTEGER,
+            reasons       TEXT NOT NULL DEFAULT '',
+            request       TEXT NOT NULL DEFAULT '',
+            response      TEXT NOT NULL DEFAULT ''
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_failed_saves_ts ON failed_saves(ts);
+        """,
+    ),
+    # Nothing writes to it any more: saves are giving way to Millennium's import.
+    ("010_drop_failed_saves", "DROP TABLE IF EXISTS failed_saves;"),
+    ("011_seos_ledger_becomes_pacs_cards", _seos_ledger_becomes_pacs_cards),
+    (
+        "012_last_synced_expiration",
+        "ALTER TABLE ag_credentials ADD COLUMN last_synced_expiration TEXT;",
+    ),
+    ("013_legacy_cards_wait_for_install", _legacy_cards_wait_for_install),
+    (
+        "014_unity_tokens",
+        """
+        -- Tokens the hub created in Avigilon Unity for a Seos pass, one per
+        -- AccessGrid credential. They carry the same `accessgrid` embossed
+        -- number as an enrollment, so this is how they are told apart.
+        CREATE TABLE IF NOT EXISTS unity_tokens (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            pacs_person_id     TEXT NOT NULL,
+            pacs_credential_id TEXT NOT NULL,  -- the enrollment token the pass was issued for
+            -- NULL while being created: the row is written first, so a token
+            -- created but never recorded cannot pass for a new enrollment
+            token_id           TEXT UNIQUE,
+            facility_code      TEXT NOT NULL,  -- encrypted
+            card_number        TEXT NOT NULL,  -- encrypted
+            -- the status we last wrote: 1 active, 0 off (our own hold)
+            active             INTEGER NOT NULL DEFAULT 0,
+            -- the enrollment's dates, kept because the enrollment is deleted
+            activate_date      TEXT,
+            deactivate_date    TEXT,
+            created_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_unity_tokens_person ON unity_tokens(pacs_person_id);
+        """,
+    ),
+    (
+        # NULL for a pass issued before departments were sent: phase 6 then
+        # sends the person's department once, if they have one.
+        "015_last_synced_department",
+        "ALTER TABLE ag_credentials ADD COLUMN last_synced_department TEXT;",
+    ),
+    (
+        "016_unity_device_suspension",
+        """
+        -- Preserve an operator's device block across whole-pass suspension.
+        ALTER TABLE unity_tokens ADD COLUMN operator_disabled INTEGER NOT NULL DEFAULT 0;
+        -- Write intent first: a crash after Unity accepts a status update
+        -- must not make our own write look like an operator's device edit.
+        ALTER TABLE unity_tokens ADD COLUMN pending_active INTEGER;
+        """,
+    ),
+    (
+        # The credential's wire identity as shown in the pass listing: either
+        # the site_code/card_number pair or the pre-encoded file_data blob,
+        # whichever the adapter transmits to AccessGrid.
+        "017_credential_data",
+        "ALTER TABLE ag_credentials ADD COLUMN credential_data TEXT;",
     ),
 ]
 
@@ -109,9 +383,12 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         """
     )
     applied = {r[0] for r in conn.execute("SELECT name FROM _migrations")}
-    for name, sql in MIGRATIONS:
+    for name, step in MIGRATIONS:
         if name in applied:
             continue
-        conn.executescript(sql)
+        if callable(step):
+            step(conn)
+        else:
+            conn.executescript(step)
         conn.execute("INSERT INTO _migrations(name) VALUES(?)", (name,))
     conn.commit()

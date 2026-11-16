@@ -1,0 +1,1389 @@
+"""Probe of an Avigilon Unity (Plasec) install — read-only except in `write` mode.
+
+Collects what we need to know before trusting an adapter against a box we
+have never seen: which login form it accepts, where its CSRF token lives,
+whether the JSON and XML endpoints both answer, what shape each returns, how
+token status and dates are written, and which card formats exist. It also
+checks that this machine can reach AccessGrid, which the hub needs as much
+as it needs the appliance.
+
+Three rules, because the output is meant to be pasted into a chat or ticket:
+
+  * **Read-only.** GET requests only, plus the POST that signs in. Nothing
+    is created, updated or deleted — except by `write`, which must be asked
+    for by name, confirmed by typing YES, and removes what it creates.
+  * **No secrets.** The password, cookie values and CSRF tokens never reach
+    the report — cookie *names* do, because which ones appear is the finding.
+  * **No contact details or card numbers.** Values under keys that look like
+    a name, email, phone, PIN or number are replaced by their shape
+    (`<str len=5 digits>`), so the report still shows what kind of value sits
+    there. Dates, statuses and flags are kept: their format is the point.
+
+Usage:
+    python scripts/avigilon_probe.py [all|xml|search|detail|full|write] <host> <username> [--samples 3]
+`full` is the one to send a site: every read below except `xml`'s unpaged
+roster tests, then up to 50 identities' token lists (the embossed search's
+hits first) read with the hub's own requests and judged by a copy of the
+hub's rules, so the report says whether any holder would go unread.
+`all` (the default) reads everything as JSON and as XML. `xml` skips the
+JSON list and tests whether `/identities.xml` can be read in pieces — page
+and perpage, start and length, the A–Z last-name filter — against the whole
+list, read with a long timeout. `search` checks the embossed-number search
+the adapter sends: whether it answers, filters, ignores case and returns only
+holders of an `accessgrid` token; checks, with numbers read off real Active
+and Inactive tokens, whether the adapter's Internal Number search or Unity's
+quick-search Token box (`tkn`) finds who holds a card number, and whether
+`tkn` matches part of a number, counts only; and
+reads, without submitting, the form Unity uses to add a token. `detail` finds
+cardholders whose list row has an email, phone, title or department, reads
+each one's detail as JSON and as XML, and reports per field whether each read
+has it and whether they agree — presence and agreement only, never values;
+it also checks whether the list can be searched by one identity's id. The
+password is prompted for. The report is printed and saved as JSON.
+
+`write` is the one mode that changes Unity, and asks before it does: it
+creates an Inactive identity, gives it an Inactive token the way the hub's
+create_token does, deletes both the way the hub does, and checks each step
+took. It touches nothing it did not create.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import random
+import re
+import socket
+import sys
+import time
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from html.parser import HTMLParser
+from typing import Any
+from urllib.parse import urlsplit
+
+import httpx
+
+_PII_KEY = re.compile(r"name|email|phone|pin$|number|photo|address|udf|login", re.I)
+_VERSION = re.compile(r"(?:version|ver|v)[\s:=\"']{0,3}(\d+\.\d+(?:\.\d+){0,2})", re.I)
+_CSRF_META = re.compile(r"<meta[^>]+csrf-token[^>]*>", re.I)
+_PREFIX_SIGNALS = ("Fname", "Lname", "Idstatus", "Tokenstatus", "Internalnumber")
+ACCESSGRID_HOST = "api.accessgrid.com"
+_PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "NO_PROXY", "no_proxy")
+
+# The XML identity search 500s unless every one of these is present.
+_XML_SEARCH = {
+    "identity_search_exec_search": "true", "adv_search_field_0": "",
+    "adv_search_udf_0": "", "adv_search_val_0": "", "search_pattern_0": "2",
+    "adv_search_and_or": "&", "adv_search_cnt": "0", "adv_search_exec_search": "true",
+    "quick_search": "true", "qck_search_and_or": "&", "lnam": "", "fnam": "", "tkn": "",
+    "search_pattern_fnam": "2", "search_pattern_lnam": "2", "group_id": "", "id": "",
+}
+
+# Ways the XML list might be read in pieces. No code of ours has seen it
+# honour any of them; each is checked against the whole list.
+_XML_PIECES = {
+    "page_1": {"page": "1", "perpage": "25"},
+    "page_2": {"page": "2", "perpage": "25"},
+    "start_0": {"start": "0", "length": "25"},
+    "start_25": {"start": "25", "length": "25"},
+    "letter_a": {"letter_search": "true", "lnam": "A"},
+}
+_PIECE_SIZE = 25
+_WHOLE_LIST_TIMEOUT = 300.0  # unpaged; a large site took over 30s
+_PIECE_TIMEOUT = 120.0
+# The adapter's embossed-number search and XML page size (client.py
+# EMBOSSED_SEARCH and XML_PAGE_SIZE), and how many hits get their tokens read.
+_EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
+_INTERNAL_SEARCH = {"adv_search_field_0": "plasecInternalnumber", "adv_search_udf_0": "Token Internal #"}
+_XML_PAGE = 500
+# The page size the client asks token lists for (client.TOKENS_PER_PAGE), and
+# how many identities `full` reads token lists for the way the hub does.
+TOKENS_PER_PAGE = 500
+_TOKEN_READS_CHECKED = 50
+_SEARCH_CHECKED = 25
+# More hits than this for one card number means the search ignored it
+# (adapter.MAX_NUMBER_HITS). And how many identities' tokens `internal_search`
+# reads looking for a real Inactive token to search by.
+_MAX_NUMBER_HITS = 25
+_INACTIVE_SCAN = 2000
+# What the client's create_token posts (client.py), besides the CSRF token.
+_CREATE_SENDS = ["utf8", "enrollVirdiAfter", "token[plasecInternalnumber]",
+                 "token[plasecEmbossednumber]", "token[plasecTokenstatus]"]
+MODES = ("all", "xml", "search", "detail", "full", "write")
+# What `write` names the identity it creates, and embosses on its token: not
+# "accessgrid", so a hub running against the same box never enrolls it.
+_WRITE_FIRST = "AccessGrid"
+_WRITE_EMBOSSED = "agsync-probe"
+# The identity fields a pass carries, compared between the list and the detail
+# by `detail` mode: present or not, and equal or not — never the values.
+CONTACT_FIELDS = ("identityEmailaddress", "identityPhone", "identityWorkphone", "identityTitle",
+                  "identityDepartment")
+_DETAIL_PAGES = 5  # list pages read looking for cardholders with contact fields
+
+# What our adapter reads and writes (src/agsync/lib/pacs/avigilon/). Copied
+# rather than imported so the exe stays standalone; tests/test_avigilon_probe.py
+# fails if these drift from the client's. Field names are suffixes after the
+# `plasec` (or `avigilon`) prefix, as the client looks them up.
+_PREFIXES = ("plasec", "avigilon")
+IDENTITY_FIELDS = ("Fname", "Lname", "Name", "Idstatus", "identityEmailaddress", "identityPhone",
+                   "identityWorkphone", "identityTitle", "identityDepartment")
+# Token status and dates may instead sit under extended_attributes.
+TOKEN_FIELDS = {"Internalnumber": None, "Embossednumber": None, "Tokenstatus": "token_status",
+                "Issuedate": "formatted_issue_date", "Activatedate": "formatted_activate_date",
+                "Deactivatedate": "formatted_deactivate_date"}
+TOKEN_FORM_FIELDS = [
+    "plasecInternalnumber", "plasecEmbossednumber", "plasecPIN", "plasecTokenType",
+    "plasecTokenlevel", "plasecTokenMobileAppType", "plasecTokenOrigoMobileIdType",
+    "plasecDownload", "plasecTokenEnableReValidation", "plasecTokenUnitofUpdatePeriod",
+    "plasecTokenVIP", "plasecTrace", "plasectokenExtaccess", "plasecTokennoexpire",
+    "plasectokenPinexempt", "plasectokenUseloseexempt", "plasecTokenOffice",
+    "plasecTokenSetLockDown", "plasecTokenAuditOpenings", "plasecTokenOverridePrivacy",
+    "plasecTokenOverrideLockDown",
+]
+TOKEN_FORM_DATES = ["plasecIssuedate", "plasecActivatedate", "plasecDeactivatedate"]
+STATUS_CODES = {"active": "1", "inactive": "2", "not yet active": "3", "expired": "4"}
+DATE_FORMATS = ("%Y%m%d%H%M%S%z", "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y")
+
+
+def adapter_reads_date(text: str) -> bool:
+    """Whether the adapter's parse_date would accept this text."""
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        pass
+    for fmt in DATE_FORMATS:
+        try:
+            datetime.strptime(text, fmt)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+class FormFields(HTMLParser):
+    """Every input, select and textarea on a page, as the browser would post
+    them: name, type, and the value it would send (checked boxes, selected
+    options). Values are redacted later by field name, as everywhere else."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fields: list[dict[str, Any]] = []
+        self._select: dict[str, Any] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = dict(attrs)
+        if tag == "input" and a.get("name"):
+            kind = (a.get("type") or "text").lower()
+            field = {"name": a["name"], "type": kind, "value": a.get("value") or ""}
+            if kind in ("checkbox", "radio"):
+                field["checked"] = "checked" in a
+            self.fields.append(field)
+        elif tag == "select" and a.get("name"):
+            self._select = {"name": a["name"], "type": "select", "value": None, "options": 0}
+            self.fields.append(self._select)
+        elif tag == "option" and self._select is not None:
+            self._select["options"] += 1
+            # A browser posts the selected option, or the first if none is.
+            if "selected" in a or self._select["options"] == 1:
+                self._select["value"] = a.get("value") or ""
+        elif tag == "textarea" and a.get("name"):
+            self.fields.append({"name": a["name"], "type": "textarea", "value": ""})
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "select":
+            self._select = None
+
+
+def _name_for(suffix: str, alt: str | None, names: set[str], ext_names: set[str]) -> str | None:
+    """The field name Unity used for what the adapter looks up as `suffix`, or None."""
+    hit = next((p + suffix for p in _PREFIXES if p + suffix in names), None)
+    if hit is None and alt and (alt in ext_names or alt in names):
+        hit = alt
+    return hit
+
+
+def attrs_of(raw: Any) -> dict[str, Any]:
+    """The fields of a row in either shape: flat, JSON:API, or wrapped in `data`."""
+    if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+        raw = raw["data"]
+    if not isinstance(raw, dict):
+        return {}
+    return raw["attributes"] if isinstance(raw.get("attributes"), dict) else raw
+
+
+def redact(value: Any, key: str = "", pii: bool = True) -> Any:
+    """The value with anything personal swapped for a description of it."""
+    if isinstance(value, dict):
+        return {k: redact(v, k, pii) for k, v in value.items()}
+    if isinstance(value, list):
+        out = [redact(v, key, pii) for v in value[:3]]
+        return out + [f"<{len(value) - 3} more>"] if len(value) > 3 else out
+    if not (pii and isinstance(value, str) and value and _PII_KEY.search(key)):
+        return value
+    if value.lower() == "accessgrid":
+        return value  # the enrollment trigger, not a card number
+    kind = "digits" if value.isdigit() else "text"
+    return f"<str len={len(value)} {kind}>"
+
+
+def xml_shape(text: str) -> Any:
+    """Root tag, row count, and the first row's fields with values redacted."""
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as e:
+        return {"parse_error": str(e), "head": text[:200]}
+    rows = list(root)
+    first = {c.tag: redact(c.text or "", c.tag) for c in rows[0].iter() if c is not rows[0]} if rows else {}
+    return {"root": root.tag, "rows": len(rows), "row_tag": rows[0].tag if rows else None, "first_row": first}
+
+
+def flat(element: ET.Element) -> dict[str, str]:
+    """An XML row as {tag: text} over its descendants — the adapter's shape."""
+    row: dict[str, str] = {}
+    for child in element.iter():
+        if child is not element:
+            row.setdefault(child.tag, (child.text or "").strip())
+    return row
+
+
+# -- Would the hub accept this token list? -----------------------------------
+# A copy of the client's rules (client.token_row, xml_rows(strict=True),
+# _tokens_json, _whole_token_list). The client rejects a whole list over one
+# bad entry, and a rejected list leaves its holder unread: no phase acts on
+# them until a read is accepted. tests/test_avigilon_probe.py runs every case
+# the client rejects through these and fails if the two disagree.
+
+def _status_known(raw: Any) -> bool:
+    text = str(raw if raw is not None else "").strip()
+    return text in ("1", "2", "3", "4") or text.lower() in STATUS_CODES
+
+
+def _first_field(attrs: dict[str, Any], suffix: str) -> str:
+    for prefix in _PREFIXES:
+        value = attrs.get(f"{prefix}{suffix}")
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def token_entry_problem(raw: Any) -> tuple[str | None, str, str]:
+    """(why the client rejects this token entry or None, its id, its raw status)."""
+    if not isinstance(raw, dict) or ("attributes" in raw and not isinstance(raw["attributes"], dict)):
+        return "malformed token entry", "", ""
+    if isinstance(raw.get("attributes"), dict):
+        attrs = raw["attributes"]
+        token_id = str(raw.get("id") or attrs.get("cn") or "")
+    else:
+        attrs = raw
+        token_id = str(raw.get("cn") or raw.get("id") or "")
+    source_id = raw.get("id") or attrs.get("cn") or raw.get("cn")
+    if (not isinstance(source_id, str | int) or isinstance(source_id, bool)
+            or not token_id.strip() or token_id != token_id.strip()):
+        return "token entry has no usable ID", "", ""
+    ext = attrs.get("extended_attributes")
+    if ext is None:
+        ext = {}
+    if not isinstance(ext, dict):
+        return "malformed extended attributes", token_id, ""
+    status = ext.get("token_status") or _first_field(attrs, "Tokenstatus")
+    if not isinstance(status, str | int) or isinstance(status, bool) or not str(status).strip():
+        return "token entry has no usable status", token_id, ""
+    if not _status_known(status):
+        return "unrecognised status", token_id, str(status)
+    return None, token_id, str(status)
+
+
+def _whole_list_problem(ids: list[str]) -> str | None:
+    if len(ids) >= TOKENS_PER_PAGE:
+        return "a full page — may be partial"
+    if len(set(ids)) != len(ids):
+        return "duplicate token IDs"
+    return None
+
+
+def json_token_read_problem(body: Any) -> tuple[str | None, list[str]]:
+    """(why the client rejects this tokens.json body or None, the raw statuses read)."""
+    items = body.get("tokens", body.get("data")) if isinstance(body, dict) else body
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return "unexpected response shape", []
+    ids, statuses = [], []
+    for item in items:
+        problem, token_id, status = token_entry_problem(item)
+        if status:
+            statuses.append(status)
+        if problem:
+            return problem, statuses
+        ids.append(token_id)
+    meta = body.get("meta") if isinstance(body, dict) else None
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        return "malformed count metadata", statuses
+    counts = {}
+    for key in ("recordsFiltered", "recordsTotal"):
+        if key not in meta:
+            continue
+        value = meta[key]
+        if isinstance(value, bool) or not isinstance(value, str | int) or not str(value).isdigit():
+            return f"invalid {key}", statuses
+        counts[key] = int(value)
+    if len(counts) == 2 and counts["recordsFiltered"] != counts["recordsTotal"]:
+        return "contradictory counts", statuses
+    total = counts.get("recordsFiltered", counts.get("recordsTotal"))
+    if total is not None and len(ids) != total:
+        return "row count differs from the count Unity states", statuses
+    return _whole_list_problem(ids), statuses
+
+
+def xml_token_read_problem(text: str) -> tuple[str | None, list[str]]:
+    """(why the client rejects this tokens.xml body or None, the raw statuses read)."""
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return "not XML", []
+    if root.tag == "token":
+        elements = [root]
+    elif root.tag == "nil-classes" and len(root) == 0:
+        elements = []
+    elif root.tag == "tokens":
+        elements = root.findall("token")
+        if len(elements) != len(root) or (root.text or "").strip():
+            return "<tokens> contains malformed token entries", []
+    else:
+        return f"expected <tokens>, got <{root.tag}>", []
+    ids, statuses = [], []
+    for element in elements:
+        problem, token_id, status = token_entry_problem(flat(element))
+        if status:
+            statuses.append(status)
+        if problem:
+            return problem, statuses
+        ids.append(token_id)
+    return _whole_list_problem(ids), statuses
+
+
+class Probe:
+    def __init__(self, host: str, username: str, password: str, mode: str = "all"):
+        self.base = f"https://{host}"
+        self.username, self.password = username, password
+        self.http = httpx.Client(base_url=self.base, verify=False, timeout=30.0,
+                                 headers={"User-Agent": "AGSyncProbe/1"})
+        # `formats` comes first so the answer to "JSON, XML or both?" heads
+        # the report: per read, how many times each format answered or why not.
+        self.report: dict[str, Any] = {"host": host, "mode": mode, "started": datetime.now().isoformat(),
+                                       "accessgrid": {}, "formats": {}, "fields": {}, "steps": {}}
+        self.report["token_form"] = {}
+        # Rows as read, per source ("token xml", "identity list json", ...), for
+        # comparing their field names and values against what the adapter expects.
+        self.rows: dict[str, list[dict[str, Any]]] = {}
+        # The embossed search's hits, kept for `full`: the people the hub reads every cycle.
+        self.search_hits: list[str] = []
+        self.csrf = ""  # read by `write` from the Add Identity page
+        head = {"xml": "xml_paging", "search": "search", "detail": "detail_vs_list",
+                "full": "hub_token_reads", "write": "write_test"}.get(mode)
+        if head:
+            self.report = {**dict(list(self.report.items())[:4]), head: {}, **self.report}
+
+    def get(self, step: str, path: str, **kw: Any) -> httpx.Response | None:
+        """GET, recording status, timing, type and the server's self-description."""
+        t = time.monotonic()
+        try:
+            resp = self.http.get(path, **kw)
+        except httpx.HTTPError as e:
+            self.report["steps"][step] = {"path": path, "error": f"{type(e).__name__}: {e}"}
+            return None
+        self.report["steps"][step] = {
+            "path": path, "status": resp.status_code,
+            "seconds": round(time.monotonic() - t, 2),
+            "content_type": resp.headers.get("content-type", ""),
+            "bytes": len(resp.content),
+            "location": resp.headers.get("location", ""),
+            "server": resp.headers.get("server", ""),
+            "powered_by": resp.headers.get("x-powered-by", ""),
+        }
+        # A short refusal (a 406, say) usually says why in its body; a long
+        # one is an HTML page that could hold names, so it is left out.
+        if resp.status_code >= 400 and len(resp.content) <= 300:
+            self.report["steps"][step]["body"] = resp.text
+        return resp
+
+    def note(self, step: str, **facts: Any) -> None:
+        self.report["steps"].setdefault(step, {}).update(facts)
+
+    def json_body(self, step: str, resp: httpx.Response | None) -> Any:
+        if resp is None or resp.status_code != 200:
+            return None
+        try:
+            return resp.json()
+        except ValueError:
+            self.note(step, not_json=resp.text[:200])
+            return None
+
+    def tally(self, read: str, fmt: str, outcome: str) -> None:
+        counts = self.report["formats"].setdefault(read, {}).setdefault(fmt, {})
+        counts[outcome] = counts.get(outcome, 0) + 1
+
+    def outcome(self, resp: httpx.Response | None) -> str:
+        if resp is None:
+            return "no response"
+        if resp.status_code == 302 and "/sessions" in resp.headers.get("location", ""):
+            return "sent to sign-in"
+        return "ok" if resp.status_code == 200 else f"HTTP {resp.status_code}"
+
+    def read_json(self, read: str, step: str, path: str, **kw: Any) -> Any:
+        """The parsed body, or None — with the reason tallied either way."""
+        resp = self.get(step, path, headers={"Accept": "application/json"}, **kw)
+        result = self.outcome(resp)
+        body = self.json_body(step, resp) if result == "ok" else None
+        if result == "ok" and body is None:
+            result = "200 but not JSON"
+        self.tally(read, "json", result)
+        return body
+
+    def read_xml(self, read: str, step: str, path: str, root_tag: str, row_tag: str, **kw: Any) -> list | None:
+        """Rows flattened as the adapter flattens them, or None — reason tallied."""
+        resp = self.get(step, path, headers={"Accept": "*/*", "X-Requested-With": "XMLHttpRequest"}, **kw)
+        result, rows = self.outcome(resp), None
+        if result == "ok":
+            self.note(step, shape=xml_shape(resp.text))
+            try:
+                root = ET.fromstring(resp.text)
+            except ET.ParseError:
+                root = None
+            if root is None:
+                result = "200 but not XML"
+            elif root.tag == row_tag:
+                rows = [flat(root)]
+            elif root.tag in (root_tag, "nil-classes"):
+                rows = [flat(r) for r in root.findall(row_tag)]
+            else:
+                result = f"200 but <{root.tag}>, not <{root_tag}>"
+        self.tally(read, "xml", result)
+        return rows
+
+    def accessgrid(self) -> None:
+        """Can this machine reach AccessGrid, as the hub will need to?
+
+        Not an ICMP ping: that is often blocked on networks where HTTPS works,
+        and HTTPS is what the hub uses. Checked in layers so a failure names
+        the layer — name lookup, a direct TCP connection, then HTTPS with the
+        certificate verified, where a proxy that re-signs traffic shows up.
+        Every layer runs even if one before it failed: a site that must go
+        through a proxy fails the first two and still passes the third.
+        """
+        result = self.report["accessgrid"]
+        result["host"] = ACCESSGRID_HOST
+        # Names only: a proxy URL can carry a username and password.
+        result["proxy_env_vars"] = [k for k in _PROXY_VARS if os.environ.get(k)]
+        try:
+            result["dns"] = sorted({i[4][0] for i in socket.getaddrinfo(ACCESSGRID_HOST, 443, type=socket.SOCK_STREAM)})
+        except OSError as e:
+            result["dns"] = f"failed: {e}"
+        t = time.monotonic()
+        try:
+            with socket.create_connection((ACCESSGRID_HOST, 443), timeout=10):
+                result["tcp_443"] = f"ok in {time.monotonic() - t:.2f}s"
+        except OSError as e:
+            result["tcp_443"] = f"failed: {type(e).__name__}: {e}"
+        t = time.monotonic()
+        try:
+            resp = httpx.get(f"https://{ACCESSGRID_HOST}/", timeout=15, headers={"User-Agent": "AGSyncProbe/1"})
+            # Any status at all means we reached AccessGrid and trusted its certificate.
+            result["https"] = f"ok: HTTP {resp.status_code} in {time.monotonic() - t:.2f}s"
+        except httpx.HTTPError as e:
+            result["https"] = f"failed: {type(e).__name__}: {e}"
+        result["reachable"] = result["https"].startswith("ok")
+
+    def run(self, samples: int) -> dict[str, Any]:
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        json_ids = self.identities(samples)
+        xml_ids = self.identities_xml(samples)
+        self.per_identity(json_ids or xml_ids, samples)
+        self.card_formats()
+        self.compare_fields()
+        return self.report
+
+    def run_xml(self, samples: int) -> dict[str, Any]:
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        self.per_identity(self.xml_paging(samples), samples)
+        self.card_formats()
+        self.compare_fields()
+        return self.report
+
+    def run_search(self) -> dict[str, Any]:
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        self.search()
+        self.internal_search()
+        self.new_token_form()
+        return self.report
+
+    def run_detail(self, samples: int) -> dict[str, Any]:
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        self.detail_vs_list(samples)
+        return self.report
+
+    def run_full(self, samples: int) -> dict[str, Any]:
+        """Every read the other modes make, bar `xml`'s unpaged roster tests, and
+        then each enrolled holder's token list judged as the hub judges it."""
+        self.accessgrid()
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        json_ids = self.identities(samples)
+        xml_ids = self.identities_xml(samples)
+        self.per_identity(json_ids or xml_ids, samples)
+        self.card_formats()
+        self.search()
+        self.internal_search()
+        self.new_token_form()
+        self.detail_vs_list(samples)
+        self.hub_token_reads(list(dict.fromkeys(self.search_hits + json_ids + xml_ids)))
+        self.compare_fields()
+        return self.report
+
+    def hub_token_reads(self, ids: list[str]) -> None:
+        """Would the hub accept each holder's token list, as JSON or as XML?
+
+        Read with the client's own requests, judged by a copy of its rules.
+        The hub tries one format and then the other; a holder neither
+        format reads for is skipped by every phase, every cycle — no issue,
+        no status change, no revoke. Counts, reasons and status words only.
+        """
+        checked = ids[:_TOKEN_READS_CHECKED]
+        summary: dict[str, Any] = {
+            "identities_checked": len(checked), "enrolled_holders_among_them": 0,
+            "hub_reads": 0, "hub_cannot_read": 0, "json": {}, "xml": {},
+            "count_keys_in_json": {}, "statuses_seen": {},
+        }
+
+        def tally(fmt: str, outcome: str) -> None:
+            summary[fmt][outcome] = summary[fmt].get(outcome, 0) + 1
+
+        params = {"page": 1, "perpage": TOKENS_PER_PAGE}
+        for cn in checked:
+            enrolled = cn in self.search_hits
+            summary["enrolled_holders_among_them"] += enrolled
+            verdicts = {}
+            resp = self.get(f"hub_tokens_json:{cn}", f"/identities/{cn}/tokens.json",
+                            headers={"Accept": "application/json"}, params=params)
+            outcome = self.outcome(resp)
+            if outcome == "ok":
+                body = self.json_body(f"hub_tokens_json:{cn}", resp)
+                if body is None:
+                    outcome = "200 but not JSON"
+                else:
+                    problem, statuses = json_token_read_problem(body)
+                    outcome = problem or "accepted"
+                    meta = body.get("meta") if isinstance(body, dict) else None
+                    keys = ",".join(k for k in ("recordsFiltered", "recordsTotal")
+                                    if isinstance(meta, dict) and k in meta) or "none"
+                    summary["count_keys_in_json"][keys] = summary["count_keys_in_json"].get(keys, 0) + 1
+                    for s in statuses:
+                        summary["statuses_seen"][s] = summary["statuses_seen"].get(s, 0) + 1
+            verdicts["json"] = outcome
+            resp = self.get(f"hub_tokens_xml:{cn}", f"/identities/{cn}/tokens.xml",
+                            headers={"Accept": "*/*"}, params=params)
+            outcome = self.outcome(resp)
+            if outcome == "ok":
+                problem, _ = xml_token_read_problem(resp.text)
+                outcome = problem or "accepted"
+            verdicts["xml"] = outcome
+            for fmt, outcome in verdicts.items():
+                tally(fmt, outcome)
+            if "accepted" in verdicts.values():
+                summary["hub_reads"] += 1
+                # A read the hub accepts says nothing new; keep the report to the failures.
+                self.report["steps"].pop(f"hub_tokens_json:{cn}", None)
+                self.report["steps"].pop(f"hub_tokens_xml:{cn}", None)
+            else:
+                summary["hub_cannot_read"] += 1
+                self.note(f"hub_tokens_json:{cn}", enrolled=enrolled, verdict=verdicts["json"])
+                self.note(f"hub_tokens_xml:{cn}", enrolled=enrolled, verdict=verdicts["xml"])
+        summary["verdict"] = (
+            "no identities to check" if not checked
+            else "every holder checked is readable" if not summary["hub_cannot_read"]
+            else f"{summary['hub_cannot_read']} of {len(checked)} holders checked would be skipped by the hub "
+                 f"every cycle — see json/xml for why"
+        )
+        self.report["hub_token_reads"] = summary
+
+    def detail_vs_list(self, samples: int) -> None:
+        """Does an identity's detail carry the contact fields its list row does?
+
+        The adapter reads a tracked person from their detail whenever the
+        embossed search does not return them, and a field the detail lacks
+        would read as emptied. Cardholders are taken from the first list pages
+        whose row has at least one contact field.
+        """
+        def value(row: dict[str, Any], suffix: str) -> str:
+            return str(next((row[p + suffix] for p in _PREFIXES if row.get(p + suffix) not in (None, "")), ""))
+
+        picked: list[dict[str, Any]] = []
+        for page in range(1, _DETAIL_PAGES + 1):
+            rows = self.read_xml("identities", f"detail_list_page_{page}", "/identities.xml", "identities",
+                                 "identity", params={**_XML_SEARCH, "page": page, "perpage": _XML_PAGE},
+                                 timeout=_WHOLE_LIST_TIMEOUT)
+            if not rows:
+                break
+            picked += [r for r in rows if r.get("cn") not in (None, "", "0")
+                       and any(value(r, f) for f in CONTACT_FIELDS)][:samples - len(picked)]
+            if len(picked) >= samples or len(rows) < _XML_PAGE:
+                break
+        summary = {f: {"list": 0, "detail_json": 0, "detail_xml": 0, "json_agrees": 0, "xml_agrees": 0}
+                   for f in CONTACT_FIELDS}
+        per_identity = []
+        for row in picked:
+            cn = row["cn"]
+            body = self.read_json("identity_detail", f"detail_json:{cn}", f"/identities/{cn}.json")
+            as_json = attrs_of(body) if body is not None else None
+            xml_rows = self.read_xml("identity_detail", f"detail_xml:{cn}", f"/identities/{cn}.xml",
+                                     "identities", "identity")
+            as_xml = xml_rows[0] if xml_rows else None
+            fields = {}
+            for f in CONTACT_FIELDS:
+                listed = value(row, f)
+                entry = {"list": bool(listed)}
+                for name, detail in (("detail_json", as_json), ("detail_xml", as_xml)):
+                    if detail is None:
+                        entry[name] = "unread"
+                        continue
+                    got = value(detail, f)
+                    entry[name] = bool(got)
+                    agrees = got == listed
+                    entry[f"{name}_agrees"] = agrees
+                    summary[f][name] += bool(got)
+                    summary[f][f"{name.split('_')[1]}_agrees"] += agrees
+                summary[f]["list"] += bool(listed)
+                fields[f] = entry
+            per_identity.append({"id": cn, "fields": fields})
+        self.report["detail_vs_list"] = {
+            "cardholders_compared": len(per_identity),
+            # Per field: how many list rows had it, how many details had it,
+            # and how many details agreed with the list (blank = blank agrees).
+            "summary": summary,
+            "per_identity": per_identity,
+            "list_search_by_id": self._list_by_id(picked[0]["cn"]) if picked else "no cardholder to try",
+        }
+
+    def _list_by_id(self, cn: str) -> dict[str, Any]:
+        """Does the list search take an identity id? It would give tracked
+        people their list row, without reading each detail."""
+        rows = self.read_xml("identity_search", "list_by_id", "/identities.xml", "identities", "identity",
+                             params={**_XML_SEARCH, "id": cn, "page": 1, "perpage": _XML_PAGE},
+                             timeout=_WHOLE_LIST_TIMEOUT)
+        if rows is None:
+            return {"answered": False}
+        ids = [r.get("cn") for r in rows]
+        return {"answered": True, "rows": len(rows), "only_that_identity": ids == [cn]}
+
+    def new_token_form(self) -> None:
+        """Unity's form for adding a token, read and never submitted.
+
+        A Seos pass has the hub create a token holding AccessGrid's card
+        number, sending only the fields in _CREATE_SENDS; this shows whether
+        the form has them, what else it would post, and how it writes dates.
+        """
+        rows = self.read_xml("identity_search", "new_token_identity", "/identities.xml", "identities",
+                             "identity", params={**_XML_SEARCH, "page": 1, "perpage": 1})
+        cn = next((r.get("cn") for r in rows or [] if r.get("cn") not in (None, "", "0")), None)
+        if cn is None:
+            self.report["new_token_form"] = {"error": "no identity to read the form on"}
+            return
+        resp = self.get("new_token_form", f"/identities/{cn}/tokens/new", follow_redirects=True)
+        if resp is None or resp.status_code != 200:
+            self.report["new_token_form"] = {"status": None if resp is None else resp.status_code}
+            return
+        parser = FormFields()
+        parser.feed(resp.text)
+        fields = []
+        for f in parser.fields:
+            if f["name"] in ("authenticity_token", "utf8"):
+                f = {**f, "value": "<withheld>" if f["value"] else ""}
+            else:
+                f = {**f, "value": redact(f["value"], f["name"].removeprefix("token[").removesuffix("]"))}
+            fields.append(f)
+        names = {f["name"] for f in fields}
+        self.report["new_token_form"] = {
+            "status": 200,
+            "fields": fields,
+            "create_sends_but_form_lacks": [n for n in _CREATE_SENDS if n not in names],
+            "posts_to": sorted(set(re.findall(r"<form[^>]+action=[\"']([^\"']+)[\"']", resp.text, re.I)))[:5],
+        }
+
+    def _xml_ids(self, step: str, value: str | None, page: int = 1) -> set[str] | None:
+        """Identity ids on one page of the XML list, searched for `value` if given."""
+        extra = {} if value is None else {**_EMBOSSED_SEARCH, "adv_search_val_0": value}
+        rows = self.read_xml("identity_search", step, "/identities.xml", "identities", "identity",
+                             params={**_XML_SEARCH, **extra, "page": page, "perpage": _XML_PAGE},
+                             timeout=_WHOLE_LIST_TIMEOUT)
+        if rows is None:
+            return None
+        self.note(step, rows=len(rows))
+        return {r.get("cn", "") for r in rows} - {"", "0"}
+
+    def _token_samples(self) -> dict[str, tuple[str, str]]:
+        """A number read off a real Active token and off a real Inactive one:
+        {"active"/"inactive": (holder, number)}. Read, never made up or created.
+
+        The embossed search's hits go first (a token the hub would track),
+        then the roster, inactive identities first since they are the likeliest
+        to hold an Inactive token, up to _INACTIVE_SCAN identities.
+        """
+        roster: list[dict[str, Any]] = []
+        for page in range(1, _INACTIVE_SCAN // _XML_PAGE + 1):
+            rows = self.read_xml("identity_search", f"internal_search_roster_{page}", "/identities.xml",
+                                 "identities", "identity",
+                                 params={**_XML_SEARCH, "page": page, "perpage": _XML_PAGE},
+                                 timeout=_WHOLE_LIST_TIMEOUT) or []
+            roster += rows
+            if len(rows) < _XML_PAGE:
+                break
+        status_of = {r.get("cn"): _first_field(r, "Idstatus") for r in roster}
+        listed = sorted((cn for cn in status_of if cn not in (None, "", "0")), key=lambda cn: status_of[cn] != "2")
+        samples: dict[str, tuple[str, str]] = {}
+        scanned = 0
+        for cn in list(dict.fromkeys(self.search_hits + listed)):
+            scanned += 1
+            for t in self.read_xml("search_hit_tokens", "internal_search_tokens",
+                                   f"/identities/{cn}/tokens.xml", "tokens", "token") or []:
+                number = _first_field(t, "Internalnumber")
+                raw = _first_field(t, "Tokenstatus").strip()
+                kind = {"1": "active", "2": "inactive"}.get(STATUS_CODES.get(raw.lower(), raw))
+                if number and kind and kind not in samples:
+                    samples[kind] = (cn, number)
+            if len(samples) == 2:
+                break
+        self.report["internal_search"]["identities_scanned"] = scanned
+        return samples
+
+    def _number_ids(self, step: str, how: str, value: str) -> set[str] | None:
+        """Identity ids the XML list returns for a card number, searched `how`:
+        "adv" is the client's INTERNAL_SEARCH, "tkn" the quick-search Token box
+        Unity's own Identities page sends."""
+        extra = {**_INTERNAL_SEARCH, "adv_search_val_0": value} if how == "adv" else {"tkn": value}
+        rows = self.read_xml("identity_search", step, "/identities.xml", "identities", "identity",
+                             params={**_XML_SEARCH, **extra, "page": 1, "perpage": _XML_PAGE},
+                             timeout=_WHOLE_LIST_TIMEOUT)
+        if rows is None:
+            return None
+        self.note(step, rows=len(rows))
+        return {r.get("cn", "") for r in rows} - {"", "0"}
+
+    def internal_search(self) -> None:
+        """Which search finds the identity holding a card number — the client's
+        advanced search on Internal Number, or the quick-search Token box — on
+        an Active token and on an Inactive one, and does the Token box match
+        the whole number or part of it?
+
+        Numbers come off real tokens (_token_samples). Reports counts and
+        yes/no only: the numbers themselves are never written down.
+        """
+        self.report["internal_search"] = {}
+        samples = self._token_samples()
+        out = self.report["internal_search"]
+        if "active" not in samples:
+            out["error"] = f"no Active token with an Internal Number on {out['identities_scanned']} identities"
+            return
+
+        def lookup(step: str, how: str, holder: str, value: str) -> dict[str, Any]:
+            hits = self._number_ids(step, how, value)
+            return {"hits": None, "holder_found": None} if hits is None else {
+                "hits": len(hits), "holder_found": holder in hits}
+
+        for how in ("adv", "tkn"):
+            result: dict[str, Any] = {}
+            for kind in ("active", "inactive"):
+                if kind in samples:
+                    holder, number = samples[kind]
+                    result[f"{kind}_token"] = lookup(f"internal_{how}_{kind}", how, holder, number)
+                else:
+                    result[f"{kind}_token"] = f"no {kind.title()} token on {out['identities_scanned']} identities"
+            nothing = self._number_ids(f"internal_{how}_no_such_number", how, "99999999999")
+            result["no_such_number_rows"] = None if nothing is None else len(nothing)
+            active = result["active_token"]
+            result["verdict"] = (
+                "not answered" if active["hits"] is None or nothing is None
+                else "finds the holder of an Active token" if active["holder_found"] and nothing == set()
+                and active["hits"] <= _MAX_NUMBER_HITS
+                else f"ignored the number: {active['hits']} rows" if active["hits"] > _MAX_NUMBER_HITS
+                else "does not find the holder: an empty answer here does not mean the number is free")
+            out[how] = result
+
+        # Whole number or part of it? Asked only of the Token box, and only if
+        # it found the holder by the whole number; the adapter checks every
+        # hit's tokens itself, so a loose match is safe, just slower.
+        holder, number = samples["active"]
+        if out["tkn"]["active_token"].get("holder_found") and len(number) > 1:
+            out["tkn"]["matching"] = {
+                "first_digits": lookup("internal_tkn_first_digits", "tkn", holder, number[:-1]),
+                "last_digits": lookup("internal_tkn_last_digits", "tkn", holder, number[1:]),
+                "extra_digit": lookup("internal_tkn_extra_digit", "tkn", holder, number + "0"),
+            }
+
+    def search(self) -> None:
+        """Does /identities.xml take the adapter's embossed-number search, and
+        is every hit really holding an accessgrid token? Counts only."""
+        roster = self._xml_ids("roster_page_1", None)
+        hits: set[str] | None = set()
+        pages = 0
+        for page in range(1, 51):
+            got = self._xml_ids(f"search_page_{page}", "accessgrid", page)
+            if got is None:
+                hits = None
+                break
+            hits, pages = hits | got, page
+            if len(got) < _XML_PAGE:
+                break
+        upper = self._xml_ids("search_upper_case", "ACCESSGRID")
+        nothing = self._xml_ids("search_no_such_value", "zz-no-such-embossed-zz")
+        self.search_hits = sorted(hits or [])
+        checked = self.search_hits[:_SEARCH_CHECKED]
+        confirmed, statuses = 0, {}
+        for cn in checked:
+            tokens = self.read_xml("search_hit_tokens", "search_hit_tokens", f"/identities/{cn}/tokens.xml",
+                                   "tokens", "token") or []
+            triggers = [t for t in tokens if any(
+                str(t.get(f"{p}Embossednumber") or "").strip().lower() == "accessgrid" for p in _PREFIXES)]
+            confirmed += bool(triggers)
+            for t in triggers:
+                status = next((t[f"{p}Tokenstatus"] for p in _PREFIXES if t.get(f"{p}Tokenstatus")), "")
+                statuses[status] = statuses.get(status, 0) + 1
+        # What an identity that does not exist reads as: the adapter takes a
+        # 404 from the detail page as "deleted" and revokes that person's pass.
+        missing = {}
+        for name, path in (("detail_json", "/identities/ffffffffffffffff.json"),
+                           ("detail_xml", "/identities/ffffffffffffffff.xml"),
+                           ("tokens_xml", "/identities/ffffffffffffffff/tokens.xml")):
+            resp = self.get(f"missing_identity_{name}", path, headers={"Accept": "*/*"})
+            missing[name] = None if resp is None else resp.status_code
+        known = next(iter(sorted(hits or [])), None)
+        if known is not None:
+            resp = self.get("known_identity_detail_json", f"/identities/{known}.json",
+                            headers={"Accept": "application/json"})
+            missing["known_identity_detail_json"] = None if resp is None else resp.status_code
+        if hits is None:
+            verdict = "not answered"
+        elif nothing:
+            verdict = "ignored: a value no token holds returned rows"
+        elif not hits:
+            verdict = "no hits"
+        elif confirmed < len(checked):
+            verdict = f"loose: {len(checked) - confirmed} of {len(checked)} checked hits hold no accessgrid token"
+        else:
+            verdict = "works"
+        steps = self.report["steps"]
+        self.report["search"] = {
+            "verdict": verdict,
+            "hits": None if hits is None else len(hits),
+            "pages": pages,
+            "first_page_seconds": steps.get("search_page_1", {}).get("seconds"),
+            "same_hits_in_upper_case": None if upper is None or hits is None or pages > 1 else upper == hits,
+            "no_such_value_rows": None if nothing is None else len(nothing),
+            "hits_checked": len(checked),
+            "hits_holding_accessgrid_token": confirmed,
+            "accessgrid_token_statuses": statuses,
+            "missing_identity_statuses": missing,
+            "roster_page": {"rows": None if roster is None else len(roster),
+                            "seconds": steps.get("roster_page_1", {}).get("seconds")},
+        }
+
+    def landing(self) -> None:
+        resp = self.get("login_page", "/sessions/new", follow_redirects=True)
+        if resp is not None:
+            self.note("login_page", version_hints=sorted(set(_VERSION.findall(resp.text)))[:10],
+                      title=(re.search(r"<title>(.*?)</title>", resp.text, re.S | re.I) or [None, ""])[1].strip())
+
+    def login(self) -> bool:
+        """Try the form login avigilon-service saw live, then the JSON one ours sends."""
+        attempts = {
+            "form": {"data": {"login": self.username, "password": self.password}},
+            "json": {"json": {"login": self.username, "password": self.password},
+                     "headers": {"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"}},
+        }
+        results = {}
+        for name, kw in attempts.items():
+            self.http.cookies.clear()
+            try:
+                resp = self.http.post("/sessions", follow_redirects=True, **kw)
+            except httpx.HTTPError as e:
+                results[name] = {"error": f"{type(e).__name__}: {e}"}
+                continue
+            ok = bool(self.http.cookies.get("_session_id"))
+            results[name] = {"status": resp.status_code, "final_path": resp.url.path,
+                             "cookie_names": sorted({c.name for c in self.http.cookies.jar}), "ok": ok}
+            if ok:
+                self.report["steps"]["login"] = {"accepted": name, "attempts": results}
+                return True
+        self.report["steps"]["login"] = {"accepted": None, "attempts": results}
+        return False
+
+    def dashboard(self) -> None:
+        resp = self.get("dashboard", "/", follow_redirects=True)
+        if resp is None:
+            return
+        self.note("dashboard",
+                  csrf_meta_tag=bool(_CSRF_META.search(resp.text)),
+                  csrf_meta_name_first=bool(re.search(r"<meta[^>]+name=[\"']csrf-token[\"'][^>]+content=", resp.text, re.I)),
+                  xsrf_cookie=bool(self.http.cookies.get("XSRF-TOKEN")),
+                  prefixes_seen=sorted({p for p in ("plasec", "avigilon") for s in _PREFIX_SIGNALS if p + s in resp.text}),
+                  version_hints=sorted(set(_VERSION.findall(resp.text)))[:10])
+
+    def identities(self, samples: int) -> list[str]:
+        """First page of the JSON list, plus whether paging reports a total."""
+        body = self.read_json("identities", "identities_json", "/identities.json",
+                              params={"page": 1, "perpage": 25, "sort_by": "plasecName", "order": "ascend"})
+        if not isinstance(body, dict):
+            return []
+        rows = body.get("data") or []
+        self.rows.setdefault("identity list json", []).extend(attrs_of(r) for r in rows)
+        self.note("identities_json", top_keys=sorted(body), meta=body.get("meta"),
+                  rows_on_page=len(rows), sample=redact(rows[:samples]))
+        self.report["formats"]["identities"]["json_total"] = (body.get("meta") or {}).get("recordsFiltered")
+        # A second page proves whether `page` is honoured or ignored.
+        resp2 = self.get("identities_json_page2", "/identities.json",
+                         params={"page": 2, "perpage": 25}, headers={"Accept": "application/json"})
+        body2 = self.json_body("identities_json_page2", resp2)
+        if isinstance(body2, dict):
+            ids1 = {str(r.get("cn") or r.get("id")) for r in rows}
+            ids2 = {str(r.get("cn") or r.get("id")) for r in body2.get("data") or []}
+            self.note("identities_json_page2", rows=len(ids2), overlaps_page1=len(ids1 & ids2))
+        return [str(r.get("cn") or r.get("id")) for r in rows if (r.get("cn") or r.get("id")) not in (None, "0")]
+
+    def identities_xml(self, samples: int, timeout: float = 30.0) -> list[str]:
+        """The XML roster. Not paged, so its row count should match the JSON total."""
+        rows = self.read_xml("identities", "identities_xml", "/identities.xml",
+                             "identities", "identity", params=_XML_SEARCH, timeout=timeout)
+        if rows is None:
+            return []
+        self.report["formats"]["identities"]["xml_rows"] = len(rows)
+        self.note("identities_xml", sample=redact(rows[:samples]))
+        self.rows.setdefault("identity list xml", []).extend(rows)
+        return [r["cn"] for r in rows if r.get("cn") not in (None, "", "0")]
+
+    def xml_paging(self, samples: int) -> list[str]:
+        """Can /identities.xml be read in pieces? The pieces go first, with
+        their own timeout, so they are answered even if the whole list then
+        times out; the whole list is the yardstick each is judged against."""
+        pieces: dict[str, set[str]] = {}
+        for name, extra in _XML_PIECES.items():
+            rows = self.read_xml("identities_xml_pieces", f"xml_{name}", "/identities.xml", "identities",
+                                 "identity", params={**_XML_SEARCH, **extra}, timeout=_PIECE_TIMEOUT)
+            if rows is not None:
+                pieces[name] = {r.get("cn", "") for r in rows} - {"", "0"}
+                self.note(f"xml_{name}", rows=len(rows))
+        ids = self.identities_xml(samples, timeout=_WHOLE_LIST_TIMEOUT)
+        whole = set(ids) if self.report["steps"]["identities_xml"].get("status") == 200 else None
+
+        def paged(first: str, second: str) -> str:
+            if first not in pieces or second not in pieces:
+                return "not answered"
+            a, b = pieces[first], pieces[second]
+            if whole is not None and len(whole) <= _PIECE_SIZE:
+                return f"can't tell: only {len(whole)} identities"
+            if len(a) > _PIECE_SIZE:
+                return f"ignored: {len(a)} rows for {_PIECE_SIZE} asked"
+            if a == b:
+                return "ignored: both pieces hold the same rows"
+            if a & b:
+                return f"broken: pieces share {len(a & b)} rows"
+            if whole is not None and not (a | b) <= whole:
+                return "broken: pieces hold rows the whole list lacks"
+            return "works"
+
+        letter = pieces.get("letter_a")
+        self.report["xml_paging"] = {
+            "whole_list": {k: self.report["steps"]["identities_xml"].get(k) for k in ("status", "seconds", "bytes", "error")}
+                          | {"identities": None if whole is None else len(whole)},
+            "page_perpage": paged("page_1", "page_2"),
+            "start_length": paged("start_0", "start_25"),
+            "letter_a": "not answered" if letter is None else {
+                "identities": len(letter),
+                "seconds": self.report["steps"]["xml_letter_a"].get("seconds"),
+                "within_whole_list": None if whole is None else letter <= whole,
+                "smaller_than_whole_list": None if whole is None else len(letter) < len(whole),
+            },
+        }
+        return ids or sorted(set().union(*pieces.values()))
+
+    def per_identity(self, ids: list[str], samples: int) -> None:
+        """Tokens and detail, each tried as JSON and as XML, for the first few
+        identities holding tokens. Stats are kept per format, because the two
+        may well write statuses and dates differently."""
+        found = []
+        stats = {fmt: {"tokens_seen": 0, "accessgrid_tokens": 0, "token_statuses": {}, "date_examples": set()}
+                 for fmt in ("json", "xml")}
+        for cn in ids[:25]:
+            if len(found) >= samples:
+                break
+            body = self.read_json("tokens", f"tokens_json:{cn}", f"/identities/{cn}/tokens.json")
+            json_tokens = (body.get("tokens") or body.get("data") or []) if isinstance(body, dict) else (body or [])
+            xml_tokens = self.read_xml("tokens", f"tokens_xml:{cn}", f"/identities/{cn}/tokens.xml",
+                                       "tokens", "token") or []
+            if not json_tokens and not xml_tokens:
+                # Counted in `formats` already; the steps themselves tell us nothing.
+                self.report["steps"].pop(f"tokens_json:{cn}", None)
+                self.report["steps"].pop(f"tokens_xml:{cn}", None)
+                continue
+            for fmt, tokens in (("json", json_tokens), ("xml", xml_tokens)):
+                for t in tokens:
+                    attrs = t.get("attributes", t) if isinstance(t, dict) else {}
+                    ext = attrs.get("extended_attributes") or {}
+                    s = stats[fmt]
+                    status = str(ext.get("token_status", attrs.get("plasecTokenstatus")))
+                    s["tokens_seen"] += 1
+                    s["token_statuses"][status] = s["token_statuses"].get(status, 0) + 1
+                    if str(attrs.get("plasecEmbossednumber", "")).lower() == "accessgrid":
+                        s["accessgrid_tokens"] += 1
+                    for k, v in {**attrs, **ext}.items():
+                        if "date" in k.lower() and v and len(s["date_examples"]) < 8:
+                            s["date_examples"].add(f"{k}={v}")
+            self.rows.setdefault("token json", []).extend(attrs_of(t) for t in json_tokens)
+            self.rows.setdefault("token xml", []).extend(xml_tokens)
+            if json_tokens:
+                self.note(f"tokens_json:{cn}", top_keys=sorted(body) if isinstance(body, dict) else "list",
+                          sample=redact(json_tokens[:2]))
+            if xml_tokens:
+                self.note(f"tokens_xml:{cn}", sample=redact(xml_tokens[:2]))
+            detail = self.read_json("identity_detail", f"identity_json:{cn}", f"/identities/{cn}.json")
+            if detail is not None:
+                self.note(f"identity_json:{cn}", sample=redact(detail))
+                self.rows.setdefault("identity detail json", []).append(attrs_of(detail))
+            detail_xml = self.read_xml("identity_detail", f"identity_xml:{cn}", f"/identities/{cn}.xml",
+                                       "identities", "identity")
+            self.rows.setdefault("identity detail xml", []).extend(detail_xml or [])
+            if not found and xml_tokens and xml_tokens[0].get("cn"):
+                self.token_form(cn, xml_tokens[0])
+            found.append(cn)
+        for s in stats.values():
+            s["date_examples"] = sorted(s["date_examples"])
+        self.report["token_summary"] = stats
+
+    def token_form(self, cn: str, token: dict[str, str]) -> None:
+        """Unity's own edit form for one token, read and never submitted.
+
+        Unity leaves out fields that were never set, so our writeback cannot
+        tell from a token what to send for them. The form can: it is what a
+        browser posts, defaults and all. Reported against the fields our
+        writeback sends, and against what the token itself carried.
+        """
+        path = f"/identities/{cn}/tokens/{token['cn']}/edit"
+        resp = self.get("token_edit_form", path, follow_redirects=True)
+        if resp is None or resp.status_code != 200:
+            return
+        parser = FormFields()
+        parser.feed(resp.text)
+        fields = []
+        for f in parser.fields:
+            if f["name"] in ("authenticity_token", "utf8"):
+                f = {**f, "value": "<withheld>" if f["value"] else ""}
+            else:
+                # token[plasecPIN] -> plasecPIN, so the PII check sees the field name.
+                key = f["name"].removeprefix("token[").removesuffix("]")
+                f = {**f, "value": redact(f["value"], key)}
+            fields.append(f)
+        names = {f["name"].removeprefix("token[").removesuffix("]") for f in fields}
+        unset = [n for n in TOKEN_FORM_FIELDS + TOKEN_FORM_DATES if n not in token]
+        sent = set(TOKEN_FORM_FIELDS + TOKEN_FORM_DATES) | {"plasecTokenstatus"}  # status is set, not echoed
+        self.report["token_form"] = {
+            "fields": fields,
+            "writeback_sends_but_form_lacks": [n for n in TOKEN_FORM_FIELDS + TOKEN_FORM_DATES if n not in names],
+            "form_has_but_writeback_omits": sorted(n for n in names if n.startswith(("plasec", "Token"))
+                                                   and n not in sent),
+            # What a browser sends for each field this token's XML left out —
+            # every input of that name, since a checkbox comes with a hidden twin.
+            "form_value_when_unset": {n: [f for f in fields if f["name"] in (n, f"token[{n}]")] or None
+                                      for n in unset},
+        }
+
+    def compare_fields(self) -> None:
+        """Per source, which of the adapter's field names Unity actually sent,
+        whether the token form could be built, and whether the statuses and
+        dates are ones the adapter reads. Names, statuses and dates only —
+        none of them identify a person."""
+        for source, rows in self.rows.items():
+            if not rows:
+                continue
+            names = set().union(*(r.keys() for r in rows))
+            ext_names = set().union(*((r.get("extended_attributes") or {}).keys()
+                                      for r in rows if isinstance(r.get("extended_attributes"), dict)))
+            found: dict[str, Any] = {}
+            token = source.startswith("token")
+            wanted = TOKEN_FIELDS if token else dict.fromkeys(IDENTITY_FIELDS)
+            found["rows"] = len(rows)
+            found["adapter_reads"] = {s: _name_for(s, alt, names, ext_names) for s, alt in wanted.items()}
+            known = {v for v in found["adapter_reads"].values() if v}
+            if token:
+                form = TOKEN_FORM_FIELDS + TOKEN_FORM_DATES
+                found["write_form_missing"] = [f for f in form if f not in names]
+                known |= set(form)
+            # Names the adapter never looks at: a near-miss spelling shows up here.
+            found["other_names"] = sorted(names - known - {"extended_attributes"} | ext_names - known)
+
+            status_key = "Tokenstatus" if token else "Idstatus"
+            statuses: dict[str, int] = {}
+            dates = {"read": 0, "unreadable": []}
+            for r in rows:
+                ext = r.get("extended_attributes") if isinstance(r.get("extended_attributes"), dict) else {}
+                raw = ext.get("token_status") if token and ext.get("token_status") else \
+                    next((r[p + status_key] for p in _PREFIXES if r.get(p + status_key) not in (None, "")), "")
+                text = str(raw).strip()
+                label = f"{text!r} -> {'recognised' if text in ('1', '2', '3', '4') or text.lower() in STATUS_CODES else 'NOT RECOGNISED'}"
+                statuses[label] = statuses.get(label, 0) + 1
+                if token:
+                    for s in ("Issuedate", "Activatedate", "Deactivatedate"):
+                        v = str(ext.get(TOKEN_FIELDS[s]) or next((r[p + s] for p in _PREFIXES if r.get(p + s)), "")).strip()
+                        if not v:
+                            continue
+                        if adapter_reads_date(v):
+                            dates["read"] += 1
+                        elif v not in dates["unreadable"] and len(dates["unreadable"]) < 8:
+                            dates["unreadable"].append(v)
+            found["statuses"] = statuses
+            if token:
+                found["dates"] = dates
+            self.report["fields"][source] = found
+
+    # -- `write`: create a throwaway identity and token, then delete both ------
+
+    def post(self, step: str, path: str, data: dict[str, Any]) -> httpx.Response | None:
+        """POST a form as the client does: CSRF in the header and the body,
+        no redirect followed, so the 302 and where it points are recorded."""
+        t = time.monotonic()
+        try:
+            resp = self.http.post(path, data={**data, "authenticity_token": self.csrf},
+                                  headers={"X-CSRF-Token": self.csrf}, follow_redirects=False)
+        except httpx.HTTPError as e:
+            self.report["steps"][step] = {"path": path, "error": f"{type(e).__name__}: {e}"}
+            return None
+        self.report["steps"][step] = {"path": path, "status": resp.status_code,
+                                      "seconds": round(time.monotonic() - t, 2),
+                                      "location": urlsplit(resp.headers.get("location", "")).path}
+        if resp.status_code != 302 and len(resp.content) <= 2000:
+            self.report["steps"][step]["body"] = resp.text
+        return resp
+
+    def _identity_form(self) -> tuple[dict[str, list[str]], str] | None:
+        """Unity's Add Identity form as a browser would post it untouched, and
+        where it posts. The CSRF token is kept from the page's meta tag."""
+        resp = self.get("write_identity_form", "/identities/new", headers={"Accept": "text/html"})
+        if resp is None or resp.status_code != 200:
+            return None
+        meta = re.search(r"<meta[^>]+name=[\"']csrf-token[\"'][^>]+content=[\"']([^\"']+)", resp.text, re.I)
+        self.csrf = meta.group(1) if meta else ""
+        # The page also holds the quick-search form, which GETs /identities.
+        form = next((m for m in re.finditer(r"<form([^>]+)>(.*?)</form>", resp.text, re.I | re.S)
+                     if re.search(r"action=[\"'][^\"'?]*/identities[\"']", m.group(1), re.I)
+                     and re.search(r"method=[\"']post", m.group(1), re.I)), None)
+        parser = FormFields()
+        parser.feed(form.group(2) if form else resp.text)
+        data: dict[str, list[str]] = {}
+        for f in parser.fields:
+            if f["type"] in ("checkbox", "radio") and not f.get("checked"):
+                continue
+            if f["type"] in ("submit", "button", "file") or f["name"] == "authenticity_token":
+                continue
+            data.setdefault(f["name"], []).append(f["value"] or "")
+        self.note("write_identity_form", form_found=bool(form), csrf_meta=bool(meta),
+                  fields=sorted(data))
+        return data, "/identities"
+
+    def _tokens(self, step: str, cn: str) -> list[dict[str, str]] | None:
+        return self.read_xml("write_tokens", step, f"/identities/{cn}/tokens.xml", "tokens", "token",
+                             params={"page": 1, "perpage": TOKENS_PER_PAGE})
+
+    def _free_number(self) -> str | None:
+        """A random card number the Token box search says nobody holds."""
+        for attempt in range(3):
+            number = "9" + "".join(random.choice("0123456789") for _ in range(8))
+            hits = self._number_ids(f"write_number_free_{attempt}", "tkn", number)
+            if hits == set():
+                return number
+        return None
+
+    def write_test(self) -> None:
+        """Create an Inactive identity, give it an Inactive token the way the
+        hub's create_token does, then delete the token and the identity the
+        way the hub's delete_token does — and check each step took.
+
+        Only what this run created is ever deleted: ids taken from Unity's
+        own answers to our creates, checked against the name and number we
+        sent. Cleanup runs whatever failed; anything left is named in the
+        report so it can be removed by hand.
+        """
+        out = self.report["write_test"]
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        last = f"Probe {stamp}"
+        out["identity_name"] = f"{_WRITE_FIRST} {last}"
+        cn = token_id = None
+        try:
+            got = self._identity_form()
+            if got is None:
+                out["verdict"] = "could not read Unity's Add Identity form"
+                return
+            data, action = got
+            data.update({"identity[plasecFname]": [_WRITE_FIRST], "identity[plasecLname]": [last],
+                         "identity[plasecIdstatus]": ["2"]})
+            resp = self.post("write_identity_create", action, data)
+            located = re.search(r"/identities/([0-9a-f]{16})(?:/|$)", self.report["steps"]["write_identity_create"]
+                                .get("location", "")) if resp is not None else None
+            if located:
+                cn = located.group(1)
+            else:  # find it by the unique name we gave it
+                rows = self.read_xml("identity_search", "write_identity_find", "/identities.xml", "identities",
+                                     "identity", params={**_XML_SEARCH, "lnam": last, "page": 1, "perpage": 5})
+                mine = [r["cn"] for r in rows or [] if _first_field(r, "Lname") == last]
+                cn = mine[0] if len(mine) == 1 else None
+            if cn is None:
+                out["verdict"] = "identity not created (see write_identity_create)"
+                return
+            detail = self.read_json("identity_detail", "write_identity_read", f"/identities/{cn}.json")
+            attrs = attrs_of(detail)
+            if _first_field(attrs, "Lname") != last:
+                out["check_by_hand"] = (f"identity {cn}: Unity's answer to our create, but it did not read back "
+                                        f"as {out['identity_name']}")
+                cn = None  # not provably ours: never delete it
+                out["verdict"] = "created identity could not be read back by its name; nothing deleted"
+                return
+            out["identity_created"] = {"id": cn, "status_read_back": str(_first_field(attrs, "Idstatus"))}
+
+            number = self._free_number()
+            if number is None:
+                out["verdict"] = "no free card number found to put on the token"
+                return
+            before = {t.get("cn") for t in self._tokens("write_tokens_before", cn) or []}
+            resp = self.post("write_token_create", f"/identities/{cn}/tokens", {
+                "utf8": "✓", "enrollVirdiAfter": "false", "token[plasecInternalnumber]": number,
+                "token[plasecEmbossednumber]": _WRITE_EMBOSSED, "token[plasecTokenstatus]": "2"})
+            made = [t for t in self._tokens("write_tokens_after", cn) or [] if t.get("cn") not in before
+                    and _first_field(t, "Internalnumber") == number
+                    and _first_field(t, "Embossednumber") == _WRITE_EMBOSSED]
+            loc = self.report["steps"]["write_token_create"].get("location", "") if resp is not None else ""
+            out["token_created"] = {
+                "http": None if resp is None else resp.status_code,
+                "location_names_it": any(f"/tokens/{t.get('cn')}" in loc for t in made),
+                "new_tokens_read_back": len(made),
+                "status_read_back": [_first_field(t, "Tokenstatus") for t in made],
+                "fields_read_back": sorted(made[0]) if made else [],
+            }
+            if len(made) != 1:
+                out["verdict"] = "token create not confirmed (see token_created)"
+                return
+            token_id = made[0]["cn"]
+
+            resp = self.post("write_token_delete", f"/identities/{cn}/tokens/{token_id}",
+                             {"utf8": "✓", "_method": "delete"})
+            after = self._tokens("write_tokens_deleted", cn)
+            gone = after is not None and all(t.get("cn") != token_id for t in after)
+            out["token_deleted"] = {"http": None if resp is None else resp.status_code, "gone": gone}
+            if gone:
+                token_id = None
+        finally:
+            self._clean_up(cn, token_id)
+        if "verdict" not in out:
+            ok = out.get("token_deleted", {}).get("gone") and out.get("identity_deleted", {}).get("gone")
+            out["verdict"] = "create and delete both work" if ok else "a delete did not take (see left_in_unity)"
+
+    def _clean_up(self, cn: str | None, token_id: str | None) -> None:
+        out = self.report["write_test"]
+        left = []
+        if cn and token_id:
+            self.post("write_cleanup_token", f"/identities/{cn}/tokens/{token_id}", {"utf8": "✓", "_method": "delete"})
+            after = self._tokens("write_cleanup_tokens", cn)
+            if after is None or any(t.get("cn") == token_id for t in after):
+                left.append(f"token {token_id} on identity {cn}")
+        if cn:
+            resp = self.post("write_identity_delete", f"/identities/{cn}", {"utf8": "✓", "_method": "delete"})
+            check = self.get("write_identity_gone", f"/identities/{cn}.json", headers={"Accept": "application/json"})
+            gone = check is not None and check.status_code == 404
+            out["identity_deleted"] = {"http": None if resp is None else resp.status_code, "gone": gone}
+            if not gone:
+                left.append(f"identity {cn} ({out['identity_name']})")
+        out["left_in_unity"] = left
+
+    def run_write(self) -> dict[str, Any]:
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        self.write_test()
+        return self.report
+
+    def card_formats(self) -> None:
+        body = self.read_json("card_formats", "card_formats", "/card_formats.json")
+        self.read_xml("card_formats", "card_formats_xml", "/card_formats.xml", "card-formats", "card-format")
+        if body is not None:
+            rows = body.get("data", body) if isinstance(body, dict) else body
+            self.note("card_formats", count=len(rows) if isinstance(rows, list) else None,
+                      formats=redact(rows, pii=False))  # formats hold no personal data
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if argv and argv[0] not in MODES and not argv[0].startswith("-"):
+        argv.insert(0, "all")  # the form before modes existed: <host> <username>
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("mode", choices=MODES, help="all: JSON and XML; xml: test paging the XML identity list; "
+                                               "search: test the embossed-number search; "
+                                               "detail: compare a cardholder's detail with their list row; "
+                                               "full: all of these but xml, plus whether the hub accepts "
+                                               "each enrolled holder's token list; "
+                                               "write: create a test identity and token in Unity, then "
+                                               "delete both (asks first)")
+    ap.add_argument("host", help="appliance address, e.g. 10.0.0.5 (no https://)")
+    ap.add_argument("username")
+    ap.add_argument("--samples", type=int, default=3, help="identities with tokens to sample")
+    args = ap.parse_args(argv)
+    if args.mode == "write":
+        print(f"`write` CREATES an Inactive identity named '{_WRITE_FIRST} Probe <time>' with one Inactive\n"
+              f"token embossed '{_WRITE_EMBOSSED}' on {args.host}, then DELETES both.")
+        if input("Type YES to go ahead: ").strip() != "YES":
+            print("Nothing done.")
+            return 1
+    password = getpass.getpass("Unity password: ")
+
+    probe = Probe(args.host, args.username, password, args.mode)
+    if args.mode == "full":
+        report = probe.run_full(args.samples)
+    elif args.mode == "search":
+        report = probe.run_search()
+    elif args.mode == "detail":
+        report = probe.run_detail(args.samples)
+    elif args.mode == "write":
+        report = probe.run_write()
+    else:
+        report = probe.run_xml(args.samples) if args.mode == "xml" else probe.run(args.samples)
+    report["finished"] = datetime.now().isoformat()
+    out = f"avigilon-probe-{args.mode}-{args.host.replace(':', '_')}-{datetime.now():%Y%m%d-%H%M%S}.json"
+    text = json.dumps(report, indent=2, default=str)
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(text)
+    print(text)
+    print(f"\nSaved to {out}")
+    return 0 if report["steps"].get("login", {}).get("accepted") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
