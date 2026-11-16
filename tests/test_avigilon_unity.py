@@ -128,12 +128,12 @@ class FakeUnity:
                     t["attributes"]["plasecEmbossednumber"].lower() == q["adv_search_val_0"].lower()
                     and t["attributes"]["extended_attributes"]["token_status"] == "Active"
                     for t in self.tokens.get(r["cn"], []))]
-            elif q.get("adv_search_field_0") == "plasecInternalnumber":
+            elif q.get("tkn"):
                 if self.search_fails:
                     return httpx.Response(500)
-                if not self.internal_search_ignored:  # loose: a prefix matches too
+                if not self.internal_search_ignored:  # like the live box: whole number, any status
                     rows = [r for r in rows if any(
-                        t["attributes"]["plasecInternalnumber"].startswith(q["adv_search_val_0"])
+                        t["attributes"]["plasecInternalnumber"] == q["tkn"]
                         for t in self.tokens.get(r["cn"], []))]
             elif q.get("perpage") != "1" and self.hide_once:
                 rows, self.hide_once = [r for r in rows if r["cn"] not in self.hide_once], set()
@@ -1432,3 +1432,14 @@ def test_a_token_list_short_of_its_own_total_is_not_taken_as_complete():
     fake.fail["/identities/a/tokens.xml"] = 503
     with pytest.raises(UnityError, match="read 1 of 3"):
         _client(fake).list_tokens("a")
+
+
+def test_card_number_search_is_the_token_box_unitys_own_page_sends():
+    """A live box answered the Token box (tkn) and never the advanced search
+    on Internal Number, so the number goes in tkn and nowhere else."""
+    fake = FakeUnity([_identity("a"), _identity("b")],
+                     tokens={"a": [_token("t1", internal="9001")], "b": [_token("t2", internal="90012")]})
+    assert [r["id"] for r in _client(fake).search_internal("9001")] == ["a"]
+    q = fake.xml_params[-1]
+    assert q["tkn"] == "9001"
+    assert (q["adv_search_field_0"], q["adv_search_udf_0"], q["adv_search_val_0"]) == ("", "", "")

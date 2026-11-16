@@ -97,7 +97,11 @@ _PIECE_TIMEOUT = 120.0
 # The adapter's embossed-number search and XML page size (client.py
 # EMBOSSED_SEARCH and XML_PAGE_SIZE), and how many hits get their tokens read.
 _EMBOSSED_SEARCH = {"adv_search_field_0": "plasecEmbossednumber", "adv_search_udf_0": "Token Embossed #"}
-_INTERNAL_SEARCH = {"adv_search_field_0": "plasecInternalnumber", "adv_search_udf_0": "Token Internal #"}
+# The card-number search the client sends (client.INTERNAL_SEARCH_FIELD), and
+# the advanced search it sent before, which a live box never answered; kept
+# so `internal_search` still shows the difference.
+_INTERNAL_SEARCH_FIELD = "tkn"
+_ADV_INTERNAL_SEARCH = {"adv_search_field_0": "plasecInternalnumber", "adv_search_udf_0": "Token Internal #"}
 _XML_PAGE = 500
 # The page size the client asks token lists for (client.TOKENS_PER_PAGE), and
 # how many identities `full` reads token lists for the way the hub does.
@@ -781,9 +785,11 @@ class Probe:
 
     def _number_ids(self, step: str, how: str, value: str) -> set[str] | None:
         """Identity ids the XML list returns for a card number, searched `how`:
-        "adv" is the client's INTERNAL_SEARCH, "tkn" the quick-search Token box
-        Unity's own Identities page sends."""
-        extra = {**_INTERNAL_SEARCH, "adv_search_val_0": value} if how == "adv" else {"tkn": value}
+        "adv" is the advanced search the client used to send, "tkn" the
+        quick-search Token box Unity's own Identities page sends, and the
+        client now does."""
+        extra = ({**_ADV_INTERNAL_SEARCH, "adv_search_val_0": value} if how == "adv"
+                 else {_INTERNAL_SEARCH_FIELD: value})
         rows = self.read_xml("identity_search", step, "/identities.xml", "identities", "identity",
                              params={**_XML_SEARCH, **extra, "page": 1, "perpage": _XML_PAGE},
                              timeout=_WHOLE_LIST_TIMEOUT)
