@@ -1,4 +1,4 @@
-"""Read-only probe of an Avigilon Unity (Plasec) install.
+"""Probe of an Avigilon Unity (Plasec) install — read-only except in `write` mode.
 
 Collects what we need to know before trusting an adapter against a box we
 have never seen: which login form it accepts, where its CSRF token lives,
@@ -10,7 +10,8 @@ as it needs the appliance.
 Three rules, because the output is meant to be pasted into a chat or ticket:
 
   * **Read-only.** GET requests only, plus the POST that signs in. Nothing
-    is created, updated or deleted.
+    is created, updated or deleted — except by `write`, which must be asked
+    for by name, confirmed by typing YES, and removes what it creates.
   * **No secrets.** The password, cookie values and CSRF tokens never reach
     the report — cookie *names* do, because which ones appear is the finding.
   * **No contact details or card numbers.** Values under keys that look like
@@ -19,7 +20,7 @@ Three rules, because the output is meant to be pasted into a chat or ticket:
     there. Dates, statuses and flags are kept: their format is the point.
 
 Usage:
-    python scripts/avigilon_probe.py [all|xml|search|detail|full] <host> <username> [--samples 3]
+    python scripts/avigilon_probe.py [all|xml|search|detail|full|write] <host> <username> [--samples 3]
 `full` is the one to send a site: every read below except `xml`'s unpaged
 roster tests, then up to 50 identities' token lists (the embossed search's
 hits first) read with the hub's own requests and judged by a copy of the
@@ -29,14 +30,21 @@ JSON list and tests whether `/identities.xml` can be read in pieces — page
 and perpage, start and length, the A–Z last-name filter — against the whole
 list, read with a long timeout. `search` checks the embossed-number search
 the adapter sends: whether it answers, filters, ignores case and returns only
-holders of an `accessgrid` token; checks the Internal Number search the
-adapter uses to see whether a card number is already held, counts only; and
+holders of an `accessgrid` token; checks, with numbers read off real Active
+and Inactive tokens, whether the adapter's Internal Number search or Unity's
+quick-search Token box (`tkn`) finds who holds a card number, and whether
+`tkn` matches part of a number, counts only; and
 reads, without submitting, the form Unity uses to add a token. `detail` finds
 cardholders whose list row has an email, phone, title or department, reads
 each one's detail as JSON and as XML, and reports per field whether each read
 has it and whether they agree — presence and agreement only, never values;
 it also checks whether the list can be searched by one identity's id. The
 password is prompted for. The report is printed and saved as JSON.
+
+`write` is the one mode that changes Unity, and asks before it does: it
+creates an Inactive identity, gives it an Inactive token the way the hub's
+create_token does, deletes both the way the hub does, and checks each step
+took. It touches nothing it did not create.
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ import argparse
 import getpass
 import json
 import os
+import random
 import re
 import socket
 import sys
@@ -53,6 +62,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -94,10 +104,19 @@ _XML_PAGE = 500
 TOKENS_PER_PAGE = 500
 _TOKEN_READS_CHECKED = 50
 _SEARCH_CHECKED = 25
+# More hits than this for one card number means the search ignored it
+# (adapter.MAX_NUMBER_HITS). And how many identities' tokens `internal_search`
+# reads looking for a real Inactive token to search by.
+_MAX_NUMBER_HITS = 25
+_INACTIVE_SCAN = 2000
 # What the client's create_token posts (client.py), besides the CSRF token.
 _CREATE_SENDS = ["utf8", "enrollVirdiAfter", "token[plasecInternalnumber]",
                  "token[plasecEmbossednumber]", "token[plasecTokenstatus]"]
-MODES = ("all", "xml", "search", "detail", "full")
+MODES = ("all", "xml", "search", "detail", "full", "write")
+# What `write` names the identity it creates, and embosses on its token: not
+# "accessgrid", so a hub running against the same box never enrolls it.
+_WRITE_FIRST = "AccessGrid"
+_WRITE_EMBOSSED = "agsync-probe"
 # The identity fields a pass carries, compared between the list and the detail
 # by `detail` mode: present or not, and equal or not — never the values.
 CONTACT_FIELDS = ("identityEmailaddress", "identityPhone", "identityWorkphone", "identityTitle",
@@ -365,8 +384,9 @@ class Probe:
         self.rows: dict[str, list[dict[str, Any]]] = {}
         # The embossed search's hits, kept for `full`: the people the hub reads every cycle.
         self.search_hits: list[str] = []
+        self.csrf = ""  # read by `write` from the Add Identity page
         head = {"xml": "xml_paging", "search": "search", "detail": "detail_vs_list",
-                "full": "hub_token_reads"}.get(mode)
+                "full": "hub_token_reads", "write": "write_test"}.get(mode)
         if head:
             self.report = {**dict(list(self.report.items())[:4]), head: {}, **self.report}
 
@@ -724,57 +744,104 @@ class Probe:
         self.note(step, rows=len(rows))
         return {r.get("cn", "") for r in rows} - {"", "0"}
 
-    def internal_search(self) -> None:
-        """Does the Internal Number search find the identity holding a number,
-        on an Active token and on an Inactive one?
+    def _token_samples(self) -> dict[str, tuple[str, str]]:
+        """A number read off a real Active token and off a real Inactive one:
+        {"active"/"inactive": (holder, number)}. Read, never made up or created.
 
-        Run with numbers from tokens on the roster's first page. The embossed
-        search skips Inactive tokens; if this one does too, a number held on
-        an Inactive token elsewhere is not caught. Reports counts and yes/no
-        only: the numbers themselves are never written down.
+        The embossed search's hits go first (a token the hub would track),
+        then the roster, inactive identities first since they are the likeliest
+        to hold an Inactive token, up to _INACTIVE_SCAN identities.
         """
-        roster = self.read_xml("identity_search", "internal_search_roster", "/identities.xml", "identities",
-                               "identity", params={**_XML_SEARCH, "page": 1, "perpage": 50}) or []
-        samples: dict[str, tuple[str, str]] = {}  # "active"/"inactive" -> (holder, number)
-        for cn in [r.get("cn") for r in roster if r.get("cn") not in (None, "", "0")]:
+        roster: list[dict[str, Any]] = []
+        for page in range(1, _INACTIVE_SCAN // _XML_PAGE + 1):
+            rows = self.read_xml("identity_search", f"internal_search_roster_{page}", "/identities.xml",
+                                 "identities", "identity",
+                                 params={**_XML_SEARCH, "page": page, "perpage": _XML_PAGE},
+                                 timeout=_WHOLE_LIST_TIMEOUT) or []
+            roster += rows
+            if len(rows) < _XML_PAGE:
+                break
+        status_of = {r.get("cn"): _first_field(r, "Idstatus") for r in roster}
+        listed = sorted((cn for cn in status_of if cn not in (None, "", "0")), key=lambda cn: status_of[cn] != "2")
+        samples: dict[str, tuple[str, str]] = {}
+        scanned = 0
+        for cn in list(dict.fromkeys(self.search_hits + listed)):
+            scanned += 1
             for t in self.read_xml("search_hit_tokens", "internal_search_tokens",
                                    f"/identities/{cn}/tokens.xml", "tokens", "token") or []:
-                number = next((v for p in _PREFIXES if (v := str(t.get(f"{p}Internalnumber") or ""))), "")
-                raw = next((str(t[f"{p}Tokenstatus"]) for p in _PREFIXES if t.get(f"{p}Tokenstatus")), "")
-                status = STATUS_CODES.get(raw.strip().lower(), raw.strip())
-                kind = {"1": "active", "2": "inactive"}.get(status)
+                number = _first_field(t, "Internalnumber")
+                raw = _first_field(t, "Tokenstatus").strip()
+                kind = {"1": "active", "2": "inactive"}.get(STATUS_CODES.get(raw.lower(), raw))
                 if number and kind and kind not in samples:
                     samples[kind] = (cn, number)
             if len(samples) == 2:
                 break
+        self.report["internal_search"]["identities_scanned"] = scanned
+        return samples
+
+    def _number_ids(self, step: str, how: str, value: str) -> set[str] | None:
+        """Identity ids the XML list returns for a card number, searched `how`:
+        "adv" is the client's INTERNAL_SEARCH, "tkn" the quick-search Token box
+        Unity's own Identities page sends."""
+        extra = {**_INTERNAL_SEARCH, "adv_search_val_0": value} if how == "adv" else {"tkn": value}
+        rows = self.read_xml("identity_search", step, "/identities.xml", "identities", "identity",
+                             params={**_XML_SEARCH, **extra, "page": 1, "perpage": _XML_PAGE},
+                             timeout=_WHOLE_LIST_TIMEOUT)
+        if rows is None:
+            return None
+        self.note(step, rows=len(rows))
+        return {r.get("cn", "") for r in rows} - {"", "0"}
+
+    def internal_search(self) -> None:
+        """Which search finds the identity holding a card number — the client's
+        advanced search on Internal Number, or the quick-search Token box — on
+        an Active token and on an Inactive one, and does the Token box match
+        the whole number or part of it?
+
+        Numbers come off real tokens (_token_samples). Reports counts and
+        yes/no only: the numbers themselves are never written down.
+        """
+        self.report["internal_search"] = {}
+        samples = self._token_samples()
+        out = self.report["internal_search"]
         if "active" not in samples:
-            self.report["internal_search"] = {"error": "no Active token with an Internal Number on the first "
-                                                       "50 identities"}
+            out["error"] = f"no Active token with an Internal Number on {out['identities_scanned']} identities"
             return
 
-        def ids(step: str, value: str) -> set[str] | None:
-            rows = self.read_xml("identity_search", step, "/identities.xml", "identities", "identity",
-                                 params={**_XML_SEARCH, **_INTERNAL_SEARCH, "adv_search_val_0": value,
-                                         "page": 1, "perpage": _XML_PAGE}, timeout=_WHOLE_LIST_TIMEOUT)
-            return None if rows is None else {r.get("cn", "") for r in rows} - {"", "0"}
+        def lookup(step: str, how: str, holder: str, value: str) -> dict[str, Any]:
+            hits = self._number_ids(step, how, value)
+            return {"hits": None, "holder_found": None} if hits is None else {
+                "hits": len(hits), "holder_found": holder in hits}
 
-        found = {}
-        for kind, (holder, number) in samples.items():
-            hits = ids(f"internal_search_{kind}", number)
-            found[kind] = {"hits": None if hits is None else len(hits),
-                           "holder_found": None if hits is None else holder in hits}
-        nothing = ids("internal_search_no_such_number", "99999999999")
-        active = found["active"]
-        works = active["holder_found"] and active["hits"] <= 25 and nothing == set()
-        self.report["internal_search"] = {
-            "active_token": active,
-            "inactive_token": found.get("inactive", "no Inactive token with an Internal Number on the first "
-                                                    "50 identities"),
-            "no_such_number_rows": None if nothing is None else len(nothing),
-            "verdict": ("works" if works else "check the steps: the adapter refuses to write Seos cards "
-                        "while this search cannot say who holds a number"),
-            "inactive_tokens_found": found.get("inactive", {}).get("holder_found"),
-        }
+        for how in ("adv", "tkn"):
+            result: dict[str, Any] = {}
+            for kind in ("active", "inactive"):
+                if kind in samples:
+                    holder, number = samples[kind]
+                    result[f"{kind}_token"] = lookup(f"internal_{how}_{kind}", how, holder, number)
+                else:
+                    result[f"{kind}_token"] = f"no {kind.title()} token on {out['identities_scanned']} identities"
+            nothing = self._number_ids(f"internal_{how}_no_such_number", how, "99999999999")
+            result["no_such_number_rows"] = None if nothing is None else len(nothing)
+            active = result["active_token"]
+            result["verdict"] = (
+                "not answered" if active["hits"] is None or nothing is None
+                else "finds the holder of an Active token" if active["holder_found"] and nothing == set()
+                and active["hits"] <= _MAX_NUMBER_HITS
+                else f"ignored the number: {active['hits']} rows" if active["hits"] > _MAX_NUMBER_HITS
+                else "does not find the holder: an empty answer here does not mean the number is free")
+            out[how] = result
+
+        # Whole number or part of it? Asked only of the Token box, and only if
+        # it found the holder by the whole number; the adapter checks every
+        # hit's tokens itself, so a loose match is safe, just slower.
+        holder, number = samples["active"]
+        if out["tkn"]["active_token"].get("holder_found") and len(number) > 1:
+            out["tkn"]["matching"] = {
+                "first_digits": lookup("internal_tkn_first_digits", "tkn", holder, number[:-1]),
+                "last_digits": lookup("internal_tkn_last_digits", "tkn", holder, number[1:]),
+                "extra_digit": lookup("internal_tkn_extra_digit", "tkn", holder, number + "0"),
+            }
 
     def search(self) -> None:
         """Does /identities.xml take the adapter's embossed-number search, and
@@ -1099,6 +1166,171 @@ class Probe:
                 found["dates"] = dates
             self.report["fields"][source] = found
 
+    # -- `write`: create a throwaway identity and token, then delete both ------
+
+    def post(self, step: str, path: str, data: dict[str, Any]) -> httpx.Response | None:
+        """POST a form as the client does: CSRF in the header and the body,
+        no redirect followed, so the 302 and where it points are recorded."""
+        t = time.monotonic()
+        try:
+            resp = self.http.post(path, data={**data, "authenticity_token": self.csrf},
+                                  headers={"X-CSRF-Token": self.csrf}, follow_redirects=False)
+        except httpx.HTTPError as e:
+            self.report["steps"][step] = {"path": path, "error": f"{type(e).__name__}: {e}"}
+            return None
+        self.report["steps"][step] = {"path": path, "status": resp.status_code,
+                                      "seconds": round(time.monotonic() - t, 2),
+                                      "location": urlsplit(resp.headers.get("location", "")).path}
+        if resp.status_code != 302 and len(resp.content) <= 2000:
+            self.report["steps"][step]["body"] = resp.text
+        return resp
+
+    def _identity_form(self) -> tuple[dict[str, list[str]], str] | None:
+        """Unity's Add Identity form as a browser would post it untouched, and
+        where it posts. The CSRF token is kept from the page's meta tag."""
+        resp = self.get("write_identity_form", "/identities/new", headers={"Accept": "text/html"})
+        if resp is None or resp.status_code != 200:
+            return None
+        meta = re.search(r"<meta[^>]+name=[\"']csrf-token[\"'][^>]+content=[\"']([^\"']+)", resp.text, re.I)
+        self.csrf = meta.group(1) if meta else ""
+        # The page also holds the quick-search form, which GETs /identities.
+        form = next((m for m in re.finditer(r"<form([^>]+)>(.*?)</form>", resp.text, re.I | re.S)
+                     if re.search(r"action=[\"'][^\"'?]*/identities[\"']", m.group(1), re.I)
+                     and re.search(r"method=[\"']post", m.group(1), re.I)), None)
+        parser = FormFields()
+        parser.feed(form.group(2) if form else resp.text)
+        data: dict[str, list[str]] = {}
+        for f in parser.fields:
+            if f["type"] in ("checkbox", "radio") and not f.get("checked"):
+                continue
+            if f["type"] in ("submit", "button", "file") or f["name"] == "authenticity_token":
+                continue
+            data.setdefault(f["name"], []).append(f["value"] or "")
+        self.note("write_identity_form", form_found=bool(form), csrf_meta=bool(meta),
+                  fields=sorted(data))
+        return data, "/identities"
+
+    def _tokens(self, step: str, cn: str) -> list[dict[str, str]] | None:
+        return self.read_xml("write_tokens", step, f"/identities/{cn}/tokens.xml", "tokens", "token",
+                             params={"page": 1, "perpage": TOKENS_PER_PAGE})
+
+    def _free_number(self) -> str | None:
+        """A random card number the Token box search says nobody holds."""
+        for attempt in range(3):
+            number = "9" + "".join(random.choice("0123456789") for _ in range(8))
+            hits = self._number_ids(f"write_number_free_{attempt}", "tkn", number)
+            if hits == set():
+                return number
+        return None
+
+    def write_test(self) -> None:
+        """Create an Inactive identity, give it an Inactive token the way the
+        hub's create_token does, then delete the token and the identity the
+        way the hub's delete_token does — and check each step took.
+
+        Only what this run created is ever deleted: ids taken from Unity's
+        own answers to our creates, checked against the name and number we
+        sent. Cleanup runs whatever failed; anything left is named in the
+        report so it can be removed by hand.
+        """
+        out = self.report["write_test"]
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        last = f"Probe {stamp}"
+        out["identity_name"] = f"{_WRITE_FIRST} {last}"
+        cn = token_id = None
+        try:
+            got = self._identity_form()
+            if got is None:
+                out["verdict"] = "could not read Unity's Add Identity form"
+                return
+            data, action = got
+            data.update({"identity[plasecFname]": [_WRITE_FIRST], "identity[plasecLname]": [last],
+                         "identity[plasecIdstatus]": ["2"]})
+            resp = self.post("write_identity_create", action, data)
+            located = re.search(r"/identities/([0-9a-f]{16})(?:/|$)", self.report["steps"]["write_identity_create"]
+                                .get("location", "")) if resp is not None else None
+            if located:
+                cn = located.group(1)
+            else:  # find it by the unique name we gave it
+                rows = self.read_xml("identity_search", "write_identity_find", "/identities.xml", "identities",
+                                     "identity", params={**_XML_SEARCH, "lnam": last, "page": 1, "perpage": 5})
+                mine = [r["cn"] for r in rows or [] if _first_field(r, "Lname") == last]
+                cn = mine[0] if len(mine) == 1 else None
+            if cn is None:
+                out["verdict"] = "identity not created (see write_identity_create)"
+                return
+            detail = self.read_json("identity_detail", "write_identity_read", f"/identities/{cn}.json")
+            attrs = attrs_of(detail)
+            if _first_field(attrs, "Lname") != last:
+                out["check_by_hand"] = (f"identity {cn}: Unity's answer to our create, but it did not read back "
+                                        f"as {out['identity_name']}")
+                cn = None  # not provably ours: never delete it
+                out["verdict"] = "created identity could not be read back by its name; nothing deleted"
+                return
+            out["identity_created"] = {"id": cn, "status_read_back": str(_first_field(attrs, "Idstatus"))}
+
+            number = self._free_number()
+            if number is None:
+                out["verdict"] = "no free card number found to put on the token"
+                return
+            before = {t.get("cn") for t in self._tokens("write_tokens_before", cn) or []}
+            resp = self.post("write_token_create", f"/identities/{cn}/tokens", {
+                "utf8": "✓", "enrollVirdiAfter": "false", "token[plasecInternalnumber]": number,
+                "token[plasecEmbossednumber]": _WRITE_EMBOSSED, "token[plasecTokenstatus]": "2"})
+            made = [t for t in self._tokens("write_tokens_after", cn) or [] if t.get("cn") not in before
+                    and _first_field(t, "Internalnumber") == number
+                    and _first_field(t, "Embossednumber") == _WRITE_EMBOSSED]
+            loc = self.report["steps"]["write_token_create"].get("location", "") if resp is not None else ""
+            out["token_created"] = {
+                "http": None if resp is None else resp.status_code,
+                "location_names_it": any(f"/tokens/{t.get('cn')}" in loc for t in made),
+                "new_tokens_read_back": len(made),
+                "status_read_back": [_first_field(t, "Tokenstatus") for t in made],
+                "fields_read_back": sorted(made[0]) if made else [],
+            }
+            if len(made) != 1:
+                out["verdict"] = "token create not confirmed (see token_created)"
+                return
+            token_id = made[0]["cn"]
+
+            resp = self.post("write_token_delete", f"/identities/{cn}/tokens/{token_id}",
+                             {"utf8": "✓", "_method": "delete"})
+            after = self._tokens("write_tokens_deleted", cn)
+            gone = after is not None and all(t.get("cn") != token_id for t in after)
+            out["token_deleted"] = {"http": None if resp is None else resp.status_code, "gone": gone}
+            if gone:
+                token_id = None
+        finally:
+            self._clean_up(cn, token_id)
+        if "verdict" not in out:
+            ok = out.get("token_deleted", {}).get("gone") and out.get("identity_deleted", {}).get("gone")
+            out["verdict"] = "create and delete both work" if ok else "a delete did not take (see left_in_unity)"
+
+    def _clean_up(self, cn: str | None, token_id: str | None) -> None:
+        out = self.report["write_test"]
+        left = []
+        if cn and token_id:
+            self.post("write_cleanup_token", f"/identities/{cn}/tokens/{token_id}", {"utf8": "✓", "_method": "delete"})
+            after = self._tokens("write_cleanup_tokens", cn)
+            if after is None or any(t.get("cn") == token_id for t in after):
+                left.append(f"token {token_id} on identity {cn}")
+        if cn:
+            resp = self.post("write_identity_delete", f"/identities/{cn}", {"utf8": "✓", "_method": "delete"})
+            check = self.get("write_identity_gone", f"/identities/{cn}.json", headers={"Accept": "application/json"})
+            gone = check is not None and check.status_code == 404
+            out["identity_deleted"] = {"http": None if resp is None else resp.status_code, "gone": gone}
+            if not gone:
+                left.append(f"identity {cn} ({out['identity_name']})")
+        out["left_in_unity"] = left
+
+    def run_write(self) -> dict[str, Any]:
+        self.landing()
+        if not self.login():
+            return self.report
+        self.dashboard()
+        self.write_test()
+        return self.report
+
     def card_formats(self) -> None:
         body = self.read_json("card_formats", "card_formats", "/card_formats.json")
         self.read_xml("card_formats", "card_formats_xml", "/card_formats.xml", "card-formats", "card-format")
@@ -1117,11 +1349,19 @@ def main() -> int:
                                                "search: test the embossed-number search; "
                                                "detail: compare a cardholder's detail with their list row; "
                                                "full: all of these but xml, plus whether the hub accepts "
-                                               "each enrolled holder's token list")
+                                               "each enrolled holder's token list; "
+                                               "write: create a test identity and token in Unity, then "
+                                               "delete both (asks first)")
     ap.add_argument("host", help="appliance address, e.g. 10.0.0.5 (no https://)")
     ap.add_argument("username")
     ap.add_argument("--samples", type=int, default=3, help="identities with tokens to sample")
     args = ap.parse_args(argv)
+    if args.mode == "write":
+        print(f"`write` CREATES an Inactive identity named '{_WRITE_FIRST} Probe <time>' with one Inactive\n"
+              f"token embossed '{_WRITE_EMBOSSED}' on {args.host}, then DELETES both.")
+        if input("Type YES to go ahead: ").strip() != "YES":
+            print("Nothing done.")
+            return 1
     password = getpass.getpass("Unity password: ")
 
     probe = Probe(args.host, args.username, password, args.mode)
@@ -1131,6 +1371,8 @@ def main() -> int:
         report = probe.run_search()
     elif args.mode == "detail":
         report = probe.run_detail(args.samples)
+    elif args.mode == "write":
+        report = probe.run_write()
     else:
         report = probe.run_xml(args.samples) if args.mode == "xml" else probe.run(args.samples)
     report["finished"] = datetime.now().isoformat()

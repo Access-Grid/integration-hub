@@ -25,6 +25,7 @@ def test_probe_reads_statuses_dates_and_searches_as_the_adapter_does():
     assert probe._EMBOSSED_SEARCH == client.EMBOSSED_SEARCH
     assert probe._INTERNAL_SEARCH == client.INTERNAL_SEARCH
     assert probe._XML_PAGE == client.XML_PAGE_SIZE
+    assert probe._MAX_NUMBER_HITS == adapter.MAX_NUMBER_HITS
 
 
 def test_detail_mode_compares_presence_and_agreement_never_values():
@@ -184,3 +185,136 @@ def test_full_mode_reads_only_and_counts_holders_the_hub_could_not_read(monkeypa
     assert out["count_keys_in_json"] == {"recordsTotal": 1, "none": 1}
     assert report["steps"]["hub_tokens_xml:bad"]["verdict"] == "unrecognised status"
     assert "hub_tokens_json:good" not in report["steps"], "accepted reads are left out"
+
+
+def test_internal_search_compares_both_searches_on_real_active_and_inactive_tokens(monkeypatch):
+    """Numbers come off tokens Unity returned; the advanced search finds no
+    one (as live), the Token box finds the holder, and part of a number is
+    checked only against the Token box. Reads only, numbers never reported."""
+    tokens = {"a1": [("1111", "1")], "i1": [("2222", "2")], "n1": []}
+    sent = []
+
+    def serve(req):
+        sent.append(req.method)
+        path, q = req.url.path, dict(req.url.params)
+        if path == "/identities.xml":
+            if q.get("adv_search_val_0") or not (q.get("tkn") or q.get("page")):
+                return httpx.Response(200, text='<nil-classes type="array"/>')
+            tkn = q.get("tkn", "")
+            ids = (["a1", "n1", "i1"] if not tkn and q["page"] == "1"
+                   else [cn for cn, ts in tokens.items() if tkn and any(tkn in n for n, _ in ts)])
+            status = {"i1": "2"}
+            return httpx.Response(200, text="<identities>" + "".join(
+                f"<identity><cn>{i}</cn><plasecIdstatus>{status.get(i, '1')}</plasecIdstatus></identity>"
+                for i in ids) + "</identities>")
+        cn = path.split("/")[2]
+        return httpx.Response(200, text="<tokens>" + "".join(
+            f"<token><cn>tok{s}</cn><plasecInternalnumber>{n}</plasecInternalnumber>"
+            f"<plasecTokenstatus>{s}</plasecTokenstatus></token>" for n, s in tokens[cn]) + "</tokens>")
+
+    p = probe.Probe("unity", "u", "pw", mode="search")
+    p.http = httpx.Client(base_url="https://unity", transport=httpx.MockTransport(serve))
+    p.internal_search()
+    out = p.report["internal_search"]
+
+    assert set(sent) == {"GET"}
+    assert out["identities_scanned"] == 2, "the inactive identity is read first, then until both are found"
+    assert out["adv"]["active_token"] == {"hits": 0, "holder_found": False}
+    assert out["adv"]["verdict"].startswith("does not find the holder")
+    assert out["tkn"]["active_token"] == {"hits": 1, "holder_found": True}
+    assert out["tkn"]["inactive_token"] == {"hits": 1, "holder_found": True}
+    assert out["tkn"]["verdict"] == "finds the holder of an Active token"
+    assert out["tkn"]["matching"] == {"first_digits": {"hits": 1, "holder_found": True},
+                                      "last_digits": {"hits": 1, "holder_found": True},
+                                      "extra_digit": {"hits": 0, "holder_found": False}}
+    assert "1111" not in _json.dumps(p.report) and "2222" not in _json.dumps(p.report)
+
+
+_NEW_IDENTITY_PAGE = """<html><head><meta name="csrf-token" content="tok"></head><body>
+<form action="/identities" method="get"><input name="lnam" value=""></form>
+<form action="/identities" accept-charset="UTF-8" method="post"><input name="utf8" type="hidden" value="&#x2713;">
+<input type="hidden" name="authenticity_token" value="tok"><input name="identity[plasecFname]">
+<input name="identity[plasecLname]"><select name="identity[plasecTyp]"><option value="Employee">E</option></select>
+<input type="checkbox" name="identity[plasecVIP]" value="1"><input type="submit" value="Save"></form></body></html>"""
+
+
+def _write_unity(fail_token_delete=False, lname_override=None):
+    """A Unity that keeps one identity and its tokens, for `write` mode."""
+    state = {"identity": None, "tokens": {}, "posts": []}
+
+    def serve(req):
+        path, q = req.url.path, dict(req.url.params)
+        if req.method == "POST":
+            form = dict(httpx.QueryParams(req.content.decode()))
+            state["posts"].append((path, form, req.headers.get("x-csrf-token")))
+            if path == "/identities":
+                state["identity"] = form
+                return httpx.Response(302, headers={"location": "https://unity/identities/abcdef0123456789/edit"})
+            if path.endswith("/tokens"):
+                state["tokens"]["tk1"] = form
+                return httpx.Response(302, headers={"location": "https://unity/identities/abcdef0123456789/tokens/tk1/edit"})
+            if form.get("_method") == "delete" and "/tokens/" in path:
+                if not fail_token_delete:
+                    state["tokens"].pop(path.rsplit("/", 1)[1], None)
+                return httpx.Response(302, headers={"location": "/"})
+            if form.get("_method") == "delete":
+                state["identity"] = None
+                return httpx.Response(302, headers={"location": "/identities"})
+        if path == "/identities/new":
+            return httpx.Response(200, text=_NEW_IDENTITY_PAGE)
+        if path == "/identities.xml":
+            return httpx.Response(200, text='<nil-classes type="array"/>' if q.get("tkn") else "<identities/>")
+        if path == "/identities/abcdef0123456789.json":
+            if state["identity"] is None:
+                return httpx.Response(404, json={"errors": ["Identity was not found."]})
+            ident = state["identity"]
+            return httpx.Response(200, json={"id": "abcdef0123456789", "attributes": {
+                "plasecLname": lname_override or ident["identity[plasecLname]"],
+                "plasecIdstatus": int(ident["identity[plasecIdstatus]"])}})
+        if path == "/identities/abcdef0123456789/tokens.xml":
+            return httpx.Response(200, text="<tokens>" + "".join(
+                f"<token><cn>{tid}</cn><plasecInternalnumber>{f['token[plasecInternalnumber]']}</plasecInternalnumber>"
+                f"<plasecEmbossednumber>{f['token[plasecEmbossednumber]']}</plasecEmbossednumber>"
+                f"<plasecTokenstatus>{f['token[plasecTokenstatus]']}</plasecTokenstatus></token>"
+                for tid, f in state["tokens"].items()) + "</tokens>")
+        return httpx.Response(404)
+
+    p = probe.Probe("unity", "u", "pw", mode="write")
+    p.http = httpx.Client(base_url="https://unity", transport=httpx.MockTransport(serve))
+    return p, state
+
+
+def test_write_mode_creates_an_inactive_identity_and_token_then_deletes_both():
+    p, state = _write_unity()
+    p.write_test()
+    out = p.report["write_test"]
+
+    assert out["verdict"] == "create and delete both work"
+    assert out["left_in_unity"] == []
+    created = state["posts"][0][1]
+    assert created["identity[plasecLname]"].startswith("Probe ") and created["identity[plasecIdstatus]"] == "2"
+    assert created["identity[plasecTyp]"] == "Employee", "the form's own defaults are posted back"
+    assert "identity[plasecVIP]" not in created and "lnam" not in created, "unchecked box and search form left out"
+    token = state["posts"][1][1]
+    assert token["token[plasecEmbossednumber]"] == "agsync-probe" and token["token[plasecTokenstatus]"] == "2"
+    assert all(csrf == "tok" and form["authenticity_token"] == "tok" for _, form, csrf in state["posts"])
+    assert [form.get("_method") for _, form, _ in state["posts"]] == [None, None, "delete", "delete"]
+    assert out["token_created"]["location_names_it"] and out["identity_deleted"]["gone"]
+    assert token["token[plasecInternalnumber]"] not in _json.dumps(p.report)
+
+
+def test_write_mode_names_what_it_could_not_delete():
+    p, _ = _write_unity(fail_token_delete=True)
+    p.write_test()
+    out = p.report["write_test"]
+    assert out["token_deleted"]["gone"] is False
+    assert out["left_in_unity"][0] == "token tk1 on identity abcdef0123456789"
+
+
+def test_write_mode_never_deletes_an_identity_it_cannot_prove_it_made():
+    p, state = _write_unity(lname_override="Someone Else")
+    p.write_test()
+    assert [form.get("_method") for _, form, _ in state["posts"]] == [None], "no delete sent"
+    assert p.report["write_test"]["left_in_unity"] == []
+    assert "nothing deleted" in p.report["write_test"]["verdict"]
+    assert p.report["write_test"]["check_by_hand"].startswith("identity abcdef0123456789")
