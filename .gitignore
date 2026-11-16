@@ -40,6 +40,9 @@ env/
 
 # Logs
 *.log
+
+# Probe reports (scripts/*_probe.py write these to the working dir)
+*-probe-*.json
 avigilon-alta.txt
 millenium-ultra.txt
 .claude/
