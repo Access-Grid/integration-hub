@@ -50,6 +50,7 @@ class TrackedCredential:
     last_synced_full_name: str
     last_synced_title: str
     last_known_ag_state: str
+    credential_data: str
     sync_error: str | None
     retry_count: int
     # Our own reference for this issue, echoed in the card's metadata.
@@ -80,6 +81,7 @@ def _row_to_tracked(row: Any) -> TrackedCredential:
         last_synced_full_name=row["last_synced_full_name"] or "",
         last_synced_title=row["last_synced_title"] or "",
         last_known_ag_state=row["last_known_ag_state"] or "",
+        credential_data=row["credential_data"] or "",
         sync_error=row["sync_error"],
         retry_count=row["retry_count"] or 0,
         sync_ref=(row["sync_ref"] if "sync_ref" in row.keys() else "") or "",
@@ -126,6 +128,7 @@ def upsert(
     last_synced_full_name: str = "",
     last_synced_title: str = "",
     last_known_ag_state: str = "",
+    credential_data: str = "",
     sync_ref: str = "",
     last_synced_department: str = "",
 ) -> None:
@@ -135,9 +138,9 @@ def upsert(
         INSERT INTO ag_credentials (
             pacs_person_id, pacs_credential_id, ag_card_id, full_name, employee_id,
             status, last_synced_email, last_synced_phone, last_synced_full_name,
-            last_synced_title, last_known_ag_state, sync_ref, last_synced_department,
+            last_synced_title, last_known_ag_state, credential_data, sync_ref, last_synced_department,
             retry_count, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         ON CONFLICT(pacs_person_id, pacs_credential_id) DO UPDATE SET
             ag_card_id            = excluded.ag_card_id,
             full_name             = excluded.full_name,
@@ -149,6 +152,9 @@ def upsert(
             last_synced_title     = excluded.last_synced_title,
             last_synced_department = excluded.last_synced_department,
             last_known_ag_state   = excluded.last_known_ag_state,
+            -- keep a previously-recorded value if this call didn't supply one
+            credential_data       = COALESCE(NULLIF(excluded.credential_data, ''),
+                                             ag_credentials.credential_data),
             -- Keep the existing reference when a caller does not supply one,
             -- so a status update never orphans a card from its metadata.
             sync_ref              = COALESCE(NULLIF(excluded.sync_ref, ''), sync_ref),
@@ -158,7 +164,7 @@ def upsert(
         (
             pacs_person_id, pacs_credential_id, ag_card_id, full_name, employee_id,
             status, last_synced_email, last_synced_phone, last_synced_full_name,
-            last_synced_title, last_known_ag_state, sync_ref, last_synced_department, now, now,
+            last_synced_title, last_known_ag_state, credential_data, sync_ref, last_synced_department, now, now,
         ),
     )
 

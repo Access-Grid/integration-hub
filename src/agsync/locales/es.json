@@ -25,6 +25,7 @@
   "connect.title": "Volver a conectar con Millennium Ultra",
   "credentials.copied": "¡Copiado!",
   "credentials.copy": "Copiar",
+  "credentials.credential_data": "Datos de credencial",
   "credentials.employee_id": "ID de empleado",
   "credentials.empty": "Aún no hay credenciales emitidas. Ejecuta una sincronización para aprovisionarlas.",
   "credentials.holder": "Titular",

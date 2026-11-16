@@ -363,6 +363,13 @@ MIGRATIONS: list[tuple[str, Step]] = [
         ALTER TABLE unity_tokens ADD COLUMN pending_active INTEGER;
         """,
     ),
+    (
+        # The credential's wire identity as shown in the pass listing: either
+        # the site_code/card_number pair or the pre-encoded file_data blob,
+        # whichever the adapter transmits to AccessGrid.
+        "017_credential_data",
+        "ALTER TABLE ag_credentials ADD COLUMN credential_data TEXT;",
+    ),
 ]
 
 

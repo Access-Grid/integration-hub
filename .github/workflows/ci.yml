@@ -32,7 +32,7 @@ jobs:
         run: |
           agsync --version
           python -c "from agsync.server import create_app; create_app()"
-          python -c "from agsync.lib.pacs import available_pacs; registered = {d.vendor for d in available_pacs()}; missing = {'avigilon','avigilon_alta','cdvi','lenel','millennium_ultra'} - registered; assert not missing, f'adapters failed to register: {missing}'"
+          python -c "from agsync.lib.pacs import available_pacs; registered = {d.vendor for d in available_pacs()}; missing = {'avigilon','avigilon_alta','cdvi','dmp','lenel','millennium_ultra'} - registered; assert not missing, f'adapters failed to register: {missing}'"
 
       - name: Tests
         env:

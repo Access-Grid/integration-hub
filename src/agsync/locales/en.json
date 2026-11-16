@@ -25,6 +25,7 @@
   "connect.title": "Reconnect to Millennium Ultra",
   "credentials.copied": "Copied!",
   "credentials.copy": "Copy",
+  "credentials.credential_data": "Credential data",
   "credentials.employee_id": "Employee ID",
   "credentials.empty": "No credentials issued yet. Run a sync to provision them.",
   "credentials.holder": "Holder",
