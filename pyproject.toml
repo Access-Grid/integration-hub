@@ -17,6 +17,10 @@ dependencies = [
     "itsdangerous==2.2.0",
     "python-multipart==0.0.12",
     "httpx==0.27.2",
+    # Validate outbound TLS against the operating system's trust store instead
+    # of certifi's bundle, so the hub works on networks whose SSL-inspection
+    # appliance's root CA is trusted by Windows but unknown to Python.
+    "truststore==0.10.5",
     # AG Connect drives a browser over the DevTools protocol, which is a
     # WebSocket; uvicorn[standard] already pulls this in, but we use it
     # directly so it is declared here too.

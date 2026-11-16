@@ -167,6 +167,16 @@ class Probe:
 
         result = self.report["accessgrid"]
         result["host"] = ACCESSGRID_HOST
+        # Validate against the OS trust store, as the hub does, so `reachable`
+        # reflects what the hub will see — not a certifi-only verdict that
+        # fails on a network whose inspection CA only Windows trusts.
+        try:
+            import truststore
+
+            truststore.inject_into_ssl()
+            result["trust_store"] = "os"
+        except Exception as e:
+            result["trust_store"] = f"certifi (truststore unavailable: {e})"
         # Names only: a proxy URL can carry a username and password.
         result["proxy_env_vars"] = [k for k in _PROXY_VARS if os.environ.get(k)]
         try:

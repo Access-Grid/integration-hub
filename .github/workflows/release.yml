@@ -47,6 +47,7 @@ jobs:
             --collect-all agsync `
             --collect-all accessgrid `
             --collect-all pydbisam `
+            --collect-all truststore `
             --hidden-import agsync.lib.pacs.avigilon `
             --hidden-import agsync.lib.pacs.avigilon_alta `
             --hidden-import agsync.lib.pacs.cdvi `
@@ -124,6 +125,7 @@ jobs:
             --name dmp-discovery `
             --collect-all agsync `
             --collect-all pydbisam `
+            --collect-all truststore `
             --hidden-import agsync.lib.pacs.dmp `
             scripts/dmp_probe.py
         shell: pwsh
@@ -199,6 +201,7 @@ jobs:
             --collect-all agsync \
             --collect-all accessgrid \
             --collect-all pydbisam \
+            --collect-all truststore \
             --hidden-import agsync.lib.pacs.avigilon \
             --hidden-import agsync.lib.pacs.avigilon_alta \
             --hidden-import agsync.lib.pacs.cdvi \
