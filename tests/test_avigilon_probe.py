@@ -23,7 +23,7 @@ def test_probe_reads_statuses_dates_and_searches_as_the_adapter_does():
     assert probe.DATE_FORMATS == adapter._DATE_FORMATS
     assert probe._XML_SEARCH == client.XML_IDENTITY_SEARCH
     assert probe._EMBOSSED_SEARCH == client.EMBOSSED_SEARCH
-    assert probe._INTERNAL_SEARCH == client.INTERNAL_SEARCH
+    assert probe._INTERNAL_SEARCH_FIELD == client.INTERNAL_SEARCH_FIELD
     assert probe._XML_PAGE == client.XML_PAGE_SIZE
     assert probe._MAX_NUMBER_HITS == adapter.MAX_NUMBER_HITS
 
