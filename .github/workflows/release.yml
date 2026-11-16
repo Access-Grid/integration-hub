@@ -46,9 +46,11 @@ jobs:
             --name agsync `
             --collect-all agsync `
             --collect-all accessgrid `
+            --collect-all pydbisam `
             --hidden-import agsync.lib.pacs.avigilon `
             --hidden-import agsync.lib.pacs.avigilon_alta `
             --hidden-import agsync.lib.pacs.cdvi `
+            --hidden-import agsync.lib.pacs.dmp `
             --hidden-import agsync.lib.pacs.lenel `
             --hidden-import agsync.lib.pacs.millennium_ultra `
             --hidden-import win32timezone `
@@ -108,6 +110,31 @@ jobs:
           if ($out -notmatch "username") { throw "unexpected output: $out" }
         shell: pwsh
 
+      # A standalone, read-only probe of a DMP System Link database: whether the
+      # encryption key decrypts the tables, whether our live-row filtering
+      # matches DBISAM's own record count, what the adapter makes of the rows,
+      # and whether AccessGrid is reachable. Unlike avigilon-discovery it runs
+      # the hub's own DMP client and adapter, so it collects agsync and
+      # pydbisam. A site can run it before the hub is installed.
+      - name: Build dmp-discovery.exe with PyInstaller
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --onefile `
+            --name dmp-discovery `
+            --collect-all agsync `
+            --collect-all pydbisam `
+            --hidden-import agsync.lib.pacs.dmp `
+            scripts/dmp_probe.py
+        shell: pwsh
+
+      - name: Verify dmp-discovery runs
+        run: |
+          $out = dist\dmp-discovery.exe --help | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "dmp-discovery exited $LASTEXITCODE" }
+          if ($out -notmatch "db_path") { throw "unexpected output: $out" }
+        shell: pwsh
+
       - name: Compute release name
         id: rel
         run: |
@@ -124,6 +151,7 @@ jobs:
             dist/agsync.exe
             dist/agdiag.exe
             dist/avigilon-discovery.exe
+            dist/dmp-discovery.exe
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -134,6 +162,7 @@ jobs:
             dist/agsync.exe
             dist/agdiag.exe
             dist/avigilon-discovery.exe
+            dist/dmp-discovery.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
 
@@ -169,9 +198,11 @@ jobs:
             --name agsync \
             --collect-all agsync \
             --collect-all accessgrid \
+            --collect-all pydbisam \
             --hidden-import agsync.lib.pacs.avigilon \
             --hidden-import agsync.lib.pacs.avigilon_alta \
             --hidden-import agsync.lib.pacs.cdvi \
+            --hidden-import agsync.lib.pacs.dmp \
             --hidden-import agsync.lib.pacs.lenel \
             --hidden-import agsync.lib.pacs.millennium_ultra \
             --add-data "src/agsync/templates:agsync/templates" \
