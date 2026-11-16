@@ -13,10 +13,16 @@ library (and anything on it: httpx, the AccessGrid SDK, smtplib) verifies
 against the OS store instead. Whatever the machine already trusts, the hub now
 trusts too — including the inspection CA — with no bundle to maintain.
 
-Call `use_os_trust_store()` once, as early as a run path starts, before any TLS
-connection is made. It is idempotent and never raises: if truststore is missing
-or the platform is unsupported, the hub falls back to certifi rather than
-failing to start.
+Call `use_os_trust_store()` once, before the first *outbound* TLS call. It is
+idempotent and never raises: if truststore is missing or the platform is
+unsupported, the hub falls back to certifi rather than failing to start.
+
+Do NOT call it before this process's own HTTPS *server* context is built.
+`inject_into_ssl()` patches `ssl.SSLContext` globally, and truststore is
+client-side only; a server context built from the patched class answers nothing
+(the browser sees ERR_EMPTY_RESPONSE). In the hub this is called from the app
+lifespan startup, by which point uvicorn has already built and is using its own
+server context, so only client contexts opened afterwards are affected.
 """
 
 from __future__ import annotations
