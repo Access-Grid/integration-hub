@@ -159,7 +159,8 @@ def test_the_logs_say_so(caplog):
 def test_every_mutation_is_gated():
     """A completeness guard, because this is easy to half-do.
 
-    Every file that changes something — at AccessGrid or in Millennium —
+    Every file that changes something — at AccessGrid, in Millennium or in
+    Unity —
     must hold at least one dry-run check per mutating call. A new phase, or
     a new client method, that writes without a gate fails here rather than
     in production.
@@ -174,6 +175,7 @@ def test_every_mutation_is_gated():
     mutators = re.compile(
         r"ag\.access_cards\.(provision|issue|update|delete|suspend|resume|unlink|manage)\("
         r"|_client\.(save_cardholder|delete_card)\("
+        r"|_client\.(set_token_status|create_token|delete_token)\("
     )
     short: list[str] = []
     for path in sorted(root.rglob("*.py")):
