@@ -186,5 +186,6 @@
   "settings.dry_run.state_dry": "Reporting only. Nothing is being changed in the PACS or in AccessGrid.",
   "settings.dry_run.state_live": "Making changes. Passes will be issued, suspended and deleted as the PACS dictates.",
   "settings.dry_run.help": "Leave this off until a sync cycle's log shows the changes you expect. The log marks everything it would have done with [DRYRUN].",
-  "settings.dry_run.saved": "Sync mode saved."
+  "settings.dry_run.saved": "Sync mode saved.",
+  "logs.download": "Download logs"
 }

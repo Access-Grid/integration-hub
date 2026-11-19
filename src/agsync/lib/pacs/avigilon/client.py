@@ -106,6 +106,10 @@ class UnityNotFound(UnityError):
     """Unity answered 404 for an identity: it does not hold one by that id."""
 
 
+class UnityUnreachable(UnityError):
+    """No connection to Unity at all: not a failed read, a box that is down."""
+
+
 def _unwrap(raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """(id, fields) from either the flat or the JSON:API shape."""
     if isinstance(raw.get("attributes"), dict):
@@ -260,6 +264,18 @@ def token_row(raw: dict[str, Any], identity_id: str) -> dict[str, Any]:
 
 
 
+def _describe_tokens(tokens: list[dict[str, Any]]) -> str:
+    """Tokens as a log line: what is needed to tell them apart, nothing more."""
+    return "; ".join(f"{t['id']} number={t['internal_number']!r} embossed={t['embossed_number']!r} "
+                     f"status={t['status']}" for t in tokens) or "none"
+
+
+def _body_hint(resp: httpx.Response) -> str:
+    """The start of an unexpected answer's body, flattened, for the log."""
+    text = " ".join(resp.text.split())[:300]
+    return f" — {text}" if text else ""
+
+
 def _refuse_in_dry_run(what: str) -> None:
     """The last line of defence: the adapter checks dry run before every
     write and logs what it would do, so reaching this is a bug, and it fails
@@ -405,6 +421,8 @@ class UnityClient:
                 headers["X-CSRF-Token"] = self.csrf_token
             try:
                 resp = self._client.request(method, path, headers=headers, **kwargs)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                raise UnityUnreachable(f"{method} {path}: {type(e).__name__}: {e}") from e
             except httpx.HTTPError as e:
                 raise UnityError(f"{method} {path}: {type(e).__name__}: {e}") from e
             kwargs["headers"] = headers
@@ -639,8 +657,10 @@ class UnityClient:
         }
         path = f"/identities/{token['identity_id']}/tokens/{token['id']}"
         resp = self._request("POST", path, data=form)
+        logger.info("Unity: POST %s (status %s -> %s, %d field(s) echoed) -> HTTP %s, redirect %r", path,
+                    token["status"], status, len(sent), resp.status_code, resp.headers.get("Location", ""))
         if resp.status_code != 302:
-            raise UnityError(f"POST {path}: HTTP {resp.status_code}")
+            raise UnityError(f"POST {path}: HTTP {resp.status_code}{_body_hint(resp)}")
         after = next((t for t in self.list_tokens(token["identity_id"]) if t["id"] == token["id"]), None)
         if after is not None and after["status"] == status:
             # Unity may default a field we left out; it is written by then,
@@ -678,18 +698,33 @@ class UnityClient:
         path = f"/identities/{identity_id}/tokens"
         before = {t["id"] for t in self.list_tokens(identity_id)}
         resp = self._request("POST", path, data=form)
+        location = resp.headers.get("Location", "")
+        logger.info("Unity: POST %s (card %s, embossed %r, status %s) -> HTTP %s, redirect %r; %d token(s) before: %s",
+                    path, internal_number, embossed, status, resp.status_code, location, len(before),
+                    ", ".join(sorted(before)) or "none")
         if resp.status_code != 302:
-            raise UnityError(f"POST {path}: HTTP {resp.status_code}")
-        location_path = urlsplit(resp.headers.get("Location", "")).path
-        located = re.search(r"/tokens/([^/]+)(?:/|$)", location_path)
+            raise UnityError(f"POST {path}: HTTP {resp.status_code}{_body_hint(resp)}")
+        located = re.search(r"/tokens/([^/?#]+)(?:[/?#]|$)", urlsplit(location).path)
         returned_id = unquote(located.group(1)) if located else None
-        made = [t for t in self.list_tokens(identity_id)
-                if t["id"] not in before and t["internal_number"] == internal_number
-                and t["embossed_number"] == embossed]
-        token = next((t for t in made if t["id"] == returned_id), None)
-        if token is None:
-            raise UnityError(f"identity {identity_id}: {len(made)} tokens read back after creating one, "
-                             "but no new token matches the returned token ID; ownership unconfirmed")
+        new = [t for t in self.list_tokens(identity_id) if t["id"] not in before]
+        made = [t for t in new if t["internal_number"] == internal_number and t["embossed_number"] == embossed]
+        # What proves the token ours is the read-back: exactly one token that
+        # was not there before this post, with this number and marker. The
+        # redirect only corroborates. A live box (Nov 2026) redirected
+        # somewhere that did not name the token it had just created, and the
+        # hub refused its own token, stranding the pass.
+        if len(made) != 1:
+            raise UnityError(f"identity {identity_id}: {len(made)} new tokens with this number read back "
+                             f"after creating one (redirect {location!r}; new tokens: {_describe_tokens(new)}); "
+                             "ownership unconfirmed")
+        token = made[0]
+        if returned_id != token["id"]:
+            if any(t["id"] == returned_id for t in new):
+                raise UnityError(f"identity {identity_id}: the redirect {location!r} names another new token, "
+                                 f"not {token['id']} (new tokens: {_describe_tokens(new)}); ownership unconfirmed")
+            logger.warning("Unity: creating a token on %s redirected to %r, which does not name it; token %s "
+                           "is the only new one with this number, so it is ours", identity_id, location,
+                           token["id"])
         if token["status"] != status:
             raise UnityError(f"token {token['id']}: created with status {token['status']!r}, not {status!r}")
         logger.info("Unity: created token %s on identity %s", token["id"], identity_id)
@@ -714,8 +749,10 @@ class UnityClient:
         path = f"/identities/{identity_id}/tokens/{token_id}"
         form = {"utf8": "✓", "_method": "delete", "authenticity_token": self.csrf_token}
         resp = self._request("POST", path, data=form)
+        logger.info("Unity: POST %s (delete) -> HTTP %s, redirect %r", path, resp.status_code,
+                    resp.headers.get("Location", ""))
         if resp.status_code != 302:
-            raise UnityError(f"POST {path} (delete): HTTP {resp.status_code}")
+            raise UnityError(f"POST {path} (delete): HTTP {resp.status_code}{_body_hint(resp)}")
         if any(t["id"] == token_id for t in self.list_tokens(identity_id)):
             raise UnityError(f"token {token_id}: still on identity {identity_id} after deleting it")
         logger.info("Unity: deleted token %s from identity %s", token_id, identity_id)

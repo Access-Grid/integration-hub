@@ -16,6 +16,7 @@ import logging
 from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import CredentialStatus
+from .. import context as sync_context
 from .. import tracking
 from ..snapshot import Snapshot
 from .phase3_deletions import expired
@@ -27,6 +28,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
     logger.info("Phase 2: Checking PACS → AG status changes")
 
     for tracked in tracking.all_tracked():
+        sync_context.at(f"{tracking.label(tracked)}, pass {tracked.ag_card_id or 'none yet'}")
         if tracked.status in ("deleted", "pending", "deduped"):
             continue
         if not tracked.ag_card_id:
@@ -58,7 +60,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                 )
                 updated += 1
             except AccessGridError as e:
-                logger.error("  Failed to delete AG card %s: %s", tracked.ag_card_id, e)
+                logger.error("  Failed to delete AG card %s for %s: %s", tracked.ag_card_id,
+                             tracking.label(tracked), e, exc_info=True)
             continue
 
         # Compare PACS status to AG-tracked status.
@@ -183,7 +186,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                 )
                 updated += 1
         except AccessGridError as e:
-            logger.error("  Failed to update AG card %s: %s", tracked.ag_card_id, e)
+            logger.error("  Failed to push %s's PACS status (%s) to AG card %s (AccessGrid state %s): %s",
+                         tracking.label(tracked), cred.status.value, tracked.ag_card_id, ag_state, e, exc_info=True)
 
     logger.info("Phase 2 done: %d status change(s)", updated)
     return updated

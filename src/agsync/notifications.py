@@ -49,7 +49,8 @@ def _capped() -> bool:
     """Does the daily limit apply? An unreadable setup counts as yes."""
     try:
         return (PacsConfig.load() or {}).get("vendor") in _CAPPED_VENDORS
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Mail limit: the PACS setup could not be read (%s) — applying the daily limit", e)
         return True
 
 
@@ -223,7 +224,8 @@ def send_mail(recipient: str, subject: str, body: str) -> bool:
                 server.login(username, password)
             server.send_message(message)
     except Exception as e:  # noqa: BLE001 — mail must never break a sync cycle
-        logger.error("Failed to send notification to %s: %s", recipient, e)
+        logger.error("Failed to send notification %r to %s via %s:%s: %s: %s", subject, recipient, host,
+                     port, type(e).__name__, e, exc_info=True)
         return False
     logger.info("Notification sent to %s: %s", recipient, subject)
     return True

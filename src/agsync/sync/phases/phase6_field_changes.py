@@ -17,6 +17,7 @@ import logging
 
 from ... import dryrun, notifications
 from ...ag import AccessGrid, AccessGridError
+from .. import context as sync_context
 from .. import tracking
 from ..snapshot import Snapshot
 
@@ -28,6 +29,7 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
     logger.info("Phase 6: Checking for field changes")
 
     for tracked in tracking.all_tracked():
+        sync_context.at(f"{tracking.label(tracked)}, pass {tracked.ag_card_id or 'none yet'}")
         if tracked.status in ("deleted", "deduped") or not tracked.ag_card_id:
             continue
         if getattr(tracked, "last_known_ag_state", "") == "deleted":
@@ -121,7 +123,8 @@ def run(snapshot: Snapshot, ag: AccessGrid) -> int:
                         tracked.ag_card_id, tracked.pacs_person_id, tracked.pacs_credential_id, tracked.sync_ref,
                     )
             except AccessGridError as e:
-                logger.error("  Field update failed for %s: %s", tracked.ag_card_id, e)
+                logger.error("  Field update (%s) failed for AG card %s of %s: %s", ", ".join(changes),
+                             tracked.ag_card_id, tracking.label(tracked), e, exc_info=True)
                 # Leave the tracking row alone so the change is retried, and
                 # so a failed name push does not get recorded as done.
                 continue
@@ -196,6 +199,6 @@ def _push_email(ag: AccessGrid, tracked, email: str) -> bool:
         ag.access_cards.update(card_id=tracked.ag_card_id, update_type="metadata", email=email)
     except AccessGridError as e:
         logger.error("  Email update rejected for %s (%s): %s — retrying next cycle",
-                     tracked.ag_card_id, tracking.label(tracked), e)
+                     tracked.ag_card_id, tracking.label(tracked), e, exc_info=True)
         return False
     return True

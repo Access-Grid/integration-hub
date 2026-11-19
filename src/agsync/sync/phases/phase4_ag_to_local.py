@@ -6,6 +6,7 @@ import logging
 
 from ...ag import AccessGrid
 from ...lib.pacs import CredentialStatus, PacsAdapter
+from .. import context as sync_context
 from .. import tracking
 from ..snapshot import Snapshot
 from .writeback import is_installed, push_allocated_identities, representative_card, state_of
@@ -69,6 +70,7 @@ def run(snapshot: Snapshot, pacs: PacsAdapter, ag: AccessGrid | None = None) -> 
     updated = 0
     logger.info("Phase 4: Reconciling AccessGrid passes with PACS credentials")
     for tracked in tracking.all_tracked():
+        sync_context.at(f"{tracking.label(tracked)}, pass {tracked.ag_card_id or 'none yet'}")
         if tracked.status in ("deleted", "deduped", "pending") or not tracked.ag_card_id:
             continue
         if _pushed_this_cycle(snapshot, tracked):

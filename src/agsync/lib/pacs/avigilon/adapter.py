@@ -43,7 +43,7 @@ from ..base import (
 )
 from ..emails import first_valid_email, synthesize_email
 from . import wiegand, written
-from .client import UnityAuthError, UnityClient, UnityError, UnityNotFound
+from .client import UnityAuthError, UnityClient, UnityError, UnityNotFound, UnityUnreachable
 
 logger = logging.getLogger(__name__)
 
@@ -383,8 +383,8 @@ class AvigilonAdapter:
         self._search_ok = True
         try:
             hits = self._client.search_embossed(TRIGGER_VALUE)
-        except UnityAuthError:
-            raise
+        except (UnityAuthError, UnityUnreachable):
+            raise  # not a failed search: Unity is not answering, so this cycle reads nothing
         except UnityError as e:
             logger.warning("Unity: embossed-number search failed — reading tracked people only, "
                            "new enrollments wait for the next cycle: %s", e)
@@ -697,6 +697,9 @@ class AvigilonAdapter:
                         dryrun.would("switch Unity token %s of %s %s", e["token_id"], pid, "on" if target else "off")
                     continue
                 if token["status"] != code:
+                    logger.info("Unity: switching token %s of %s %s (pass %s is %s in AccessGrid; token status %s)",
+                                e["token_id"], pid, "on" if target else "off", credential_id, status.value,
+                                token["status"])
                     written.begin_status_write(e["token_id"], target)
                     self._client.set_token_status(token, code)
                 written.set_active(e["token_id"], target)
@@ -729,6 +732,13 @@ class AvigilonAdapter:
         known = {e["token_id"] for e in recorded if e["token_id"]}
         tokens = self._tokens.get(pid)
         fresh = False
+        wanted = [(str(i.site_code), str(i.card_number)) for i in identities]
+        missing = [c for c in wanted if not (c in mine and mine[c]["token_id"])]
+        if missing:
+            logger.info("Unity: pass %s of %s — AccessGrid cards %s; tokens recorded %s; to write %s",
+                        credential_id, pid, _cards(wanted),
+                        ", ".join(f"{fc}/{n}={e['token_id'] or 'NO ID (row ' + str(e['row']) + ')'}"
+                                  for (fc, n), e in mine.items()) or "none", _cards(missing))
         for identity in identities:
             card = (str(identity.site_code), str(identity.card_number))
             if card in mine and mine[card]["token_id"]:
@@ -745,7 +755,7 @@ class AvigilonAdapter:
             untracked = next((t for t in tokens if t["internal_number"] == card[1] and _is_trigger(t)
                               and t["id"] not in known and t["id"] != credential_id), None)
             if untracked:
-                self._ambiguous_token(pid, credential_id, card[1], untracked["id"])
+                self._ambiguous_token(pid, credential_id, card[1], untracked["id"], "writing its tokens")
                 return False
             # Checked before anything is recorded: a refused card leaves no row.
             if not self._number_is_free(pid, credential_id, card):
@@ -758,6 +768,8 @@ class AvigilonAdapter:
                 row = written.add(pid, credential_id, *card,
                                   *(d.isoformat() if (d := dates.get(n)) else None
                                     for n in ("activate_date", "deactivate_date")))
+            logger.info("Unity: creating token for card %s/%s on %s (pass %s), recorded as row %s",
+                        *card, pid, credential_id, row)
             token_id = self._client.create_token(pid, card[1], TRIGGER_VALUE, "2")
             written.set_token(row, token_id)
             self._created.add(token_id)
@@ -770,8 +782,12 @@ class AvigilonAdapter:
                 dryrun.would("delete enrollment token %s of %s — its pass has its own tokens", credential_id, pid)
             return False
         if tokens is None:
-            return True  # not read this cycle: the enrollment's delete waits for a cycle that reads it
+            logger.info("Unity: tokens of %s unread this cycle — enrollment token %s is deleted on a cycle "
+                        "that reads them", pid, credential_id)
+            return True
         if any(t["id"] == credential_id for t in tokens):
+            logger.info("Unity: every card of pass %s has its token — deleting enrollment token %s of %s",
+                        credential_id, credential_id, pid)
             try:
                 self._client.delete_token(pid, credential_id)
             except UnityError as e:
@@ -814,7 +830,13 @@ class AvigilonAdapter:
         pid = str(person_id)
         gone = {(str(i.site_code), str(i.card_number)) for i in identities}
         retired = 0
-        for e in written.for_credential(pid, credential_id):
+        ours = written.for_credential(pid, credential_id)
+        hit = [e for e in ours if (e["facility_code"], e["card_number"]) in gone]
+        if hit:
+            logger.info("Unity: AccessGrid deleted cards %s of pass %s (%s) — retiring %s",
+                        _cards(sorted(gone)), credential_id, pid,
+                        ", ".join(f"{e['facility_code']}/{e['card_number']}={e['token_id'] or 'NO ID'}" for e in hit))
+        for e in ours:
             if (e["facility_code"], e["card_number"]) not in gone:
                 continue
             if dryrun.active():
@@ -825,8 +847,13 @@ class AvigilonAdapter:
             if not token_id:
                 # Its token may have been created with the id never recorded.
                 # Keep ambiguous reservations without adopting or deleting a token.
-                if not self._unrecorded_token_absent(pid, credential_id, e["card_number"]):
+                if not self._unrecorded_token_absent(pid, credential_id, e["card_number"], "retiring a deleted card"):
+                    logger.warning("Unity: card %s/%s of pass %s (%s) is deleted in AccessGrid, but its token's "
+                                   "ID was never recorded (row %s) — not retired; ag-cleanup can record it",
+                                   e["facility_code"], e["card_number"], credential_id, pid, e["row"])
                     continue
+                logger.info("Unity: no token in Unity for unrecorded row %s (card %s/%s) — forgetting the row",
+                            e["row"], e["facility_code"], e["card_number"])
             if token_id:
                 try:
                     self._client.delete_token(pid, token_id)
@@ -874,7 +901,7 @@ class AvigilonAdapter:
         # Resolve uncertainty before deleting any known tokens or releasing
         # their records. An untracked match must never become ours by inference.
         if not dryrun.active() and any(
-            not self._unrecorded_token_absent(pid, credential_id, e["card_number"])
+            not self._unrecorded_token_absent(pid, credential_id, e["card_number"], "releasing a deleted pass")
             for e in ours if not e["token_id"]
         ):
             return False
@@ -903,7 +930,7 @@ class AvigilonAdapter:
                     "the enrollment for a new pass", enrollment["token_id"], pid)
         return True
 
-    def _unrecorded_token_absent(self, pid: str, credential_id: str, number: str) -> bool:
+    def _unrecorded_token_absent(self, pid: str, credential_id: str, number: str, doing: str) -> bool:
         """May a pending reservation be forgotten without touching any token?
 
         A matching number is not ownership evidence. Keep ambiguous rows so
@@ -917,6 +944,7 @@ class AvigilonAdapter:
             try:
                 self._client.get_identity(pid)
             except UnityNotFound:
+                logger.info("Unity: identity %s is gone, so is any unrecorded token for card %s", pid, number)
                 return True
             except UnityError:
                 pass
@@ -927,11 +955,15 @@ class AvigilonAdapter:
         token = next((t for t in tokens if t["internal_number"] == number and _is_trigger(t)
                       and t["id"] not in known and t["id"] != credential_id), None)
         if token:
-            self._ambiguous_token(pid, credential_id, number, token["id"])
+            self._ambiguous_token(pid, credential_id, number, token["id"], doing)
             return False
         return True
 
-    def _ambiguous_token(self, pid: str, credential_id: str, number: str, token_id: str) -> None:
+    def _ambiguous_token(self, pid: str, credential_id: str, number: str, token_id: str, doing: str) -> None:
+        recorded = ", ".join(f"row {e['row']} card {e['card_number']}={e['token_id'] or 'NO ID'}"
+                             for e in written.for_credential(pid, credential_id)) or "none"
+        logger.error("Unity: while %s for pass %s of %s — this pass's token records: %s", doing, credential_id,
+                     pid, recorded)
         _problem(f"token-ownership:{pid}:{credential_id}:{token_id}",
                  f"Unity: token {token_id} of identity {pid} matches card number {number} for pass "
                  f"{credential_id}, but its token ID was never tracked. Ownership is unknown: "
@@ -984,6 +1016,10 @@ def _layout_note(layout: wiegand.Layout) -> str:
 
 def _format_label(f: dict[str, str]) -> str:
     return f"{f['name'] or f['id']} (FC {f['facility_code'] or '?'}, {f['total_bits'] or '?'}-bit)"
+
+
+def _cards(cards: Any) -> str:
+    return ", ".join(f"{fc}/{n}" for fc, n in cards) or "none"
 
 
 def _card_problem(pid: str, card: tuple[str, str], problem: str) -> None:

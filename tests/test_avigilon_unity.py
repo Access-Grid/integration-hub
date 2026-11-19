@@ -661,7 +661,7 @@ def test_created_token_is_read_back_and_its_id_returned():
 def test_create_that_does_not_stick_raises():
     fake = FakeUnity([_identity("a")], tokens={"a": []})
     fake.ignore_writes = True
-    with pytest.raises(UnityError, match="0 tokens read back"):
+    with pytest.raises(UnityError, match="0 new tokens with this number read back"):
         _client(fake).create_token("a", "777", "accessgrid", "2")
 
 

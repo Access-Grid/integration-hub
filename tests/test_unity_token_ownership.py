@@ -122,26 +122,65 @@ def test_create_readback_cannot_claim_a_preexisting_token():
     assert [t["id"] for t in fake.tokens["a"]] == ["operator-owned"]
 
 
-@pytest.mark.parametrize("location", ["missing", "wrong-id", "exact-id"])
-def test_create_requires_the_exact_new_id_from_the_response(location):
-    fake = FakeUnity([_identity("a")])
+@pytest.mark.parametrize("location,ours", [
+    ("/identities/a/tokens/new-token_123?saved=true", True),
+    ("/identities/a/tokens/new-token_123/edit", True),  # what the live box sent the probe
+    # The redirect names no new token: the read-back alone decides. A live
+    # box (Nov 2026) created the token and the hub refused it as not ours.
+    ("/identities/a", True),
+    ("", True),
+    ("/identities/a/tokens/enrollment/edit", True),  # a token that was there before
+    ("/identities/a/tokens/other-new/edit", False),  # another token that appeared meanwhile
+])
+def test_create_proves_ownership_by_the_read_back_not_the_redirect(location, ours):
+    fake = FakeUnity([_identity("a")], tokens={"a": [_token("enrollment", internal="1", embossed="accessgrid")]})
 
     def transport(request):
         response = fake(request)
         if request.method == "POST" and request.url.path == "/identities/a/tokens":
             made = fake.tokens["a"][-1]
             made["id"] = made["attributes"]["cn"] = "new-token_123"
-            if location == "missing":
-                response.headers["Location"] = "/identities/a"
-            else:
-                token_id = made["id"] if location == "exact-id" else "someone-else"
-                response.headers["Location"] = f"/identities/a/tokens/{token_id}?saved=true"
+            fake.tokens["a"].append(_token("other-new", internal="555", embossed="someone"))
+            response.headers["Location"] = location
         return response
 
     client = _client(fake)
     client._client = httpx.Client(base_url="https://unity", transport=httpx.MockTransport(transport))
-    if location == "exact-id":
+    if ours:
         assert client.create_token("a", "9001", "accessgrid", "2") == "new-token_123"
     else:
         with pytest.raises(UnityError, match="ownership unconfirmed"):
             client.create_token("a", "9001", "accessgrid", "2")
+
+
+def test_create_refuses_when_two_new_tokens_carry_the_number():
+    fake = FakeUnity([_identity("a")])
+
+    def transport(request):
+        response = fake(request)
+        if request.method == "POST" and request.url.path == "/identities/a/tokens":
+            fake.tokens["a"].append(_token("twin", internal="9001", embossed="accessgrid", status="Inactive"))
+        return response
+
+    client = _client(fake)
+    client._client = httpx.Client(base_url="https://unity", transport=httpx.MockTransport(transport))
+    with pytest.raises(UnityError, match="2 new tokens"):
+        client.create_token("a", "9001", "accessgrid", "2")
+
+
+def test_a_refused_create_names_every_new_token_it_saw():
+    fake = FakeUnity([_identity("a")])
+
+    def transport(request):
+        response = fake(request)
+        if request.method == "POST" and request.url.path == "/identities/a/tokens":
+            fake.tokens["a"].append(_token("twin", internal="9001", embossed="accessgrid", status="Inactive"))
+        return response
+
+    client = _client(fake)
+    client._client = httpx.Client(base_url="https://unity", transport=httpx.MockTransport(transport))
+    with pytest.raises(UnityError) as raised:
+        client.create_token("a", "9001", "accessgrid", "2")
+    message = str(raised.value)
+    assert "new1 number='9001'" in message and "twin number='9001'" in message
+    assert "redirect '/identities/a/tokens/new1'" in message

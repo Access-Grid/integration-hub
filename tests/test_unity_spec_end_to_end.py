@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from accessgrid.client import AccessCard
 
@@ -188,6 +189,7 @@ def world(monkeypatch, mailed):
             assert may_fail or result.error is None, result.error
             return result
 
+        cycle.engine = engine
         return ag, cycle
 
     return make
@@ -450,6 +452,54 @@ def test_seos_install_switches_on_only_the_installed_half(world):
     assert _tokens_by_number(unity) == {ios: "Active"}, "the deleted Android half's token is gone"
     assert android not in {e["card_number"] for e in written.all_tokens()}
     assert ag.verbs("suspend", "resume", "delete") == []
+
+
+class _RedirectsNowhere(FakeUnity):
+    """A Unity whose token create redirects to a page naming no token."""
+
+    def __call__(self, req):
+        resp = super().__call__(req)
+        if req.method == "POST" and req.url.path.endswith("/tokens"):
+            resp.headers["Location"] = f"/identities/{req.url.path.split('/')[2]}"
+        return resp
+
+
+def test_seos_pair_whose_create_redirect_names_no_token_still_issues_and_cleans_up(world, mailed):
+    """The live box, Nov 2026: Unity created the hub's token but its redirect
+    did not name it, the hub refused its own token, and the pass stranded —
+    enrollment never deleted, the deleted half's token never retired."""
+    unity = _RedirectsNowhere([_person("a")], tokens={"a": [_token("t1", internal="")]})
+    ag, cycle = world("seos", True, unity)
+    cycle()
+    pass_id = ag.only_pass()
+    ios, android = (c["card_number"] for c in ag.passes[pass_id])
+    assert _tokens_by_number(unity) == {ios: "Inactive", android: "Inactive"}
+    assert all(t["id"] != "t1" for t in unity.tokens["a"]), "enrollment token deleted"
+    assert all(e["token_id"] for e in written.all_tokens())
+    ag.install(pass_id, "ios")
+    cycle()
+    assert _tokens_by_number(unity) == {ios: "Active"}, "the deleted Android half's token is gone"
+    assert not mailed
+
+
+def test_a_site_with_nobody_marked_yet_reads_as_reachable(world):
+    """Unity answered with no one to sync: once shown as "PACS is not responding"."""
+    class Unity(FakeUnity):
+        down = False
+
+        def __call__(self, req):
+            if self.down:
+                raise httpx.ConnectError("unreachable", request=req)
+            return super().__call__(req)
+
+    unity = Unity([_person("a")], tokens={"a": [_token("t1", embossed="badge")]})
+    ag, cycle = world("seos", True, unity)
+    cycle()
+    status = cycle.engine.get_status()
+    assert status["pacs_reachable"] is True and status["last_pacs_read_iso"]
+    unity.down = True
+    cycle(may_fail=True)
+    assert cycle.engine.get_status()["pacs_reachable"] is False
 
 
 def _installed_seos(world):

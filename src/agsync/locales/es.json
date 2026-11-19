@@ -186,5 +186,6 @@
   "settings.dry_run.state_dry": "Solo informa. No se está cambiando nada en el PACS ni en AccessGrid.",
   "settings.dry_run.state_live": "Haciendo cambios. Los pases se emitirán, suspenderán y eliminarán según indique el PACS.",
   "settings.dry_run.help": "Déjelo desactivado hasta que el registro de un ciclo muestre los cambios que espera. El registro marca con [DRYRUN] todo lo que habría hecho.",
-  "settings.dry_run.saved": "Modo de sincronización guardado."
+  "settings.dry_run.saved": "Modo de sincronización guardado.",
+  "logs.download": "Descargar registros"
 }
