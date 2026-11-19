@@ -694,6 +694,10 @@ class UnityClient:
             "token[plasecInternalnumber]": internal_number,
             "token[plasecEmbossednumber]": embossed,
             "token[plasecTokenstatus]": status,
+            # Unity's "Download" box: without it the token is never sent to
+            # the controllers, so the card opens no door. Unity's own form
+            # posts TRUE when it is ticked (captured live, Nov 2026).
+            "token[plasecDownload]": "TRUE",
         }
         path = f"/identities/{identity_id}/tokens"
         before = {t["id"] for t in self.list_tokens(identity_id)}
@@ -727,6 +731,14 @@ class UnityClient:
                            token["id"])
         if token["status"] != status:
             raise UnityError(f"token {token['id']}: created with status {token['status']!r}, not {status!r}")
+        # Not a refusal: the token is made and is ours, and refusing it now
+        # would strand the pass the way the redirect check did. Said loudly
+        # so an operator can tick the box by hand.
+        download = _field(token["fields"], "Download")
+        if download.upper() != "TRUE":
+            logger.error("Unity: token %s on identity %s was created but reads Download=%r, not TRUE — it will "
+                         "not reach the controllers until Download is ticked on it in Unity",
+                         token["id"], identity_id, download or "(not read back)")
         logger.info("Unity: created token %s on identity %s", token["id"], identity_id)
         return token["id"]
 
