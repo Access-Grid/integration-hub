@@ -18,6 +18,7 @@ import logging
 from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import CredentialStatus, PacsAdapter
+from .. import context as sync_context
 from .. import tracking
 from ..snapshot import Snapshot
 from .phase1_provision import (
@@ -63,6 +64,7 @@ def run(
     succeeded = 0
 
     for tracked in failed:
+        sync_context.at(f"{tracking.label(tracked)}, pass {tracked.ag_card_id or 'none yet'}")
         if (tracked.pacs_person_id, tracked.pacs_credential_id) in snapshot.issue_attempted:
             # Phase 1 tried it moments ago. If that call failed after
             # AccessGrid created the pass, only the next cycle's listing
@@ -159,10 +161,11 @@ def run(
                     pacs, tracked.pacs_person_id, tracked.pacs_credential_id, card,
                 )
         except AccessGridError as e:
-            logger.warning("  Retry failed for %s: %s", person.full_name, e)
+            logger.warning("  Retry failed for %s: %s", tracking.label(tracked), e, exc_info=True)
             tracking.record_error(tracked.pacs_person_id, tracked.pacs_credential_id, str(e))
         except Exception as e:  # noqa: BLE001
-            logger.warning("  Retry crashed for %s: %s", person.full_name, e, exc_info=True)
+            logger.warning("  Retry crashed for %s: %s: %s", tracking.label(tracked), type(e).__name__, e,
+                           exc_info=True)
             tracking.record_error(
                 tracked.pacs_person_id, tracked.pacs_credential_id,
                 f"{type(e).__name__}: {e}",
@@ -184,6 +187,7 @@ def _settle_exhausted(snapshot: Snapshot) -> None:
     from ... import notifications
 
     for tracked in tracking.exhausted_records(MAX_RETRIES):
+        sync_context.at(f"{tracking.label(tracked)}, pass {tracked.ag_card_id or 'none yet'}")
         pid, cid = tracked.pacs_person_id, tracked.pacs_credential_id
         if pid not in snapshot.credentials_by_person:
             continue

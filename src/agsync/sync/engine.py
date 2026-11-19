@@ -36,6 +36,7 @@ from ..ag import build_client as build_ag_client
 from ..lib.pacs import PacsAuthExpired, get_descriptor
 from ..lib.pacs import build_adapter as build_pacs_adapter
 from ..settings_store import AccessGridConfig, PacsConfig
+from . import context as sync_context
 from . import tracking
 from .phases import (
     phase1_provision,
@@ -133,7 +134,7 @@ def _totals(snapshot: Any) -> dict[str, int]:
             if row.status in counts:
                 counts[row.status] += 1
     except Exception as e:  # noqa: BLE001 — a count must not fail a cycle
-        logger.debug("Could not count tracked credentials: %s", e)
+        logger.warning("Could not count tracked credentials for the status page: %s", e, exc_info=True)
     return counts
 
 
@@ -152,7 +153,7 @@ def _no_contact(snapshot: Any) -> int:
                     count += 1
                     break
     except Exception as e:  # noqa: BLE001 — a count must not fail a cycle
-        logger.debug("Could not count people without contact details: %s", e)
+        logger.warning("Could not count people without contact details: %s", e, exc_info=True)
     return count
 
 
@@ -457,6 +458,7 @@ class SyncEngine:
                 self._status.pacs_reachable = False
             return result
 
+        sync_context.phase("reading the PACS and AccessGrid")
         try:
             snapshot = build_snapshot(pacs, ag, ag_cfg["template_id"])
             with self._status_lock:
@@ -515,6 +517,7 @@ class SyncEngine:
         default_pass_days = descriptor.default_pass_days if descriptor else 365
         unique_cards = bool(descriptor and descriptor.unique_card_numbers)
         try:
+            sync_context.phase("phase 1 (provision)")
             result.provisioned = phase1_provision.run(
                 snapshot, ag, ag_cfg["template_id"], site_code,
                 dedupe_by_site_card=dedupe,
@@ -530,11 +533,15 @@ class SyncEngine:
             )
             if superseded():
                 return self._abandon(result, start_ms)
+            sync_context.phase("phase 2 (PACS → AccessGrid status)")
             result.status_changes = phase2_local_to_ag.run(snapshot, ag)
+            sync_context.phase("phase 3 (deletions)")
             result.deleted = phase3_deletions.run(snapshot, ag, pacs)
             if superseded():
                 return self._abandon(result, start_ms)
+            sync_context.phase("phase 4 (AccessGrid → PACS)")
             result.ag_to_pacs = phase4_ag_to_local.run(snapshot, pacs, ag)
+            sync_context.phase("phase 5 (retries)")
             result.retried = phase5_retries.run(
                 snapshot, ag, ag_cfg["template_id"], site_code,
                 dedupe_by_site_card=dedupe,
@@ -546,17 +553,21 @@ class SyncEngine:
                 default_pass_days=default_pass_days,
                 require_unique_card=unique_cards,
             )
+            sync_context.phase("phase 6 (field changes)")
             result.field_updates = phase6_field_changes.run(snapshot, ag)
             # Adapters that batch their PACS writes send them now, once the
             # phases have decided everything this cycle will change.
+            sync_context.phase("finishing the cycle (batched PACS writes)")
             finish = getattr(pacs, "finish_cycle", None)
             if finish is not None:
                 finish()
         except PacsAuthExpired as e:
             return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)
         except Exception as e:  # noqa: BLE001
-            result.error = f"phase: {e}"
-            logger.exception("Phase failure during sync")
+            where = sync_context.where()
+            result.error = f"{where}: {type(e).__name__}: {e}"
+            logger.exception("Sync cycle stopped in %s — the phases after it did not run this cycle: %s: %s",
+                             where, type(e).__name__, e)
         finally:
             result.duration_ms = int((time.time() - start_ms) * 1000)
 
@@ -648,6 +659,8 @@ class SyncEngine:
 
         descriptor = get_descriptor(vendor)
         name = descriptor.display_name if descriptor else vendor
+        logger.error("Sync cycle stopped in %s: the %s session expired and needs a new sign-in — %s: %s",
+                     sync_context.where(), name, type(error).__name__, error)
         with self._status_lock:
             self._status.reconnect_required = True
             self._status.pacs_reachable = False

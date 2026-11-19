@@ -201,7 +201,7 @@ def build_snapshot(
             if t.ag_card_id and t.status not in ("deleted", "deduped")
         }
     except Exception as e:  # noqa: BLE001 — diagnostics must not break a cycle
-        logger.debug("Could not read the tracking table for diagnostics: %s", e)
+        logger.warning("Could not read the tracking table while reading the PACS: %s", e, exc_info=True)
         tracked_people = set()
         tracking_read = False
     # An adapter whose inactive people keep their credentials (suspended,

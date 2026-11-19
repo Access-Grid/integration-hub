@@ -28,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
+from .. import context as sync_context
 from .. import tracking
 from ..snapshot import Snapshot
 from .phase3_deletions import expired
@@ -149,6 +150,7 @@ def run(
             logger.warning("Phase 1: configuration changed — stopping early")
             break
         for cred in creds:
+            sync_context.at(f"{pid}/{cred.id} ({person.full_name})")
             if cred.hold:
                 continue
             if not cred.trigger_active:
@@ -291,10 +293,12 @@ def run(
                     # card exists in the PACS before the next cycle reads it.
                     push_allocated_identities(pacs, pid, cred.id, card)
             except AccessGridError as e:
-                logger.error("  Provision failed for %s: %s", person.full_name, e)
+                logger.error("  Provision failed for %s/%s (%s): %s", pid, cred.id, person.full_name, e,
+                             exc_info=True)
                 tracking.record_error(pid, cred.id, str(e))
             except Exception as e:  # noqa: BLE001
-                logger.error("  Unexpected error provisioning %s: %s", person.full_name, e, exc_info=True)
+                logger.error("  Unexpected error provisioning %s/%s (%s): %s: %s", pid, cred.id, person.full_name,
+                             type(e).__name__, e, exc_info=True)
                 tracking.record_error(pid, cred.id, f"{type(e).__name__}: {e}")
 
     if eligible > max_per_cycle:

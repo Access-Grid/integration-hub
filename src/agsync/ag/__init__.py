@@ -10,8 +10,13 @@ helper that tries a cheap, idempotent call and returns a tuple
 from __future__ import annotations
 
 import logging
+import time
+from typing import Any
+from urllib.parse import urlsplit
 
+import requests
 from accessgrid import AccessGrid, AccessGridError
+from accessgrid import client as _sdk_client
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +34,38 @@ __all__ = [
 # is the one that changes behaviour: AccessGrid mints the credential and the
 # PACS receives it, rather than the other way round.
 PROTOCOL_SEOS = "seos"
+
+
+class _LoggedRequests:
+    """The SDK's `requests`, logging every AccessGrid call that fails.
+
+    The SDK turns a failed call into "API request failed: <message>", losing
+    the method, the path and the HTTP status. This logs them, with the time
+    taken and the start of the answer. Never the request body (cardholder
+    details) or headers (the request signature), and the path without its
+    query string.
+    """
+
+    exceptions = requests.exceptions
+
+    @staticmethod
+    def request(method: str, url: str, **kwargs: Any) -> requests.Response:
+        path = urlsplit(url).path
+        started = time.monotonic()
+        try:
+            response = requests.request(method, url, **kwargs)
+        except requests.exceptions.RequestException as e:
+            logger.error("AccessGrid API: %s %s failed after %.1fs, no answer: %s: %s",
+                         method, path, time.monotonic() - started, type(e).__name__, e)
+            raise
+        if not 200 <= response.status_code < 300:
+            body = " ".join((response.text or "").split())[:500]
+            logger.error("AccessGrid API: %s %s -> HTTP %s after %.1fs: %s", method, path,
+                         response.status_code, time.monotonic() - started, body or "(empty body)")
+        return response
+
+
+_sdk_client.requests = _LoggedRequests  # type: ignore[assignment]
 
 
 def build_client(account_id: str, secret_key: str) -> AccessGrid:

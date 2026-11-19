@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from ... import dryrun
 from ...ag import AccessGrid, AccessGridError
 from ...lib.pacs import PacsAdapter
+from .. import context as sync_context
 from .. import tracking
 from ..snapshot import Snapshot
 from .writeback import deleted_identities_from_cards, identities_from_cards, state_of
@@ -82,6 +83,7 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
     deleted = 0
     expired_this_cycle = 0
     for tracked in tracking.all_tracked():
+        sync_context.at(f"{tracking.label(tracked)}, pass {tracked.ag_card_id or 'none yet'}")
         if tracked.status in ("deleted", "deduped") or not tracked.ag_card_id:
             continue
 
@@ -173,12 +175,14 @@ def run(snapshot: Snapshot, ag: AccessGrid, pacs: PacsAdapter | None = None) -> 
             msg = str(e).lower()
             if "not found" in msg or "404" in msg:
                 # Already gone — clean up.
-                logger.debug("  AG card %s already gone — removing tracking row", tracked.ag_card_id)
+                logger.info("  AG card %s for %s already gone in AccessGrid (%s) — removing tracking row",
+                            tracked.ag_card_id, tracking.label(tracked), e)
                 if pacs is not None and hasattr(pacs, "forget_credentials"):
                     pacs.forget_credentials(tracked.pacs_person_id, tracked.pacs_credential_id)
                 tracking.remove(tracked.pacs_person_id, tracked.pacs_credential_id)
             else:
-                logger.error("  Failed to delete AG card %s: %s", tracked.ag_card_id, e)
+                logger.error("  Failed to delete AG card %s for %s: %s", tracked.ag_card_id,
+                             tracking.label(tracked), e, exc_info=True)
 
     if pacs is not None:
         _retire_deleted_credentials(snapshot, ag, pacs)
@@ -264,6 +268,7 @@ def _retire_deleted_credentials(
 
     retired = 0
     for tracked in tracking.all_tracked():
+        sync_context.at(f"{tracking.label(tracked)}, pass {tracked.ag_card_id or 'none yet'}")
         if retired >= MAX_RETIREMENTS_PER_CYCLE:
             logger.warning(
                 "Phase 3: reached the retirement cap (%d) — the rest wait for "
