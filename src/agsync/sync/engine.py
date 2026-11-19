@@ -460,13 +460,15 @@ class SyncEngine:
         try:
             snapshot = build_snapshot(pacs, ag, ag_cfg["template_id"])
             with self._status_lock:
-                self._status.pacs_reachable = bool(snapshot.people)
+                # The PACS answered: a failed read raises, above. Nobody to
+                # sync yet (a Unity site before anyone is marked) is still an
+                # answer, and once showed "PACS is not responding".
+                self._status.pacs_reachable = True
                 self._status.ag_reachable = True
                 self._status.reconnect_required = False
-                if snapshot.people:
-                    self._status.last_pacs_read_iso = datetime.now(UTC).isoformat(
-                        timespec="seconds"
-                    )
+                self._status.last_pacs_read_iso = datetime.now(UTC).isoformat(
+                    timespec="seconds"
+                )
                 self._status.totals = _totals(snapshot)
         except PacsAuthExpired as e:
             return self._handle_auth_expired(pacs_cfg["vendor"], e, result, start_ms)

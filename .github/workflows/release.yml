@@ -91,6 +91,34 @@ jobs:
           if ($out -notmatch "diagnostic dump") { throw "unexpected output: $out" }
         shell: pwsh
 
+      # Records in the hub's database the Unity tokens a hub before 0.2.37
+      # created but refused as not its own, which stranded their passes. It
+      # reads Unity and writes only the hub's own database, after a backup.
+      - name: Build ag-cleanup.exe with PyInstaller
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --onefile `
+            --name ag-cleanup `
+            --collect-all agsync `
+            --collect-all pydbisam `
+            --collect-all truststore `
+            --hidden-import agsync.lib.pacs.avigilon `
+            --hidden-import win32timezone `
+            scripts/agcleanup_entry.py
+        shell: pwsh
+
+      - name: Verify ag-cleanup runs and changes nothing without a database
+        run: |
+          # Exit 1 is the expected answer here, not a failure of the step.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $out = dist\ag-cleanup.exe --db "${{ runner.temp }}\no-such.db" | Out-String
+          if ($LASTEXITCODE -ne 1) { throw "ag-cleanup exited $LASTEXITCODE" }
+          if ($out -notmatch "nothing changed") { throw "unexpected output: $out" }
+          $out = dist\ag-cleanup.exe --help | Out-String
+          if ($out -notmatch "ADOPT|adopt") { throw "unexpected help: $out" }
+        shell: pwsh
+
       # A standalone, read-only probe of an Avigilon Unity box: which login
       # and formats (JSON/XML) it answers, and whether AccessGrid is
       # reachable. Built from the script alone — it needs only httpx — so a
@@ -152,6 +180,7 @@ jobs:
           path: |
             dist/agsync.exe
             dist/agdiag.exe
+            dist/ag-cleanup.exe
             dist/avigilon-discovery.exe
             dist/dmp-discovery.exe
 
@@ -163,6 +192,7 @@ jobs:
           files: |
             dist/agsync.exe
             dist/agdiag.exe
+            dist/ag-cleanup.exe
             dist/avigilon-discovery.exe
             dist/dmp-discovery.exe
           generate_release_notes: true

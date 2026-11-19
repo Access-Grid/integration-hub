@@ -43,7 +43,7 @@ from ..base import (
 )
 from ..emails import first_valid_email, synthesize_email
 from . import wiegand, written
-from .client import UnityAuthError, UnityClient, UnityError, UnityNotFound
+from .client import UnityAuthError, UnityClient, UnityError, UnityNotFound, UnityUnreachable
 
 logger = logging.getLogger(__name__)
 
@@ -383,8 +383,8 @@ class AvigilonAdapter:
         self._search_ok = True
         try:
             hits = self._client.search_embossed(TRIGGER_VALUE)
-        except UnityAuthError:
-            raise
+        except (UnityAuthError, UnityUnreachable):
+            raise  # not a failed search: Unity is not answering, so this cycle reads nothing
         except UnityError as e:
             logger.warning("Unity: embossed-number search failed — reading tracked people only, "
                            "new enrollments wait for the next cycle: %s", e)
