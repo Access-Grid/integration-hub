@@ -88,6 +88,10 @@ def find_candidates(found: list[Stranded], known: set[str], client: Any) -> None
         except UnityError as e:
             s.problem = f"could not read this identity's tokens from Unity: {e}"
             continue
+        logging.getLogger(__name__).info(
+            "row %s (identity %s, pass %s, card %s): Unity holds %s", s.row, s.person_id, s.credential_id,
+            s.card_number, "; ".join(f"{t['id']} number={t['internal_number']!r} embossed={t['embossed_number']!r} "
+                                     f"status={t['status']} issued={t['issue_date']!r}" for t in tokens) or "no tokens")
         s.candidates = [t for t in tokens
                         if t["internal_number"] == s.card_number
                         and t["embossed_number"].strip().lower() == TRIGGER_VALUE
@@ -166,6 +170,9 @@ def run(db_path: Path, key: str | None, client_factory: Any, confirm: Any, out: 
         saved = backup(conn, db_path)
         out(f"\nDatabase backed up to {saved}")
         adopted = adopt(conn, found)
+        for s in found:
+            if s.adoptable:
+                logging.getLogger(__name__).info("row %s: token_id set to %s", s.row, s.candidates[0]["id"])
         out(f"Adopted {adopted} token(s). The hub picks them up on its next cycle: it then writes any "
             "token still missing, deletes the enrollment token, and retires a deleted pair half's token.")
         return 0 if adopted == len(found) else 2
@@ -190,7 +197,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", type=Path, help="the hub's app.db (default: where the hub keeps it)")
     parser.add_argument("--yes", action="store_true", help="adopt without asking")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
+    console = logging.StreamHandler()
+    console.setLevel(logging.WARNING)
+    console.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    logging.getLogger().addHandler(console)
 
     def confirm(n: int) -> bool:
         if args.yes:
@@ -201,13 +211,48 @@ def main(argv: list[str] | None = None) -> int:
             return False
         return answer.strip() == "ADOPT"
 
+    from . import __version__
+
     db_path = args.db or resolve_db_path()
-    print(f"ag-cleanup — database {db_path}\n")
+    out, log_path = _tee(db_path)
+    key = resolve_key()
+    out(f"ag-cleanup {__version__} — {datetime.now():%Y-%m-%d %H:%M:%S}")
+    out(f"  database {db_path}")
+    out(f"  key      {'found' if key else 'NOT FOUND'}")
+    out(f"  log      {log_path or 'not written (the database folder is missing or read-only)'}\n")
     try:
-        return run(db_path, resolve_key(), _client_from, confirm)
+        code = run(db_path, key, _client_from, confirm, out)
     except CleanupError as e:
-        print(f"Stopped, nothing changed: {e}")
-        return 1
+        out(f"Stopped, nothing changed: {e}")
+        code = 1
+    except Exception:
+        logging.getLogger(__name__).exception("ag-cleanup failed")
+        out("Stopped by an unexpected error (details above and in the log). If it happened while adopting, "
+            "nothing was written: adoption is all or nothing.")
+        code = 1
+    out(f"\nExit code {code}.")
+    return code
+
+
+def _tee(db_path: Path) -> tuple[Any, Path | None]:
+    """print, also into a log file next to the database, with the Unity
+    client's own log lines, so a closed window loses nothing."""
+    log_path: Path | None = db_path.parent / f"ag-cleanup-{datetime.now():%Y%m%d-%H%M%S}.log"
+    try:
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+    except OSError:
+        return print, None
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    report = logging.getLogger("ag-cleanup")
+
+    def out(line: str) -> None:
+        print(line)
+        report.info("%s", line)
+
+    return out, log_path
 
 
 if __name__ == "__main__":

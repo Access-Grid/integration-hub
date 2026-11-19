@@ -138,3 +138,34 @@ def test_main_without_a_database_stops_and_says_nothing_changed(tmp_path, capsys
     """What the release build's smoke check runs against the built exe."""
     assert cleanup.main(["--db", str(tmp_path / "no-such.db")]) == 1
     assert "nothing changed" in capsys.readouterr().out
+
+
+def test_the_logs_tell_the_story_of_a_stranded_pass(world, monkeypatch, mailed, caplog):  # noqa: F811
+    """What it would have taken to debug the live box from its log alone."""
+    import logging
+    caplog.set_level(logging.INFO)
+    unity, ag, cycle, live, dead, reserved = _stranded(world, monkeypatch, "android")
+    text = caplog.text
+    # The create itself: request, answer, redirect, and the tokens there before.
+    assert "POST /identities/a/tokens (card " in text and "-> HTTP 302, redirect" in text
+    # What the pass needed written, and which record has no token ID.
+    assert f"tokens recorded {reserved['facility_code']}/{reserved['card_number']}=NO ID (row {reserved['row']})" in text
+    # The deleted half kept, and why, and what fixes it.
+    assert f"card {reserved['facility_code']}/{dead} of pass t1 (a) is deleted in AccessGrid, but its token's ID was never recorded" in text
+    assert "ag-cleanup can record it" in text
+    assert "while retiring a deleted card for pass t1 of a" in text
+
+
+def test_cleanup_writes_its_log_next_to_the_database(world, monkeypatch, mailed, tmp_path):  # noqa: F811
+    unity, ag, cycle, live, dead, reserved = _stranded(world, monkeypatch)
+    from agsync.settings_store import PacsConfig
+    PacsConfig.save("avigilon", {"host": "unity", "username": "u", "password": "p"})
+    monkeypatch.setattr(cleanup, "_client_from", lambda params: _client(unity))
+    monkeypatch.setattr(cleanup, "resolve_key", lambda: get_settings().encryption_key)
+    db = Path(get_settings().db_path)
+    assert cleanup.main(["--db", str(db), "--yes"]) == 0
+    [log] = db.parent.glob("ag-cleanup-*.log")
+    text = log.read_text(encoding="utf-8")
+    assert "ADOPT token" in text and "Adopted 1 token(s)" in text and "Exit code 0" in text
+    assert f"card {reserved['card_number']}): Unity holds" in text, "every token Unity held, for the record"
+    assert f"row {reserved['row']}: token_id set to" in text

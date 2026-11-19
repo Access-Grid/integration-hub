@@ -166,3 +166,21 @@ def test_create_refuses_when_two_new_tokens_carry_the_number():
     client._client = httpx.Client(base_url="https://unity", transport=httpx.MockTransport(transport))
     with pytest.raises(UnityError, match="2 new tokens"):
         client.create_token("a", "9001", "accessgrid", "2")
+
+
+def test_a_refused_create_names_every_new_token_it_saw():
+    fake = FakeUnity([_identity("a")])
+
+    def transport(request):
+        response = fake(request)
+        if request.method == "POST" and request.url.path == "/identities/a/tokens":
+            fake.tokens["a"].append(_token("twin", internal="9001", embossed="accessgrid", status="Inactive"))
+        return response
+
+    client = _client(fake)
+    client._client = httpx.Client(base_url="https://unity", transport=httpx.MockTransport(transport))
+    with pytest.raises(UnityError) as raised:
+        client.create_token("a", "9001", "accessgrid", "2")
+    message = str(raised.value)
+    assert "new1 number='9001'" in message and "twin number='9001'" in message
+    assert "redirect '/identities/a/tokens/new1'" in message
