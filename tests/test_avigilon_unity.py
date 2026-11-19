@@ -171,7 +171,8 @@ class FakeUnity:
             if len(parts) == 3:  # create
                 made = _token(f"new{len(self.posts)}", internal=form["token[plasecInternalnumber]"],
                               embossed=form["token[plasecEmbossednumber]"],
-                              status={"1": "Active", "2": "Inactive"}[form["token[plasecTokenstatus]"]])
+                              status={"1": "Active", "2": "Inactive"}[form["token[plasecTokenstatus]"]],
+                              plasecDownload=form.get("token[plasecDownload]", "FALSE"))
                 if not self.ignore_writes:
                     tokens.append(made)
                 return httpx.Response(302, headers={"Location": f"/identities/{parts[1]}/tokens/{made['id']}"})

@@ -184,3 +184,27 @@ def test_a_refused_create_names_every_new_token_it_saw():
     message = str(raised.value)
     assert "new1 number='9001'" in message and "twin number='9001'" in message
     assert "redirect '/identities/a/tokens/new1'" in message
+
+
+def test_create_ticks_download_so_the_token_reaches_the_controllers():
+    fake = FakeUnity([_identity("a")])
+    token_id = _client(fake).create_token("a", "9001", "accessgrid", "2")
+    [form] = fake.posts
+    assert form["token[plasecDownload]"] == "TRUE", "what Unity's own form posts when the box is ticked"
+    [made] = [t for t in fake.tokens["a"] if t["id"] == token_id]
+    assert made["attributes"]["plasecDownload"] == "TRUE"
+
+
+def test_a_token_that_reads_back_without_download_is_kept_and_reported(caplog):
+    fake = FakeUnity([_identity("a")])
+
+    def transport(request):
+        response = fake(request)
+        if request.method == "POST" and request.url.path == "/identities/a/tokens":
+            fake.tokens["a"][-1]["attributes"]["plasecDownload"] = "FALSE"
+        return response
+
+    client = _client(fake)
+    client._client = httpx.Client(base_url="https://unity", transport=httpx.MockTransport(transport))
+    assert client.create_token("a", "9001", "accessgrid", "2") == "new1", "refusing would strand the pass"
+    assert "reads Download='FALSE', not TRUE" in caplog.text
