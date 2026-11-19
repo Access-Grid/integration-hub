@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import PlainTextResponse
 
 from ..auth import require_admin
-from ..logs import query_logs
+from ..logs import query_logs, recent_text
 
 router = APIRouter()
 
@@ -23,6 +24,15 @@ def logs_page(
     return request.app.state.template_response(
         request, "logs.html",
         {"rows": rows, "level": level, "phase": phase, "q": q},
+    )
+
+
+@router.get("/logs/download")
+def logs_download(_user=Depends(require_admin)):
+    """The newest 5,000 entries as logs.txt, to send to whoever is debugging."""
+    return PlainTextResponse(
+        recent_text(),
+        headers={"Content-Disposition": 'attachment; filename="logs.txt"', "Cache-Control": "no-store"},
     )
 
 

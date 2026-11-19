@@ -2,6 +2,7 @@
 {% block content %}
 <div class="card wide">
   <h1>{{ t('logs.title') }}</h1>
+  <p><a class="button" href="/logs/download" download="logs.txt">{{ t('logs.download') }}</a></p>
   <form class="filter-row"
         hx-get="/logs/partial"
         hx-target="#log-table"

@@ -80,6 +80,25 @@ def query_logs(
     return [dict(r) for r in get_db().execute(sql, tuple(params))]
 
 
+DOWNLOAD_ENTRIES = 5_000
+
+
+def recent_text(limit: int = DOWNLOAD_ENTRIES) -> str:
+    """The newest `limit` entries, oldest first, one per line as a log file
+    reads: time, level, phase, message. A traceback stays whole under its
+    entry, so an entry may run to several lines. Unfiltered on purpose: a
+    download is for debugging, and a filter would hide what led up to it."""
+    rows = get_db().execute(
+        "SELECT ts, level, phase, message FROM (SELECT id, ts, level, phase, message FROM logs "
+        "ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
+        (limit,),
+    ).fetchall()
+    return "".join(
+        f"{r['ts']} {r['level']:<7} {('[' + r['phase'] + '] ') if r['phase'] else ''}{r['message']}\n"
+        for r in rows
+    )
+
+
 class _SqliteLogHandler(logging.Handler):
     """Bridges Python's logging module into our SQLite buffer."""
 
