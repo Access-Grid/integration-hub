@@ -362,13 +362,12 @@ class Probe:
     def slots(self) -> None:
         """Every record slot in Users.dat, and how the hub classifies it.
 
-        DBISAM frees a deleted user's slot but leaves its bytes, so the hub
-        tells current from deleted by panel-compare dates — which misses a
-        user deleted since the last compare. Each record starts with a header
-        (status byte, two 32-bit values, a 16-byte checksum, as pydbisam reads
-        it); this reports the header without the checksum, so two runs either
-        side of a deletion show which bytes mark it. No names or card numbers:
-        a slot is identified by its user number.
+        DBISAM frees a deleted user's slot but leaves its bytes. Each record
+        starts with a header (status byte, two 32-bit values, a 16-byte
+        checksum, as pydbisam reads it); this reports it without the checksum,
+        with how the hub reads the record and whether the status bytes or the
+        panel-compare dates decided. No names or card numbers: a slot is
+        identified by its user number.
         """
         from pydbisam import PyDBISAM
 
@@ -392,16 +391,19 @@ class Probe:
                 row = None
             rows.append((i, row, head))
 
-        valid = [r for _, r, _ in rows if r is not None and self.client._valid(r)]
-        live = {id(r) for r in self.client._live_rows(valid)}
+        parsed = [(head[0], r) for _, r, head in rows if r is not None]
+        current, how = self.client.classify(parsed, db.total_rows)
+        live = {id(r) for r in current}
         listed, by_class = [], {}
         for i, row, head in rows:
             if row is None:
                 kind = "unparseable"
             elif not self.client._valid(row):
                 kind = "blank"
+            elif id(row) in live:
+                kind = "current"
             else:
-                kind = "current" if id(row) in live else "deleted (by dates or reused number)"
+                kind = "deleted" if how == "status" else "deleted (by dates or reused number)"
             status = f"0x{head[0]:02x}" if head else ""
             by_class.setdefault(kind, {}).setdefault(status, 0)
             by_class[kind][status] += 1
@@ -422,6 +424,9 @@ class Probe:
         out["header_deleted_slots"] = db._deleted_rows
         out["record_header_bytes"] = header_len
         out["hub_reads_as_current"] = sum(1 for s in listed if s["hub_reads_as"] == "current")
+        # "status": each record's own flag agreed with the header and decided;
+        # "dates": it did not, and panel-compare dates decided.
+        out["told_apart_by"] = how
         out["status_byte_by_class"] = by_class
         idx = self.db / "Users.idx"
         if idx.exists():

@@ -147,30 +147,55 @@ def test_live_rows_fallback_when_never_compared():
     assert {r["CODE"] for r in client._live_rows(rows)} == {"100", "200"}
 
 
-# --- deleted users the dates cannot see --------------------------------------
-# A user deleted in System Link keeps its bytes in Users.dat, dates and all, so
-# until a later panel compare the hub reads them as current and never deletes
-# their pass. The header's live count is exact; reading more than it is how
-# the hub knows.
+# --- deleted users ---------------------------------------------------------
+# A user deleted in System Link keeps its bytes in Users.dat, dates and all.
+# Each record's status byte says whether it is live, checked against the
+# header's exact live count; only where they disagree do the dates decide, and
+# those cannot see a user deleted since the last compare.
 
-def _users_dat(tmp_path, live):
+def _users_dat(tmp_path, live, bob_status=0):
     from .dmp_dbisam import user, users_dat
 
     compared = datetime(2026, 11, 16, 9)
     (tmp_path / "Users.dat").write_bytes(users_dat(
-        [(0, user(1, "100", "ALICE", compared, "a@x.co")), (0, user(2, "200", "BOB", compared, "b@x.co"))],
+        [(0, user(1, "100", "ALICE", compared, "a@x.co")), (bob_status, user(2, "200", "BOB", compared, "b@x.co"))],
         live=live,
     ))
     return DmpAdapter(db_path=str(tmp_path), encryption_key="k")
 
 
-def test_a_user_deleted_since_the_last_compare_is_reported(tmp_path, caplog, monkeypatch):
+def test_a_deleted_user_is_not_read_even_with_current_dates(tmp_path, caplog, monkeypatch):
+    from agsync import notifications
+
+    mailed = []
+    monkeypatch.setattr(notifications, "notify_card_problem", lambda key, problem: mailed.append(key))
+    adapter = _users_dat(tmp_path, live=1, bob_status=1)  # BOB deleted since the last compare
+    assert {p.id for p in adapter.list_people()} == {"100"}
+    assert adapter._client.live_by == "status"
+    assert "panel-compare dates" not in caplog.text and mailed == []
+
+
+def test_each_record_is_decrypted_from_iv_zero(tmp_path):
+    # Decrypted as one run, each record's first 8 bytes came out scrambled by
+    # the record before it: the status byte was noise, never 0 or 1.
+    _users_dat(tmp_path, live=1, bob_status=1)
+    from pydbisam import PyDBISAM
+
+    db = PyDBISAM(data=DmpClient(str(tmp_path), "k")._decrypt(tmp_path / "Users.dat"))
+    statuses = [db._data[db._data_offset + i * db._row_size] for i in range(2)]
+    ids = [int.from_bytes(db._data[db._data_offset + i * db._row_size + 1:][:4], "little") for i in range(2)]
+    assert statuses == [0, 1] and ids == [1, 2]
+
+
+def test_status_bytes_that_disagree_with_the_header_fall_back_to_dates(tmp_path, caplog, monkeypatch):
     from agsync import notifications
 
     mailed = []
     monkeypatch.setattr(notifications, "notify_card_problem", lambda key, problem: mailed.append((key, problem)))
-    adapter = _users_dat(tmp_path, live=1)  # BOB deleted: his bytes and dates unchanged
+    adapter = _users_dat(tmp_path, live=1)  # both marked live; the header says one is
     assert {p.id for p in adapter.list_people()} == {"100", "200"}, "the dates alone still read BOB as current"
+    assert adapter._client.live_by == "dates"
+    assert "2 record(s) are marked live but the header says 1" in caplog.text
     assert "1 deleted user(s) still read as current" in caplog.text
     assert [r.levelname for r in caplog.records if "deleted user" in r.getMessage()] == ["ERROR"]
     [(key, problem)] = mailed
@@ -184,5 +209,5 @@ def test_nothing_reported_when_the_header_agrees(tmp_path, caplog, monkeypatch):
     monkeypatch.setattr(notifications, "notify_card_problem", lambda key, problem: mailed.append(key))
     adapter = _users_dat(tmp_path, live=2)
     assert len(list(adapter.list_people())) == 2
-    assert adapter._client.undetected_deletions == 0
+    assert adapter._client.undetected_deletions == 0 and adapter._client.live_by == "status"
     assert "header" not in caplog.text and mailed == []
