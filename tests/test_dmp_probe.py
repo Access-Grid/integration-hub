@@ -76,9 +76,8 @@ def test_slots_lists_every_record_header_without_names_or_card_numbers(tmp_path)
     p = probe.Probe(str(tmp_path), "k", "slots", "")
     report = p.run_slots()["slots"]
     assert report["header_live_records"] == 1 and report["record_header_bytes"] == 25
-    assert report["hub_reads_as_current"] == 1
-    assert report["status_byte_by_class"] == {"current": {"0x00": 1},
-                                              "deleted (by dates or reused number)": {"0x05": 1}}
+    assert report["hub_reads_as_current"] == 1 and report["told_apart_by"] == "status"
+    assert report["status_byte_by_class"] == {"current": {"0x00": 1}, "deleted": {"0x05": 1}}
     first, second = report["slots"]
     assert (first["user_num"], first["status_byte"], first["header_1_4"], first["header_5_8"]) == (7, "0x00", 1, 1)
     assert second["hub_reads_as"].startswith("deleted") and second["header_after_checksum"] == ""

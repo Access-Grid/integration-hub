@@ -1,8 +1,10 @@
 """A small encrypted DBISAM v4 Users table, laid out the way pydbisam reads one.
 
-Built so the DMP tests run the real decrypt-and-parse path: Blowfish-CBC from
-0x200 with key MD5(password), a 25-byte record header (status byte, two 32-bit
-values, a 16-byte checksum), then each field as a null marker and its value.
+Built so the DMP tests run the real decrypt-and-parse path: Blowfish-CBC with
+key MD5(password) and IV 0, the field definitions one run and each record its
+own (as System Link's files are), a 25-byte record header (status byte — 0
+while live — two 32-bit values, a 16-byte checksum), then each field as a null
+marker and its value.
 """
 
 from __future__ import annotations
@@ -64,10 +66,14 @@ def users_dat(records: list[tuple[int, dict]], live: int, password: str = "k") -
                 r[offset - 1] = 1
                 r[offset:offset + width] = _value(kind, width, row[name])
         rows += r
-    body = bytes(defs + rows)
     key = hashlib.md5(password.encode()).digest()
-    enc = Cipher(Blowfish(key), modes.CBC(b"\0" * 8)).encryptor()
-    return bytes(head) + enc.update(body) + enc.finalize()
+
+    def run(chunk: bytes) -> bytes:
+        enc = Cipher(Blowfish(key), modes.CBC(b"\0" * 8)).encryptor()
+        return enc.update(chunk) + enc.finalize()
+
+    return bytes(head) + run(bytes(defs)) + b"".join(
+        run(bytes(rows[i:i + row_size])) for i in range(0, len(rows), row_size))
 
 
 def user(num: int, code: str, name: str, compared: datetime, email: str = "", active: bool = True) -> dict:
