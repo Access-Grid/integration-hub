@@ -145,3 +145,44 @@ def test_live_rows_fallback_when_never_compared():
     ]
     # No panel-compare data at all → can't distinguish, keep all valid rows.
     assert {r["CODE"] for r in client._live_rows(rows)} == {"100", "200"}
+
+
+# --- deleted users the dates cannot see --------------------------------------
+# A user deleted in System Link keeps its bytes in Users.dat, dates and all, so
+# until a later panel compare the hub reads them as current and never deletes
+# their pass. The header's live count is exact; reading more than it is how
+# the hub knows.
+
+def _users_dat(tmp_path, live):
+    from .dmp_dbisam import user, users_dat
+
+    compared = datetime(2026, 11, 16, 9)
+    (tmp_path / "Users.dat").write_bytes(users_dat(
+        [(0, user(1, "100", "ALICE", compared, "a@x.co")), (0, user(2, "200", "BOB", compared, "b@x.co"))],
+        live=live,
+    ))
+    return DmpAdapter(db_path=str(tmp_path), encryption_key="k")
+
+
+def test_a_user_deleted_since_the_last_compare_is_reported(tmp_path, caplog, monkeypatch):
+    from agsync import notifications
+
+    mailed = []
+    monkeypatch.setattr(notifications, "notify_card_problem", lambda key, problem: mailed.append((key, problem)))
+    adapter = _users_dat(tmp_path, live=1)  # BOB deleted: his bytes and dates unchanged
+    assert {p.id for p in adapter.list_people()} == {"100", "200"}, "the dates alone still read BOB as current"
+    assert "1 deleted user(s) still read as current" in caplog.text
+    assert [r.levelname for r in caplog.records if "deleted user" in r.getMessage()] == ["ERROR"]
+    [(key, problem)] = mailed
+    assert key == "dmp-undetected-deletions" and "panel compare" in problem
+
+
+def test_nothing_reported_when_the_header_agrees(tmp_path, caplog, monkeypatch):
+    from agsync import notifications
+
+    mailed = []
+    monkeypatch.setattr(notifications, "notify_card_problem", lambda key, problem: mailed.append(key))
+    adapter = _users_dat(tmp_path, live=2)
+    assert len(list(adapter.list_people())) == 2
+    assert adapter._client.undetected_deletions == 0
+    assert "header" not in caplog.text and mailed == []
