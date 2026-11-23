@@ -40,7 +40,11 @@ folder — which DBISAM tables are present, whether each is encrypted, its size
 and the live/deleted counts in its header — the read to send about a box we
 have never seen. `fields` finds the email: it reports, per candidate User
 Field, how many live users hold an email-shaped value there, and recommends
-which to configure. The report is printed and saved as JSON.
+which to configure. `slots` lists every record slot in Users.dat: its
+DBISAM record header bytes (bar the 16-byte checksum), its user number, dates
+and Active flag, and whether the hub reads it as current — run it, delete a
+test user in System Link, and run it again to see which bytes mark a deleted
+record. The report is printed and saved as JSON.
 """
 
 from __future__ import annotations
@@ -74,7 +78,7 @@ _PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PR
 # whether each is present. Users is the only one the adapter reads today; the
 # rest are listed because a box missing them is worth knowing about.
 _KNOWN_TABLES = ("Users", "Profiles", "AreaInfo", "Device734", "DeviceInfo", "Account", "CustomFields")
-MODES = ("all", "tables", "fields")
+MODES = ("all", "tables", "fields", "slots")
 
 
 def _load_agsync():
@@ -355,6 +359,76 @@ class Probe:
         else:
             out["recommendation"] = "no User Field holds emails — enrollment will stay empty until one does"
 
+    def slots(self) -> None:
+        """Every record slot in Users.dat, and how the hub classifies it.
+
+        DBISAM frees a deleted user's slot but leaves its bytes, so the hub
+        tells current from deleted by panel-compare dates — which misses a
+        user deleted since the last compare. Each record starts with a header
+        (status byte, two 32-bit values, a 16-byte checksum, as pydbisam reads
+        it); this reports the header without the checksum, so two runs either
+        side of a deletion show which bytes mark it. No names or card numbers:
+        a slot is identified by its user number.
+        """
+        from pydbisam import PyDBISAM
+
+        out = self.report["slots"] = {}
+        try:
+            db = PyDBISAM(data=self.client._decrypt(self.db / "Users.dat"))
+            cols = db.fields()
+        except Exception as e:  # noqa: BLE001 — a probe reports, it does not stop
+            out["error"] = f"{type(e).__name__}: {e}"
+            return
+        # The first field's null-marker byte sits just before its offset.
+        header_len = db._columns[0].row_offset - 1
+        rows: list[tuple[int, dict | None, bytes]] = []
+        for i in range(db.total_rows + db._deleted_rows):
+            start = db._data_offset + i * db._row_size
+            head = bytes(db._data[start:start + header_len])
+            try:
+                values = db.row(i, extract_deleted=True)
+                row = dict(zip(cols, values, strict=False)) if values else None
+            except Exception:  # noqa: BLE001
+                row = None
+            rows.append((i, row, head))
+
+        valid = [r for _, r, _ in rows if r is not None and self.client._valid(r)]
+        live = {id(r) for r in self.client._live_rows(valid)}
+        listed, by_class = [], {}
+        for i, row, head in rows:
+            if row is None:
+                kind = "unparseable"
+            elif not self.client._valid(row):
+                kind = "blank"
+            else:
+                kind = "current" if id(row) in live else "deleted (by dates or reused number)"
+            status = f"0x{head[0]:02x}" if head else ""
+            by_class.setdefault(kind, {}).setdefault(status, 0)
+            by_class[kind][status] += 1
+            listed.append({
+                "slot": i,
+                "hub_reads_as": kind,
+                "status_byte": status,
+                # The two 32-bit values after it, and anything past the checksum.
+                "header_1_4": int.from_bytes(head[1:5], "little") if len(head) >= 5 else None,
+                "header_5_8": int.from_bytes(head[5:9], "little") if len(head) >= 9 else None,
+                "header_after_checksum": head[25:].hex() if len(head) > 25 else "",
+                "user_num": row.get("USER_NUM") if row else None,
+                "active": row.get("ACTIVE") if row else None,
+                "last_pnl_cmp": row.get("LAST_PNL_CMP") if row else None,
+                "last_change": row.get("LAST_CHANGE") if row else None,
+            })
+        out["header_live_records"] = db.total_rows
+        out["header_deleted_slots"] = db._deleted_rows
+        out["record_header_bytes"] = header_len
+        out["hub_reads_as_current"] = sum(1 for s in listed if s["hub_reads_as"] == "current")
+        out["status_byte_by_class"] = by_class
+        idx = self.db / "Users.idx"
+        if idx.exists():
+            st = idx.stat()
+            out["users_idx"] = {"bytes": st.st_size, "modified": datetime.fromtimestamp(st.st_mtime).isoformat()}
+        out["slots"] = listed
+
     # -- runners --------------------------------------------------------------
 
     def run_all(self) -> dict[str, Any]:
@@ -392,6 +466,16 @@ class Probe:
         self.report["table_headers"] = headers
         return self.report
 
+    def run_slots(self) -> dict[str, Any]:
+        self.environment()
+        self.database()
+        if not self.report["database"].get("users_dat_present"):
+            return self.report
+        self.decrypt()
+        if self.report["decrypt"].get("key_accepted"):
+            self.slots()
+        return self.report
+
     def run_fields(self) -> dict[str, Any]:
         self.environment()
         self.database()
@@ -409,7 +493,8 @@ def main() -> int:
         argv.insert(0, "all")  # <db_folder> with no mode means `all`
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("mode", choices=MODES, help="all: every check; tables: inventory the folder; "
-                                               "fields: find which User Field holds the email")
+                                               "fields: find which User Field holds the email; "
+                                               "slots: every Users.dat record and how the hub reads it")
     ap.add_argument("db_path", help=r"DMP database folder, e.g. C:\ProgramData\DMP\SystemLink\Database")
     ap.add_argument("--email-field", default="", help="User Field holding the email (default U_FIELD1)")
     args = ap.parse_args(argv)
@@ -422,6 +507,8 @@ def main() -> int:
         report = probe.run_tables()
     elif args.mode == "fields":
         report = probe.run_fields()
+    elif args.mode == "slots":
+        report = probe.run_slots()
     else:
         report = probe.run_all()
     report["finished"] = datetime.now().isoformat()

@@ -76,6 +76,17 @@ class DmpAdapter:
         except DmpError as e:
             logger.error("DMP: failed to read users: %s", e)
             raise
+        missed = getattr(self._client, "undetected_deletions", 0)
+        if missed:
+            # Logged by the client, which found it; mailed from here.
+            from .... import notifications
+
+            notifications.notify_card_problem(
+                "dmp-undetected-deletions",
+                f"DMP: {missed} user(s) deleted in System Link still read as current users, so the "
+                f"hub will not delete their AccessGrid passes. Running a panel compare in System "
+                f"Link should let the hub see the deletion and delete the pass.",
+            )
         self._by_code = by_code
         return by_code
 

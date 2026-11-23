@@ -69,6 +69,13 @@ class DmpClient:
     def __init__(self, db_path: str, encryption_key: str) -> None:
         self._db_path = Path(db_path)
         self._key = hashlib.md5((encryption_key or "").encode()).digest()
+        # Table name -> the live-record count in its plaintext header, from
+        # the last read. DBISAM keeps it exact; the rows themselves carry no
+        # delete flag we can read, so it is the check on _live_rows().
+        self.header_live: dict[str, int] = {}
+        # Set by read_users() when more users read as live than the header
+        # holds: users deleted in System Link that the hub still sees.
+        self.undetected_deletions = 0
 
     # ----- public API --------------------------------------------------
 
@@ -87,7 +94,27 @@ class DmpClient:
     def read_users(self) -> list[dict]:
         """Return the live user rows as dicts (column name -> value)."""
         rows = self._read_table("Users")
-        return self._live_rows(rows)
+        live = self._live_rows(rows)
+        header = self.header_live.get("Users")
+        self.undetected_deletions = 0
+        if header is not None and len(live) > header:
+            # A user deleted in System Link keeps its bytes in Users.dat, and
+            # the timestamps _live_rows() goes by still look current until a
+            # later panel compare. Read as live, their pass is never deleted.
+            self.undetected_deletions = len(live) - header
+            logger.error(
+                "DMP: %d user(s) read as current, but Users.dat's header says %d are — %d deleted "
+                "user(s) still read as current, so their AccessGrid passes will not be deleted. "
+                "A panel compare in System Link should clear this; dmp-discovery's `slots` mode "
+                "shows which records they are",
+                len(live), header, self.undetected_deletions,
+            )
+        elif header is not None and len(live) < header:
+            # Expected where live records lack a name or code, or share a
+            # reused user number; logged so a gap that grows is visible.
+            logger.warning("DMP: %d user(s) read as current; Users.dat's header holds %d live records",
+                           len(live), header)
+        return live
 
     # ----- internals ---------------------------------------------------
 
@@ -116,6 +143,7 @@ class DmpClient:
         try:
             db = PyDBISAM(data=self._decrypt(path))
             cols = db.fields()
+            self.header_live[name] = db.total_rows
         except Exception as e:
             # Wrong password decrypts to garbage → field parse fails here.
             raise DmpError(
